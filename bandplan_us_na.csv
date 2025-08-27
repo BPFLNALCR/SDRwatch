@@ -1,0 +1,98 @@
+low_hz,high_hz,service,region,notes
+9000,90000,VLF/LF Radionavigation & Time,FCC (US/Canada/Mexico),"Non-directional beacons, LORAN legacy, time signals (e.g., 60 kHz)."
+135700,137800,Amateur 2200 m,FCC (US/Canada/Mexico),"135.7–137.8 kHz, secondary allocation; very narrowband modes common."
+472000,479000,Amateur 630 m,FCC (US/Canada/Mexico),"472–479 kHz, secondary allocation."
+525000,1705000,AM Broadcast (MW),FCC (US),Medium wave broadcast band; US channel step 10 kHz (530–1700 kHz).
+1800000,2000000,Amateur 160 m,FCC (US/Canada/Mexico),CW/digital/SSB; night propagation.
+2182000,2187500,Maritime Distress & Calling,FCC (US/Canada/Mexico),2182 kHz legacy SSB/CW distress/calling; still monitored by some ships/coast stations.
+2300000,26100000,HF Broadcasting Bands (shortwave),ITU (global ref),International broadcast allocations exist within these ranges; see ITU bandplans for exact sub‑bands.
+3500000,4000000,Amateur 80/75 m,FCC (US/Canada/Mexico),CW/SSB; phone typically above ~3.8 MHz in US.
+5000000,5005000,WWV/WWVH Time Signal,FCC (US/Canada/Mexico),5 MHz standard frequency/tones; AM/USB.
+5330500,5406500,Amateur 60 m (channels),FCC (US/Canada/Mexico),"Five USB channels centered at 5330.5, 5357.0, 5371.5, 5398.5, 5405.0 kHz; 2.8 kHz BW; channelized."
+7000000,7300000,Amateur 40 m,FCC (US/Canada/Mexico),7.0–7.3 MHz in ITU Region 2; broadcasters 7.2–7.3 mostly vacated in Region 2.
+10000000,10005000,WWV/WWVH Time Signal,FCC (US/Canada/Mexico),10 MHz standard frequency/tones; AM/USB.
+10100000,10150000,Amateur 30 m,FCC (US/Canada/Mexico),No phone; digital/CW only.
+14000000,14350000,Amateur 20 m,FCC (US/Canada/Mexico),Worldwide DX band.
+15000000,15005000,WWV/WWVH Time Signal,FCC (US/Canada/Mexico),15 MHz standard frequency/tones; AM/USB.
+18068000,18168000,Amateur 17 m,FCC (US/Canada/Mexico),WARC band; no contests.
+20000000,20005000,WWV/WWVH Time Signal,FCC (US/Canada/Mexico),20 MHz standard frequency/tones; AM/USB.
+21000000,21450000,Amateur 15 m,FCC (US/Canada/Mexico),Wide mix CW/SSB/digital.
+24890000,24990000,Amateur 12 m,FCC (US/Canada/Mexico),WARC band; no contests.
+26965000,27405000,"CB (Citizens Band, 11 m)",FCC (US/Canada/Mexico),40 channels AM/SSB; FCC Part 95.
+27120000,27130000,ISM / Industrial-Scientific-Medical,FCC (US/Canada/Mexico),"RC control, ISM; often high noise."
+28000000,29700000,Amateur 10 m,FCC (US/Canada/Mexico),Includes FM sub-band near 29.6 MHz.
+29600000,29700000,Amateur 10 m FM Call/Repeater,FCC (US/Canada/Mexico),29.600 FM simplex; repeaters 29.62–29.7 MHz.
+30000000,50000000,VHF Low LMR,FCC (US/Canada/Mexico),Public safety/industrial/business; wide area skip during sporadic-E.
+50000000,54000000,Amateur 6 m,FCC (US/Canada/Mexico),The 'magic band'; FM calling 52.525 MHz.
+54000000,72000000,TV (legacy VHF Ch 2–4),FCC (US/Canada/Mexico),Now largely repurposed in US; some fixed/land‑mobile uses remain.
+72000000,76000000,Telemetry/Remote Control,FCC (US/Canada/Mexico),"Model control, telemetry sub-bands; narrowband users."
+76000000,88000000,VHF allocations (various),FCC (US/Canada/Mexico),"Includes TV sound (legacy), land mobile, and special allocations."
+88100000,107900000,FM Broadcast (Band II),FCC (US),US FM broadcast; 200 kHz channels; 88.1–91.9 MHz reserved (NCE).
+108000000,117975000,"VHF NAV (ILS Localizer, VOR)",FCC (US/Canada/Mexico),AM/DSB; navigation aids.
+118000000,136975000,Airband COM (AM),FCC (US/Canada/Mexico),8.33/25 kHz channels; civil ATC/air‑air.
+137000000,138000000,Meteorological-Satellite (NOAA APT/HRPT),FCC (US/Canada/Mexico),137 MHz weather satellites downlinks.
+137000000,144000000,Space Operations & Data,FCC (US/Canada/Mexico),"Sat downlinks, telemetry; cubesats."
+144000000,148000000,Amateur 2 m,FCC (US/Canada/Mexico),FM calling 146.520; repeaters widely used.
+150800000,162000000,VHF High LMR (Part 90),FCC (US/Canada/Mexico),"Public safety/industrial/business, paging."
+151820000,151840000,MURS Ch 1,FCC (US),"Licensed-by-rule, 2 W max; 11.25 kHz/20 kHz depending on channel."
+151880000,151900000,MURS Ch 2,FCC (US),Licensed-by-rule.
+151940000,151960000,MURS Ch 3,FCC (US),Licensed-by-rule.
+154570000,154600000,MURS Ch 4/5,FCC (US),Also legacy itinerant business; check congestion.
+156000000,162025000,Marine VHF,FCC/NTIA (US Maritime),International marine channels; 156.8 MHz Ch 16 Distress/Calling.
+162025000,174000000,VHF High LMR/Marine/Telemetry,FCC (US/Canada/Mexico),"Public safety, federal, railroad (160–162), marine duplex."
+162400000,162550000,NOAA Weather Radio,NOAA (US),WX broadcast (AM/FM narrowband) on 7 channels.
+174000000,216000000,VHF TV (Ch 7–13),FCC (US/Canada/Mexico),DTV; also wireless mics/aux in adjacent spaces.
+216000000,220000000,Telemetry & LMS,FCC (US/Canada/Mexico),"Automated meter reading, telemetry."
+222000000,225000000,Amateur 1.25 m,FCC (US/Canada/Mexico),US-only primary amateur band (not in EU).
+225000000,400000000,Military Airband (AM),FCC (US/Canada/Mexico),"UHF MilAir; air refueling, ATC, TACAN."
+328600000,335400000,ILS Glide Slope,FCC (US/Canada/Mexico),Glide slope paired with LOC; within UHF milair region.
+380000000,400000000,Federal LMR (P25) / UHF Satcom,FCC (US/Canada/Mexico),380–400 often federal trunked systems; 243.0 MHz guard (AM) in VHF/UHF mil airbands.
+406000000,420000000,Federal LMR (NTIA),FCC (US/Canada/Mexico),US federal agencies (P25 narrowband).
+420000000,450000000,Amateur 70 cm (shared),FCC (US/Canada/Mexico),420–430/440–450 amateur; 430–440 mostly not available in US due to federal/ISM constraints (varies by area).
+450000000,470000000,UHF LMR (Part 90),FCC (US/Canada/Mexico),Business/industrial/public safety; analog and P25/NXDN/DMR.
+462550000,462725000,GMRS Main (8 channels),FCC (US),25 kHz channels; repeater outputs; also shared with FRS on some channels.
+462562500,462725000,FRS/GMRS Shared (Ch 1–22 subset),FCC (US),2 W/0.5 W limits per channel; see Part 95E/95B.
+467550000,467725000,GMRS Repeater Inputs,FCC (US),Paired inputs to 462.55–462.725 MHz outputs.
+470000000,608000000,UHF TV (Ch 14–36),FCC (US),Post‑repack US DTV allocation.
+608000000,614000000,TV Ch 37 (Radio Astronomy/WMTS),FCC (US),No broadcast; Wireless Medical Telemetry Service share.
+614000000,698000000,600 MHz (Wireless/TV remnants),FCC (US),Mostly 3GPP Band 71 downlink/uplink; remaining LPTV in portions.
+617000000,652000000,3GPP Band 71 DL,FCC (US),T‑Mobile 600 MHz downlink range.
+663000000,698000000,3GPP Band 71 UL,FCC (US),T‑Mobile 600 MHz uplink range.
+698000000,806000000,700 MHz (Public Safety & LTE),FCC (US),FirstNet Band 14 DL 758–768 / UL 788–798; other LTE bands and public safety narrowband.
+806000000,824000000,800 MHz SMR/PS (uplink),FCC (US),"Trunked systems, rebanded layouts vary by region."
+824000000,849000000,Cellular 850 (Band 5/26) UL,FCC (US),Legacy AMPS/IS‑95 replaced by LTE/NR; uplink.
+851000000,869000000,800 MHz SMR/PS (downlink),FCC (US),NPSPAC 851–854; public safety trunking.
+869000000,894000000,Cellular 850 (Band 5/26) DL,FCC (US),Downlink.
+902000000,928000000,ISM + Amateur 33 cm,FCC (US),"Unlicensed ISM, LoRa/FSK, FHSS, Part 15; secondary amateur allocation."
+928000000,960000000,900 MHz Narrowband,FCC (US),"Utilities, MAS, 900 MHz trunked systems."
+960000000,1215000000,Aeronautical Radionavigation,FAA/NTIA (US),DME/TACAN; ADS‑B/SSR at 1090 MHz within band.
+1030000000,1030099999,Secondary Surveillance (Interrogation),FAA (US),1030 MHz ATC radar interrogations.
+1090000000,1090100000,ADS‑B / Mode S (Reply),FAA (US),1090 MHz extended squitter.
+1176450000,1176460000,GPS L5,GNSS (Global),Space-to-Earth navigation signal.
+1227600000,1227610000,GPS L2,GNSS (Global),Military/civil signal component.
+1240000000,1300000000,Amateur 23 cm (shared),FCC (US/Canada/Mexico),Co-primary/secondary with radiolocation; interference concerns with GNSS near 1240–1300.
+1427000000,1432000000,WMTS / Telemetry,FCC (US/Canada/Mexico),Wireless Medical Telemetry Service & utility telemetry.
+1525000000,1559000000,MSS Downlink (Inmarsat),FCC/NTIA (US),Mobile satellite downlinks (L‑band).
+1559000000,1610000000,GNSS L1/E1 band,GNSS (Global),GPS L1 1575.42 MHz; other GNSS signals.
+1610000000,1626500000,MSS (Iridium/Globalstar),FCC/NTIA (US),Mobile satellite services (uplinks/downlinks).
+1626500000,1660500000,MSS Uplink (Inmarsat),FCC/NTIA (US),Mobile satellite uplinks (L‑band).
+1700000000,1710000000,Broadcast Auxiliary / Part 74,FCC (US),TV BAS/ENG links and STL in some areas.
+1710000000,1780000000,AWS Uplink (3GPP B4/B66/B70 parts),FCC (US),1710–1755 (AWS‑1/3) + 1755–1780 (AWS‑3) uplink.
+1850000000,1910000000,PCS Uplink (3GPP Band 2/25),FCC (US),PCS/AWS uplink.
+1930000000,1990000000,PCS Downlink (3GPP Band 2/25),FCC (US),Downlink.
+2110000000,2200000000,AWS/UMTS Downlink (3GPP B1/B4/B66 parts),FCC (US),2110–2155 AWS‑1/3 + extensions.
+2305000000,2320000000,WCS (Downlink),FCC (US),Wireless Communications Service; adjacent to SiriusXM.
+2345000000,2360000000,WCS (Uplink),FCC (US),Wireless Communications Service.
+2360000000,2390000000,Amateur/Med Telemetry (shared),FCC (US),Part 97/Part 95E/Part 90 allocations vary; check locality.
+2400000000,2483500000,ISM 2.4 GHz + Amateur 13 cm,FCC (US),Wi‑Fi/Bluetooth/Zigbee; amateur secondary 2390–2450 & 2400–2450.
+2483500000,2495000000,MSS Downlink (Globalstar),FCC (US),Often audible as sat downlinks.
+2496000000,2690000000,2.5 GHz (BRS/EBS / 3GPP n41),FCC (US),TD‑LTE/NR (Sprint/T‑Mobile) Band 41.
+3100000000,3550000000,Radiolocation (3.1–3.55 GHz),NTIA (US),Ship/airborne radars; DoD primary (coastal audible).
+3550000000,3700000000,CBRS (3GPP Band 48 / n48),FCC (US),General Authorized Access + Priority Access tiers.
+3700000000,3980000000,C‑Band 5G Downlink (n77/n78 parts),FCC (US),Reassigned satellite downlink spectrum for 5G.
+4200000000,4400000000,Radio Altimeter,FAA/NTIA (US),Aeronautical radar altimeters; sensitive to adjacent emissions.
+4940000000,4990000000,Public Safety 4.9 GHz,FCC (US),Fixed/portable links; policies vary by state.
+5150000000,5350000000,U‑NII‑1/2A (Wi‑Fi 5),FCC (US),Indoor/DFS bands; 802.11a/n/ac.
+5470000000,5725000000,U‑NII‑2C (Wi‑Fi 5),FCC (US),DFS required.
+5725000000,5850000000,ISM 5.8 GHz / U‑NII‑3/4,FCC (US),"Unlicensed point‑to‑point, Wi‑Fi, amateur 9‑cm overlap."
+5925000000,7125000000,U‑NII‑5/6/7/8 (Wi‑Fi 6E),FCC (US),6 GHz unlicensed low‑power/standard‑power with AFC.
