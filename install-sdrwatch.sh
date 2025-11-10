@@ -1,4 +1,6 @@
-#!/usr/bin/env bash
+#!/usr/bin/env -S bash
+# NOTE: Save this file with LF line endings. If you see 'bash\r' errors run:
+#       sed -i 's/\r$//' install-sdrwatch.sh
 # install-sdrwatch.sh — One‑shot installer for SDRwatch (Pi 4/5, Raspberry Pi OS 64‑bit / Debian 13 "Trixie")
 #
 # What this does
@@ -17,6 +19,8 @@ set -Eeuo pipefail
 # Config (override via env before running)
 # -----------------------------
 PROJECT_DIR=${PROJECT_DIR:-"$PWD"}
+# Normalize to absolute path for systemd unit directives
+PROJECT_DIR=$(cd "$PROJECT_DIR" && pwd -P)
 VENV_DIR="${PROJECT_DIR}/.venv"
 PYTHON_BIN="${VENV_DIR}/bin/python3"
 PIP_BIN="${VENV_DIR}/bin/pip"
@@ -76,6 +80,24 @@ prompt_yn(){
 require sudo
 require python3
 
+# Detect SoapySDR core library package (versioned name varies by repo)
+SOAPY_CORE_PKG=""
+for candidate in libsoapysdr0.10 libsoapysdr0.9 libsoapysdr; do
+  if apt-cache show "$candidate" >/dev/null 2>&1; then
+    SOAPY_CORE_PKG="$candidate"
+    break
+  fi
+done
+SOAPY_DEV_PKG=""
+if apt-cache show libsoapysdr-dev >/dev/null 2>&1; then
+  SOAPY_DEV_PKG="libsoapysdr-dev"
+fi
+if [[ -z "$SOAPY_CORE_PKG" ]]; then
+  log "WARNING: No versioned libsoapysdr package found (will rely on python3-soapysdr pulling it or existing install)."
+else
+  log "Detected SoapySDR core package: $SOAPY_CORE_PKG"
+fi
+
 log "Updating APT and installing system packages (Trixie)…"
 sudo apt update
 sudo apt install -y \
@@ -83,11 +105,11 @@ sudo apt install -y \
   libusb-1.0-0 libusb-1.0-0-dev \
   python3-venv python3-dev \
   python3-numpy python3-scipy \
-  python3-soapysdr libsoapysdr0.9 libsoapysdr-dev \
+  python3-soapysdr $SOAPY_CORE_PKG $SOAPY_DEV_PKG \
   librtlsdr0 librtlsdr-dev rtl-sdr \
   soapysdr-module-rtlsdr soapysdr-module-hackrf \
   soapysdr-tools \
-  hackrf
+  hackrf || die "APT install failed (see above)."
 
 # -----------------------------
 # Verify / (optional) build rtl-sdr if broken
@@ -270,8 +292,8 @@ ProtectHome=true
 [Install]
 WantedBy=multi-user.target
 UNIT
-  # Substitute runtime values
-  sudo sed -i "s/SRV_USER/$SRV_USER/g; s/SRV_GROUP/$SRV_GROUP/g; s|/etc/sdrwatch.env|$ENV_FILE|g" "$UNIT_CTL"
+  # Substitute runtime values (make absolute paths literal)
+  sudo sed -i "s/SRV_USER/$SRV_USER/g; s/SRV_GROUP/$SRV_GROUP/g; s|/etc/sdrwatch.env|$ENV_FILE|g; s|\${SDRWATCH_PROJECT_DIR}|$PROJECT_DIR|g" "$UNIT_CTL"
 
   # Web unit
   log "Writing systemd unit: $UNIT_WEB"
@@ -309,7 +331,7 @@ ProtectHome=true
 [Install]
 WantedBy=multi-user.target
 UNIT
-  sudo sed -i "s/SRV_USER/$SRV_USER/g; s/SRV_GROUP/$SRV_GROUP/g; s|/etc/sdrwatch.env|$ENV_FILE|g" "$UNIT_WEB"
+  sudo sed -i "s/SRV_USER/$SRV_USER/g; s/SRV_GROUP/$SRV_GROUP/g; s|/etc/sdrwatch.env|$ENV_FILE|g; s|\${SDRWATCH_PROJECT_DIR}|$PROJECT_DIR|g" "$UNIT_WEB"
 
   log "Reloading systemd and enabling services…"
   sudo systemctl daemon-reload
