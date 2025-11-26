@@ -229,6 +229,7 @@ def create_app(db_path: str) -> Flask:
     app._db_path = db_path
     app._ctl = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
     app._current_job = None
+    app._last_logs = ""
 
     def con(): return app._con
 
@@ -444,13 +445,16 @@ def create_app(db_path: str) -> Flask:
     @app.get('/api/logs')
     def api_logs():
         job_id = app._current_job
-        if not job_id:
-            return Response("", mimetype='text/plain')
-        try:
-            txt = app._ctl.job_logs(job_id, tail=500)
-            return Response(txt, mimetype='text/plain')
-        except Exception:
-            return Response("", mimetype='text/plain')
+        if job_id:
+            try:
+                txt = app._ctl.job_logs(job_id, tail=500)
+                app._last_logs = txt or app._last_logs
+                return Response(app._last_logs, mimetype='text/plain')
+            except Exception:
+                # fall through to cached logs
+                pass
+        # If no active job or fetch failed, return cached logs (persistent)
+        return Response(app._last_logs or "", mimetype='text/plain')
 
     return app
 

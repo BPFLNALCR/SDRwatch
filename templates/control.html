@@ -243,7 +243,15 @@ poll();
 // Logs
 const log = document.getElementById('log');
 async function pollLogs(){
-  try{ const r = await fetch('/api/logs'); if(r.ok){ const t = await r.text(); log.textContent = t; log.scrollTop = log.scrollHeight; } }catch(e){}
+  try{
+    const r = await fetch('/api/logs');
+    if(r.ok){
+      const t = await r.text();
+      // Do not clear if backend returns empty; keep persistent logs
+      if (t && t.length > 0) { log.textContent = t; }
+      log.scrollTop = log.scrollHeight;
+    }
+  }catch(e){}
   setTimeout(pollLogs, 1000);
 }
 pollLogs();
