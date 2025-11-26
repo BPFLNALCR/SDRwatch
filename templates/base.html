@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>SDRwatch</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
   <style>
     .stat { border-radius: 1rem; padding: 1rem; background: #0f172a; color: #e2e8f0 }
     .card { border-radius: 1rem; padding: 1rem; background: rgba(255,255,255,.05); color: #e2e8f0; border: 1px solid rgba(255,255,255,.1) }
@@ -17,6 +18,12 @@
     .table { width:100%; font-size:.9rem }
     .th,.td { padding:.5rem .75rem; text-align:left; border-bottom:1px solid rgba(255,255,255,.1) }
     .bar { background:#0ea5e9; }
+    .bar-scan { background:#22c55e; opacity:.8 }
+    .bar-snr { background:#f97316; opacity:.85 }
+    .timeline-det { width:10px; }
+    .timeline-scan { width:8px; }
+    .timeline-snr { width:6px; }
+    .snr-bar { width:16px; }
     .muted { color:#94a3b8 }
     .pill { padding:.125rem .5rem; border-radius:999px; font-size:.75rem }
     .pill.idle { background:#334155; color:#e2e8f0 }
@@ -34,6 +41,10 @@
     @media (min-width: 768px){ .subgrid{ grid-template-columns:repeat(4,minmax(0,1fr)); } }
     .section-title{ font-size:.9rem; font-weight:600; margin:.25rem 0 .25rem; color:#e2e8f0 }
     .hint{ font-size:.7rem; color:#94a3b8 }
+    .heat-cell { border-radius:.25rem; transition:opacity .2s ease-in-out; }
+    .heat-cell:hover { outline:1px solid rgba(255,255,255,.35); }
+    .htmx-indicator { display:none; align-items:center; gap:.35rem; font-size:.75rem; color:#bae6fd; }
+    .htmx-request .htmx-indicator { display:inline-flex; }
   </style>
   {% block head %}{% endblock %}
 </head>

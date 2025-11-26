@@ -1,0 +1,275 @@
+<div class="space-y-6">
+  <form id="dashboard-filter" class="card space-y-4" method="get" hx-get="/" hx-target="#dashboard-shell" hx-trigger="change delay:400ms, submit" hx-push-url="true" hx-indicator="#dashboard-loading">
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
+      <div class="field">
+        <label for="filter-service">Service</label>
+        <select id="filter-service" name="service" class="input">
+          <option value="">Any</option>
+          {% for svc in services %}
+            <option value="{{ svc }}" {% if form_defaults.service == svc %}selected{% endif %}>{{ svc }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="filter-min-snr">Min SNR (dB)</label>
+        <input id="filter-min-snr" class="input" type="number" step="0.1" name="min_snr" value="{{ form_defaults.min_snr }}" placeholder="e.g. 10" />
+      </div>
+      <div class="field">
+        <label for="filter-fmin">Min freq (MHz)</label>
+        <input id="filter-fmin" class="input" type="number" step="0.1" name="f_min_mhz" value="{{ form_defaults.f_min_mhz }}" placeholder="Start" />
+      </div>
+      <div class="field">
+        <label for="filter-fmax">Max freq (MHz)</label>
+        <input id="filter-fmax" class="input" type="number" step="0.1" name="f_max_mhz" value="{{ form_defaults.f_max_mhz }}" placeholder="Stop" />
+      </div>
+      <div class="field">
+        <label for="filter-since">Lookback (hours)</label>
+        <input id="filter-since" class="input" type="number" step="1" min="1" name="since_hours" value="{{ form_defaults.since_hours }}" placeholder="168" />
+      </div>
+      <div class="field">
+        <label for="filter-snr-bucket">SNR bucket (dB)</label>
+        <input id="filter-snr-bucket" class="input" type="number" step="1" min="1" name="snr_bucket_db" value="{{ snr_bucket_db }}" />
+      </div>
+      <div class="field">
+        <label for="filter-heatmap-scans">Heatmap scans</label>
+        <input id="filter-heatmap-scans" class="input" type="number" step="1" min="5" name="heatmap_scans" value="{{ heatmap_settings.scans }}" />
+      </div>
+      <div class="field">
+        <label for="filter-heatmap-bins">Heatmap bins</label>
+        <input id="filter-heatmap-bins" class="input" type="number" step="1" min="12" name="heatmap_bins" value="{{ heatmap_settings.bins }}" />
+      </div>
+    </div>
+    <div class="flex flex-wrap items-center gap-3">
+      <div id="dashboard-loading" class="htmx-indicator">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v3m0 12v3m9-9h-3M6 12H3m15.364-6.364l-2.121 2.121M8.757 15.243l-2.121 2.121m0-12.728l2.121 2.121m8.486 8.486l2.121 2.121" />
+        </svg>
+        <span>Refreshing…</span>
+      </div>
+      <div class="flex items-center gap-2 ml-auto">
+        <button type="submit" class="btn">Apply</button>
+        <a class="btn red" href="/">Reset</a>
+      </div>
+    </div>
+  </form>
+
+  <div class="flex flex-wrap gap-2 text-xs">
+    <span class="muted">Filters:</span>
+    {% if active_filters %}
+      {% for f in active_filters %}
+        <span class="chip">{{ f.label }}: {{ f.value }}</span>
+      {% endfor %}
+    {% else %}
+      <span class="chip">Default view</span>
+    {% endif %}
+  </div>
+
+  <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+    <div class="stat">
+      <div class="text-xs uppercase muted">Scans (total)</div>
+      <div class="text-2xl font-semibold">{{ scans_total }}</div>
+    </div>
+    <div class="stat">
+      <div class="text-xs uppercase muted">Detections (total)</div>
+      <div class="text-2xl font-semibold">{{ detections_total }}</div>
+    </div>
+    <div class="stat">
+      <div class="text-xs uppercase muted">Detections (filtered)</div>
+      <div class="text-2xl font-semibold">{{ filtered_detections }}</div>
+      {% if detections_total %}
+        <div class="text-xs muted mt-1">{{ '%.1f' % ((filtered_detections / detections_total) * 100) }}% of total</div>
+      {% endif %}
+    </div>
+    <div class="stat">
+      <div class="text-xs uppercase muted">Baseline bins</div>
+      <div class="text-2xl font-semibold">{{ baseline_total }}</div>
+    </div>
+    <div class="stat">
+      <div class="text-xs uppercase muted">Latest scan</div>
+      {% if latest %}
+        <div class="text-sm">
+          ID {{ latest.id }}<br />
+          {{ format_ts_label(latest.t_start_utc) }} → {{ format_ts_label(latest.t_end_utc) }}<br />
+          {{ (latest.f_start_hz/1e6)|round(3) }}–{{ (latest.f_stop_hz/1e6)|round(3) }} MHz
+          {% if latest.latitude is not none and latest.longitude is not none %}<br /><span class="muted">{{ '%.4f'|format(latest.latitude) }}, {{ '%.4f'|format(latest.longitude) }}</span>{% endif %}
+        </div>
+      {% else %}
+        <div class="text-sm">No scans</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+    <div class="card xl:col-span-2">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-lg font-semibold">Activity timeline</h2>
+        <div class="text-xs muted">{{ 'Hourly buckets' if timeline.bucket_hours == 1 else 'Daily buckets' }}</div>
+      </div>
+          {% if timeline.buckets %}
+            <div class="flex items-end gap-2" {{ timeline.style_attr | safe }}>
+              {% for b in timeline.buckets %}
+                <div class="flex flex-col items-center gap-1" title="{{ b.detections }} detections, {{ b.scans }} scans{% if b.max_snr is not none %}, max SNR {{ '%.1f' % b.max_snr }} dB{% endif %}">
+                  <div class="flex items-end gap-1">
+                    <div class="bar timeline-det rounded-t" {{ b.det_style_attr | safe }}></div>
+                    <div class="bar-scan timeline-scan rounded-t" {{ b.scan_style_attr | safe }}></div>
+                    <div class="bar-snr timeline-snr rounded-t" {{ b.snr_style_attr | safe }}></div>
+                  </div>
+                  <div class="text-[10px] muted">{{ b.detections }}d · {{ b.scans }}s{% if b.max_snr is not none %} · {{ '%.1f' % b.max_snr }} dB{% endif %}</div>
+                  <div class="text-[10px] muted rotate-45 origin-top-left -mt-1">{{ b.label }}</div>
+                </div>
+              {% endfor %}
+            </div>
+        <div class="text-[11px] muted mt-2">Legend: blue = detections, green = scans, orange = strongest SNR.</div>
+      {% else %}
+        <div class="text-sm muted">No activity in range.</div>
+      {% endif %}
+    </div>
+    <div class="card">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-lg font-semibold">Top services</h2>
+        <a href="/detections" class="underline text-xs">Browse detections »</a>
+      </div>
+      <ul class="space-y-1 text-sm">
+        {% for s in top_services %}
+          <li class="flex items-center justify-between"><span class="chip">{{ s.service }}</span><span class="text-slate-300">{{ s.count }}</span></li>
+        {% else %}
+          <li class="text-slate-400">No data in range.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+    <div class="card xl:col-span-2">
+      <div class="flex items-center justify-between mb-2"><h2 class="text-lg font-semibold">SNR distribution</h2><span class="text-xs muted">Bucket {{ snr_bucket_db }} dB</span></div>
+      {% if snr_stats and snr_hist %}
+        <div class="text-xs muted mb-2 flex flex-wrap gap-4">
+          <div><span class="muted">Count:</span> {{ snr_stats.count }}</div>
+          <div><span class="muted">Median:</span> {{ '%.1f' % snr_stats.p50 }} dB</div>
+          <div><span class="muted">p90:</span> {{ '%.1f' % snr_stats.p90 }} dB</div>
+          <div><span class="muted">Max:</span> {{ '%.1f' % snr_stats.p100 }} dB</div>
+        </div>
+        <div class="flex gap-1 items-end" {{ chart_style_attr | safe }}>
+          {% for b in snr_hist %}
+            <div class="flex flex-col items-center" title="{{ b.count }} detections">
+              <div class="bar snr-bar rounded-t" {{ b.style_attr | safe }}></div>
+              <div class="text-[10px] muted rotate-45 origin-top-left -mt-1">{{ b.label }}</div>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="text-sm muted">No SNR data for the current filters.</div>
+      {% endif %}
+    </div>
+    <div class="card">
+      <div class="flex items-center justify-between mb-2"><h2 class="text-lg font-semibold">Strongest signals</h2><a class="underline text-xs" href="/detections?min_snr=10">filter ≥10 dB »</a></div>
+      <table class="table text-xs">
+        <thead><tr class="text-slate-400"><th class="th">MHz</th><th class="th">SNR</th><th class="th">Service</th></tr></thead>
+        <tbody>
+          {% for r in strongest %}
+            <tr class="hover:bg-white/5"><td class="td">{{ (r.f_center_hz/1e6)|round(6) }}</td><td class="td">{{ '%.1f' % r.snr_db }}</td><td class="td"><span class="chip">{{ r.service or 'Unknown' }}</span></td></tr>
+          {% else %}
+            <tr><td class="td" colspan="3">No detections.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+    <div class="card">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-lg font-semibold">Detections by frequency (latest scan)</h2>
+        {% if latest %}<div class="text-xs muted">{{ (latest.f_start_hz/1e6)|round(3) }}–{{ (latest.f_stop_hz/1e6)|round(3) }} MHz</div>{% endif %}
+      </div>
+      {% if freq_bins and freq_bins | length > 0 %}
+        <div class="flex items-end gap-3">
+          <div class="yaxis" {{ chart_style_attr | safe }}>
+            <div class="tick" style="top:-6px">{{ freq_max }}</div>
+            <div class="tick" style="top: calc(50% - 6px);">{{ (freq_max/2)|int }}</div>
+            <div class="tick" style="bottom:-6px">0</div>
+          </div>
+          <div class="ygrid w-full" {{ chart_style_attr | safe }}>
+            <div class="mid"></div>
+            <div class="flex gap-[2px] items-end h-full">
+              {% for b in freq_bins %}
+                <div class="flex flex-col items-center" title="{{ '%.3f' % b.mhz_start }}–{{ '%.3f' % b.mhz_end }} MHz: {{ b.count }}">
+                  <div class="w-3 bar rounded-t" {{ b.style_attr | safe }}></div>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      {% else %}
+        <div class="text-sm muted">No detections for the current filters.</div>
+      {% endif %}
+    </div>
+    <div class="card">
+      <div class="flex items-center justify-between mb-2"><h2 class="text-lg font-semibold">Detections by frequency (avg)</h2>
+        {% if avg_bins and avg_bins|length>0 %}<div class="text-xs muted">{{ '%.3f' % avg_start_mhz }}–{{ '%.3f' % avg_stop_mhz }} MHz • bins={{ avg_bins|length }}</div>{% endif %}
+      </div>
+      {% if avg_bins and avg_bins | length > 0 %}
+        <div class="flex items-end gap-3">
+          <div class="yaxis" {{ chart_style_attr | safe }}>
+            <div class="tick" style="top:-6px">{{ (avg_max)|round(1) }}</div>
+            <div class="tick" style="top: calc(50% - 6px);">{{ (avg_max/2)|round(1) }}</div>
+            <div class="tick" style="bottom:-6px">0</div>
+          </div>
+          <div class="ygrid w-full" {{ chart_style_attr | safe }}>
+            <div class="mid"></div>
+            <div class="flex gap-[2px] items-end h-full">
+              {% for b in avg_bins %}
+                <div class="flex flex-col items-center" title="{{ '%.3f' % b.mhz_start }}–{{ '%.3f' % b.mhz_end }} MHz: avg {{ '%.2f' % b.count }} ({{ b.coverage }} scans)">
+                  <div class="w-3 bar rounded-t" {{ b.style_attr | safe }}></div>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      {% else %}
+        <div class="text-sm muted">Not enough data for the average across scans.</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="text-lg font-semibold">Coverage heatmap</h2>
+      {% if heatmap.f_start_mhz is not none %}
+        <div class="text-xs muted">{{ '%.2f' % heatmap.f_start_mhz }}–{{ '%.2f' % heatmap.f_stop_mhz }} MHz • {{ heatmap.bin_labels|length }} bins{% if heatmap.bin_width_mhz %} • {{ '%.1f' % (heatmap.bin_width_mhz * 1000) }} kHz/bin{% endif %}</div>
+      {% endif %}
+    </div>
+    {% if heatmap.rows %}
+      <div class="overflow-x-auto"><div class="min-w-full">
+        <table class="text-xs">
+          <thead>
+            <tr>
+              <th class="text-left py-1 pr-2 sticky left-0 bg-slate-950">Scan</th>
+              {% for lbl in heatmap.bin_labels %}
+                <th class="px-1 py-1 text-center">{{ lbl }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in heatmap.rows %}
+              <tr>
+                <td class="py-1 pr-2 align-top sticky left-0 bg-slate-950/90">
+                  <div>{{ row.label }}</div>
+                  {% if row.coords %}<div class="muted text-[11px]">{{ row.coords }}</div>{% endif %}
+                </td>
+                {% for cell in row.cells %}
+                  <td class="px-0.5 py-0.5">
+                    <div class="heat-cell" {{ cell.style_attr | safe }} title="{{ cell.count }} detections"></div>
+                  </td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div></div>
+      <div class="text-[11px] muted mt-2">Cell intensity shows relative detection counts per scan and frequency bin.</div>
+    {% else %}
+      <div class="text-sm muted">Heatmap not available for the current filters.</div>
+    {% endif %}
+  </section>
+</div>

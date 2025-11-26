@@ -412,6 +412,8 @@ class JobManager:
             "avg": "--avg",
             "threshold_db": "--threshold-db",
             "sleep_between_sweeps": "--sleep-between-sweeps",
+            "latitude": "--latitude",
+            "longitude": "--longitude",
         }
         for k, flag in mapping_num.items():
             v = args.get(k)
@@ -585,6 +587,8 @@ def cmd_start(args: argparse.Namespace) -> int:
         "db": args.db,
         "duration": args.duration,
         "use_baseline": args.use_baseline,
+        "latitude": args.latitude,
+        "longitude": args.longitude,
     }
     params.update(parse_kv_pairs(args.param))
     if args.extra:
@@ -677,6 +681,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     s.add_argument("--bandplan", type=str, help="Path to bandplan CSV")
     s.add_argument("--db", type=str, help="Path to SQLite DB")
     s.add_argument("--use-baseline", action="store_true", help="Enable baseline subtraction if supported")
+    s.add_argument("--latitude", type=float, help="Latitude in decimal degrees to tag scans")
+    s.add_argument("--longitude", type=float, help="Longitude in decimal degrees to tag scans")
 
     s.add_argument("--param", action="append", default=[], help="Extra k=v args to pass through (coerces numbers/bools)")
     s.add_argument("--extra", nargs=argparse.REMAINDER, help="Raw extra args appended after '--' to sdrwatch.py")

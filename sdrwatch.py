@@ -182,8 +182,8 @@ class Store:
               samp_rate   INTEGER,
               fft         INTEGER,
               avg         INTEGER,
-              device      TEXT,
-              driver      TEXT
+                            device      TEXT,
+                            driver      TEXT,
             )
             """
         )
@@ -217,6 +217,9 @@ class Store:
             """
         )
         self.con.commit()
+        # Backfill new nullable columns when upgrading existing deployments
+        self._ensure_column("scans", "latitude", "latitude REAL")
+        self._ensure_column("scans", "longitude", "longitude REAL")
 
     # Transaction helpers
     def begin(self):
@@ -225,12 +228,19 @@ class Store:
     def commit(self):
         self.con.commit()
 
+    def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        cur = self.con.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in cur.fetchall()}
+        if column not in existing:
+            self.con.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+            self.con.commit()
+
     def start_scan(self, meta: dict) -> int:
         cur = self.con.cursor()
         cur.execute(
             """
-            INSERT INTO scans(t_start_utc, t_end_utc, f_start_hz, f_stop_hz, step_hz, samp_rate, fft, avg, device, driver)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO scans(t_start_utc, t_end_utc, f_start_hz, f_stop_hz, step_hz, samp_rate, fft, avg, device, driver, latitude, longitude)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 meta.get("t_start_utc"),
@@ -243,6 +253,8 @@ class Store:
                 meta.get("avg"),
                 meta.get("device"),
                 meta.get("driver"),
+                meta.get("latitude"),
+                meta.get("longitude"),
             ),
         )
         self.con.commit()
@@ -646,6 +658,8 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
         avg=int(args.avg),
         device=str(getattr(src, 'dev', getattr(src, 'device', '')) if HAVE_SOAPY else getattr(src, 'device', '')),
         driver=args.driver,
+        latitude=args.latitude,
+        longitude=args.longitude,
     )
     scan_id = store.start_scan(meta)
 
@@ -871,6 +885,8 @@ def parse_args():
     p.add_argument("--jsonl", type=str, default=None, help="Emit detections as line-delimited JSON to this path")
     p.add_argument("--notify", action="store_true", help="Desktop notifications for new signals")
     p.add_argument("--new-ema-occ", type=float, default=0.02, help="EMA occupancy threshold to flag a bin as NEW")
+    p.add_argument("--latitude", type=float, default=None, help="Optional latitude in decimal degrees for this scan")
+    p.add_argument("--longitude", type=float, default=None, help="Optional longitude in decimal degrees for this scan")
 
     # Sweep control modes (mutually exclusive)
     group = p.add_mutually_exclusive_group()

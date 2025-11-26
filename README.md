@@ -40,6 +40,9 @@ At its current stage of development, SDR-Watch is:
   - 📈 Real-time graphs and histograms.
   - 🎛️ Control buttons for common scan presets (FM band, full sweep, etc.).
   - 👀 At-a-glance monitoring of activity and occupancy.
+  - 🕒 Trend timeline with hourly/daily buckets and strongest SNR snapshots.
+  - 🗺️ Frequency-coverage heatmap with optional LAT/LONG tagging per scan.
+  - 🎚️ Interactive filters for service, SNR, frequency span, and lookback windows.
 - **🔔 Alerts & Outputs**:
   - Desktop notifications (`notify-send`) for new detections.
   - JSONL stream for integration with Grafana, Loki, ELK.
@@ -88,6 +91,7 @@ python3 sdrwatch.py --start 88e6 --stop 108e6 --step 1.8e6 \
 Notes:
 - By default, the scanner runs a single full sweep and exits.
 - Use `--loop` for continuous sweeps, `--repeat N` for a fixed number of sweeps, or `--duration 10m` to run until the time elapses.
+- Tag scan metadata with `--latitude`/`--longitude` (decimal degrees) when location context matters; the values are stored in the `scans` table and surfaced in the dashboard + heatmap.
 
 Continuous monitoring across 30 MHz – 1.7 GHz:
 
