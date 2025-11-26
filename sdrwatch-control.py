@@ -376,22 +376,31 @@ class JobManager:
         """Translate a stable API dict into the concrete sdrwatch.py CLI."""
         cmd = [PYTHON_EXE, str(SDRWATCH_SCRIPT)]
         soapy_args_kv: Dict[str, Any] = {}
-        # Device mapping
+        # Respect explicit driver override from caller (e.g., 'rtlsdr_native')
+        explicit_driver = str(args.get("driver", "")).strip() if args.get("driver") is not None else ""
+
+        # Device mapping with override support
         if device_key.startswith("rtl:"):
-            cmd += ["--driver", "rtlsdr"]  # Soapy path
-            # Prefer serial; if not available, use index
-            idx = device_key.split(":", 1)[-1]
-            if args.get("__discover_meta") and args["__discover_meta"].get("serial"):
-                soapy_args_kv["serial"] = args["__discover_meta"]["serial"]
+            if explicit_driver == "rtlsdr_native":
+                cmd += ["--driver", "rtlsdr_native"]
+                # native path uses librtlsdr; no --soapy-args
+                soapy_args_kv = {}
             else:
-                soapy_args_kv["index"] = idx
+                cmd += ["--driver", explicit_driver or "rtlsdr"]  # default to Soapy rtlsdr
+                # Prefer serial; if not available, use index
+                idx = device_key.split(":", 1)[-1]
+                if args.get("__discover_meta") and args["__discover_meta"].get("serial"):
+                    soapy_args_kv["serial"] = args["__discover_meta"]["serial"]
+                else:
+                    soapy_args_kv["index"] = idx
         elif device_key.startswith("hackrf:"):
-            cmd += ["--driver", "hackrf"]
+            cmd += ["--driver", explicit_driver or "hackrf"]
             if args.get("__discover_meta") and args["__discover_meta"].get("serial"):
                 soapy_args_kv["serial"] = args["__discover_meta"]["serial"]
         else:
-            # Allow the caller to pass explicit --driver in args
-            pass
+            # Unknown key: fall back to caller-provided driver (if any)
+            if explicit_driver:
+                cmd += ["--driver", explicit_driver]
 
         # Numeric params
         mapping_num = {
