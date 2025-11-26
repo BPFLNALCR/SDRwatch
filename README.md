@@ -52,7 +52,7 @@ At its current stage of development, SDR-Watch is:
 Quick install with the included one-shot installer:
 
 ```bash
-git clone https://github.com/<yourrepo>/sdr-watch.git
+git clone https://github.com/SDRwatch/sdr-watch.git
 cd sdr-watch
 chmod +x install-sdrwatch.sh
 ./install-sdrwatch.sh
@@ -78,19 +78,23 @@ SDRWATCH_AUTO_YES=1 ./install-sdrwatch.sh
 
 ### Command Line
 
-Sweep the FM band once:
+Sweep the FM band once (default behavior):
 
 ```bash
 python3 sdrwatch.py --start 88e6 --stop 108e6 --step 1.8e6 \
-  --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr --gain auto --once
+  --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr --gain auto
 ```
+
+Notes:
+- By default, the scanner runs a single full sweep and exits.
+- Use `--loop` for continuous sweeps, `--repeat N` for a fixed number of sweeps, or `--duration 10m` to run until the time elapses.
 
 Continuous monitoring across 30 MHz – 1.7 GHz:
 
 ```bash
 python3 sdrwatch.py --start 30e6 --stop 1700e6 --step 2.4e6 \
   --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr \
-  --gain auto --notify --db sdrwatch.db --jsonl events.jsonl
+  --gain auto --loop --notify --db sdrwatch.db --jsonl events.jsonl
 ```
 
 ### Web Dashboard 🌐

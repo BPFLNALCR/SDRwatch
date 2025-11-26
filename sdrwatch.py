@@ -15,12 +15,13 @@ Hardware
 Any SoapySDR‑supported device (RTL‑SDR, HackRF, Airspy, SDRplay, LimeSDR, USRP...).
 Alternatively, a native RTL-SDR path via pyrtlsdr (librtlsdr) is available with --driver rtlsdr_native.
 
-Install (Debian)
-----------------
-# Core deps
-sudo apt update && sudo apt install -y python3-numpy python3-scipy python3-soapysdr libsoapysdr0.8 libsoapysdr-dev
-# Optional: native rtl-sdr path
-sudo apt install -y librtlsdr0 librtlsdr-dev && pip3 install pyrtlsdr
+Trixie notes
+------------
+- Python 3.12/3.13 compatible (no distutils; avoids deprecated numpy aliases; has
+  a robust sliding_window_view fallback).
+- Allows overriding TMPDIR via --tmpdir or environment to steer scratch I/O off
+  /tmp (which is tmpfs on Raspberry Pi OS Trixie).
+- Minor resilience around SoapySDR readStream return types.
 
 DB schema (SQLite)
 ------------------
@@ -30,9 +31,7 @@ DB schema (SQLite)
              service TEXT, region TEXT, notes TEXT)
 - baseline(bin_hz INT PK, ema_occ REAL, ema_power_db REAL, last_seen_utc TEXT, total_obs INT, hits INT)
 
-License
--------
-MIT (this file)
+License: MIT
 """
 
 import argparse
@@ -87,8 +86,7 @@ def db10(x: np.ndarray) -> np.ndarray:
 
 
 def robust_noise_floor_db(psd_db: np.ndarray) -> float:
-    """Robust noise floor estimate using median + 1.4826*MAD (approx std for Gaussian).
-    """
+    """Robust noise floor estimate using median + 1.4826*MAD (approx std for Gaussian)."""
     med = np.median(psd_db)
     mad = np.median(np.abs(psd_db - med))
     return float(med + 1.4826 * mad)
@@ -146,9 +144,9 @@ class Bandplan:
                         Band(
                             int(float(low)),
                             int(float(high)),
-                            row.get("service", "").strip(),
-                            row.get("region", "").strip(),
-                            row.get("notes", "").strip(),
+                            (row.get("service") or "").strip(),
+                            (row.get("region") or "").strip(),
+                            (row.get("notes") or "").strip(),
                         )
                     )
                 except Exception:
@@ -166,6 +164,7 @@ class Bandplan:
 
 class Store:
     def __init__(self, path: str):
+        # SQLite 3.44+ on Trixie — keep default isolation; WAL can be enabled via pragma if needed.
         self.con = sqlite3.connect(path)
         self._init()
 
@@ -326,7 +325,6 @@ class SDRSource:
             raise RuntimeError("SoapySDR not available")
         dev_args: Dict[str, str] = {"driver": driver}
         if soapy_args:
-            # Merge caller-provided selection hints (e.g., serial=..., index=...)
             dev_args.update({str(k): str(v) for k, v in soapy_args.items()})
         self.dev = SoapySDR.Device(dev_args)
         self.dev.setSampleRate(SOAPY_SDR_RX, 0, samp_rate)
@@ -344,16 +342,21 @@ class SDRSource:
         self.dev.setFrequency(SOAPY_SDR_RX, 0, center_hz)
 
     def read(self, count: int) -> np.ndarray:
-        buffs = []
+        buffs: List[np.ndarray] = []
         got = 0
         while got < count:
             sr = int(min(8192, count - got))
             buff = np.empty(sr, dtype=np.complex64)
             st = self.dev.readStream(self.stream, [buff], sr)
-            n = st.ret if hasattr(st, "ret") else st
-            if n > 0:
-                buffs.append(buff[:n])
-                got += n
+            # Soapy returns either an int or a structure with .ret
+            n = getattr(st, "ret", st)
+            if isinstance(n, tuple):
+                n = n[0]  # extreme edge cases
+            if isinstance(n, (list, np.ndarray)):
+                n = int(n[0])
+            if int(n) > 0:
+                buffs.append(buff[: int(n)])
+                got += int(n)
             else:
                 time.sleep(0.001)
         if not buffs:
@@ -409,6 +412,8 @@ def _sliding_window_view(x: np.ndarray, window: int) -> np.ndarray:
         if x.ndim != 1:
             raise ValueError("sliding window fallback only supports 1D arrays")
         shape = (x.size - window + 1, window)
+        if shape[0] <= 0:
+            return np.empty((0, window), dtype=x.dtype)
         strides = (x.strides[0], x.strides[0])
         return np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
 
@@ -488,12 +493,12 @@ def detect_segments(
     segs: List[Segment] = []
     i = 0
     while i < N:
-        if above[i]:
+        if bool(above[i]):
             start_i = i
             j = i + 1
             gap = 0
-            while j < N and (above[j] or gap < guard_bins):
-                if above[j]:
+            while j < N and (bool(above[j]) or gap < guard_bins):
+                if bool(above[j]):
                     gap = 0
                 else:
                     gap += 1
@@ -547,7 +552,7 @@ def compute_psd_db(samples: np.ndarray, samp_rate: float, fft_size: int, avg: in
     else:
         # Simple averaged periodogram
         seg = fft_size
-        windows = []
+        windows: List[np.ndarray] = []
         for i in range(avg):
             start = i * seg
             x = samples[start : start + seg]
@@ -715,6 +720,10 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
 
 
 def run(args):
+    # Optional TMPDIR override (steer off tmpfs /tmp on Trixie)
+    if args.tmpdir:
+        os.environ["TMPDIR"] = args.tmpdir
+
     bandplan = Bandplan(args.bandplan)
     store = Store(args.db)
 
@@ -826,6 +835,9 @@ def parse_args():
     group.add_argument("--duration", type=str, help="Run sweeps for a duration (e.g., '300', '10m', '2h'). Overrides --repeat count while time remains")
 
     p.add_argument("--sleep-between-sweeps", type=float, default=0.0, help="Seconds to sleep between sweep cycles")
+
+    # Trixie scratch steering
+    p.add_argument("--tmpdir", type=str, default=os.environ.get("TMPDIR", None), help="Scratch directory for temp files (defaults to $TMPDIR)")
 
     args = p.parse_args()
     # Backend availability check: only require Soapy if not using rtlsdr_native
