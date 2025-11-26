@@ -11,7 +11,9 @@
     .chip { display:inline-flex; align-items:center; padding:.125rem .5rem; border-radius:999px; font-size:.75rem; background: rgba(255,255,255,.1) }
     .btn { display:inline-flex; gap:.5rem; align-items:center; padding:.5rem .75rem; border-radius:.75rem; background:#0284c7; color:white }
     .btn.red { background:#ef4444 }
-    .input { padding:.5rem .75rem; border-radius:.75rem; border:1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.05); color:#e2e8f0 }
+    .input { padding:.5rem .75rem; border-radius:.75rem; border:1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08); color:#f1f5f9; font-weight:500 }
+    .input:focus { outline:2px solid #0ea5e9; outline-offset:2px; }
+    select.input option { color:#0f172a; background:#f1f5f9; }
     .table { width:100%; font-size:.9rem }
     .th,.td { padding:.5rem .75rem; text-align:left; border-bottom:1px solid rgba(255,255,255,.1) }
     .bar { background:#0ea5e9; }
@@ -27,7 +29,7 @@
     .ygrid::after { bottom:0; }
     .ygrid .mid { position:absolute; left:0; right:0; top:50%; height:1px; background: rgba(255,255,255,.12); }
     .field { display:flex; flex-direction:column; gap:.25rem }
-    .field label { font-size:.7rem; color:#94a3b8 }
+    .field label { font-size:.7rem; color:#cbd5e1; font-weight:500 }
     .subgrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.75rem }
     @media (min-width: 768px){ .subgrid{ grid-template-columns:repeat(4,minmax(0,1fr)); } }
     .section-title{ font-size:.9rem; font-weight:600; margin:.25rem 0 .25rem; color:#e2e8f0 }

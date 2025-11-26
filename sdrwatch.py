@@ -651,6 +651,7 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
 
     try:
         center = args.start
+        print(f"[scan] begin sweep id={scan_id} range={args.start/1e6:.3f}-{args.stop/1e6:.3f} MHz step={args.step/1e6:.3f} samp_rate={args.samp_rate/1e6:.3f} fft={args.fft} avg={args.avg}", flush=True)
         while center <= args.stop:
             src.tune(center)
             nsamps = int(args.fft * args.avg)
@@ -715,12 +716,15 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
             # commit batched writes for this window
             store.commit()
 
+            # Progress log every window
+            print(f"[scan] window center={center/1e6:.6f} MHz det={len(segs)}", flush=True)
             # Advance center frequency
             center += args.step
 
     finally:
         # End scan (always set end time)
         store.end_scan(scan_id, utc_now_str())
+        print(f"[scan] end sweep id={scan_id}", flush=True)
 
     return scan_id
 
