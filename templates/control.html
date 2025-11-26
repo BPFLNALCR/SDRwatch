@@ -242,6 +242,12 @@ poll();
 
 // Logs
 const log = document.getElementById('log');
+let userScrolling = false;
+log.addEventListener('scroll', ()=>{
+  // Consider user as scrolling if not within 24px of bottom
+  const nearBottom = (log.scrollHeight - log.scrollTop - log.clientHeight) < 24;
+  userScrolling = !nearBottom;
+});
 async function pollLogs(){
   try{
     const r = await fetch('/api/logs');
@@ -249,7 +255,8 @@ async function pollLogs(){
       const t = await r.text();
       // Do not clear if backend returns empty; keep persistent logs
       if (t && t.length > 0) { log.textContent = t; }
-      log.scrollTop = log.scrollHeight;
+      // Auto-scroll only if user isn't actively scrolling
+      if (!userScrolling) { log.scrollTop = log.scrollHeight; }
     }
   }catch(e){}
   setTimeout(pollLogs, 1000);
