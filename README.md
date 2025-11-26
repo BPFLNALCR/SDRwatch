@@ -52,7 +52,7 @@ At its current stage of development, SDR-Watch is:
 Quick install with the included one-shot installer:
 
 ```bash
-git clone https://github.com/<yourrepo>/sdr-watch.git
+git clone https://github.com/SDRwatch/sdr-watch.git
 cd sdr-watch
 chmod +x install-sdrwatch.sh
 ./install-sdrwatch.sh
