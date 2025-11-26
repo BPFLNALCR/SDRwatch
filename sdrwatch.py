@@ -374,10 +374,16 @@ class SDRSource:
 class RTLSDRSource:
     """Native librtlsdr via pyrtlsdr."""
 
-    def __init__(self, samp_rate: float, gain: str | float):
+    def __init__(self, samp_rate: float, gain: str | float, *, device_index: Optional[int] = None, serial_number: Optional[str] = None):
         if not HAVE_RTLSDR:
             raise RuntimeError("pyrtlsdr not available")
-        self.dev = RtlSdr()
+        # Prefer targeting by serial, else index, else default
+        if serial_number:
+            self.dev = RtlSdr(serial_number=str(serial_number))
+        elif device_index is not None:
+            self.dev = RtlSdr(device_index=int(device_index))
+        else:
+            self.dev = RtlSdr()
         self.dev.sample_rate = samp_rate
         if isinstance(gain, str) and gain == "auto":
             self.dev.gain = "auto"
@@ -748,8 +754,30 @@ def run(args):
         except Exception as e:
             msg = str(e)
             if args.driver == "rtlsdr" and ("no match" in msg.lower() or "Device::make" in msg or "rtlsdr" in msg.lower()):
-                # Fallback to native librtlsdr path
-                src = RTLSDRSource(samp_rate=args.samp_rate, gain=args.gain)
+                # Fallback to native librtlsdr path; target the same device by serial/index if known
+                idx_hint = None
+                serial_hint = None
+                if soapy_args_dict:
+                    if 'serial' in soapy_args_dict:
+                        serial_hint = soapy_args_dict.get('serial')
+                    if 'index' in soapy_args_dict:
+                        try:
+                            val = soapy_args_dict.get('index')
+                            if val is not None:
+                                idx_hint = int(val)
+                        except Exception:
+                            idx_hint = None
+                # Retry loop in case the interface is momentarily busy
+                last_err = None
+                for attempt in range(3):
+                    try:
+                        src = RTLSDRSource(samp_rate=args.samp_rate, gain=args.gain, device_index=idx_hint, serial_number=serial_hint)
+                        break
+                    except Exception as e2:
+                        last_err = e2
+                        time.sleep(0.2)
+                if 'src' not in locals():
+                    raise last_err if last_err else e
                 hwkey = "RTL-SDR (native fallback)"
                 setattr(src, 'device', hwkey)
                 args.driver = "rtlsdr_native"
