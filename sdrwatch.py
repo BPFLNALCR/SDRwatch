@@ -742,7 +742,19 @@ def run(args):
         hwkey = "RTL-SDR (native)"
         setattr(src, 'device', hwkey)
     else:
-        src = SDRSource(driver=args.driver, samp_rate=args.samp_rate, gain=args.gain, soapy_args=soapy_args_dict)
+        # Prefer Soapy; if device creation fails with 'no match', fallback to native RTL for rtlsdr
+        try:
+            src = SDRSource(driver=args.driver, samp_rate=args.samp_rate, gain=args.gain, soapy_args=soapy_args_dict)
+        except Exception as e:
+            msg = str(e)
+            if args.driver == "rtlsdr" and ("no match" in msg.lower() or "Device::make" in msg or "rtlsdr" in msg.lower()):
+                # Fallback to native librtlsdr path
+                src = RTLSDRSource(samp_rate=args.samp_rate, gain=args.gain)
+                hwkey = "RTL-SDR (native fallback)"
+                setattr(src, 'device', hwkey)
+                args.driver = "rtlsdr_native"
+            else:
+                raise
 
     # Determine termination policy
     duration_s = _parse_duration_to_seconds(args.duration)
