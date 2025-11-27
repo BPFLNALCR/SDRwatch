@@ -489,6 +489,19 @@ class JobManager:
         if args.get("duration"):
             cmd += ["--duration", str(args["duration"]) ]
 
+        # Sweep control flags
+        if args.get("loop"):
+            cmd.append("--loop")
+        else:
+            repeat_val = args.get("repeat")
+            if repeat_val not in (None, ""):
+                try:
+                    repeat_int = int(repeat_val)
+                except (TypeError, ValueError):
+                    repeat_int = None
+                if repeat_int is not None and repeat_int > 0:
+                    cmd += ["--repeat", str(repeat_int)]
+
         # Booleans
         if args.get("use_baseline"):
             cmd += ["--use-baseline"]

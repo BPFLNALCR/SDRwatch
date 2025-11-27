@@ -132,6 +132,7 @@ Tables referenced by code/UI (column names are contract):
 * Capture small reference sweeps for later regression comparisons (optional but useful).
 * Ensure each code change preserves expected hardware behavior (lock creation, DB writes, detection counts, runtime stability).
 * Optional lightweight tests can verify math correctness (CFAR thresholds, PSD outputs) if desired but are not mandatory for normal iteration.
+* Maintainer runs validation on real hardware; Copilot should skip automated tests locally and instead call out any specific on-device checks the maintainer should perform.
 
 ---
 
