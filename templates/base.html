@@ -24,6 +24,18 @@
     .timeline-scan { width:8px; }
     .timeline-snr { width:6px; }
     .snr-bar { width:16px; }
+    .chart-row { display:flex; align-items:flex-end; gap:.35rem; }
+    .chart-label-row { display:flex; gap:.35rem; margin-top:.35rem; font-size:10px; color:#94a3b8; flex-wrap:wrap; }
+    .chart-label-row span { flex:0 0 auto; min-width:32px; text-align:center; }
+    .snr-labels { gap:.5rem; }
+    .snr-labels span { min-width:40px; }
+    .timeline-scroll { overflow-x:auto; padding-bottom:.5rem; }
+    .timeline-track-wrapper { display:inline-flex; flex-direction:column; gap:.25rem; min-width:max-content; }
+    .timeline-track { display:flex; align-items:flex-end; gap:.5rem; }
+    .timeline-column { flex:0 0 auto; display:flex; flex-direction:column; align-items:center; min-width:56px; }
+    .timeline-stack { width:100%; display:flex; align-items:flex-end; gap:.2rem; }
+    .timeline-meta-row, .timeline-label-row { display:flex; gap:.5rem; font-size:10px; color:#94a3b8; white-space:nowrap; }
+    .timeline-meta-row span, .timeline-label-row span { flex:0 0 auto; min-width:56px; text-align:center; }
     .muted { color:#94a3b8 }
     .pill { padding:.125rem .5rem; border-radius:999px; font-size:.75rem }
     .pill.idle { background:#334155; color:#e2e8f0 }
