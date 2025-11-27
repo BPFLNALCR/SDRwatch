@@ -108,16 +108,18 @@
       {% if timeline.buckets %}
         <div class="timeline-scroll">
           <div class="timeline-track-wrapper">
-            <div class="timeline-track" {{ timeline.style_attr | safe }}>
-              {% for b in timeline.buckets %}
-                <div class="timeline-column" title="{{ b.detections }} detections, {{ b.scans }} scans{% if b.max_snr is not none %}, max SNR {{ '%.1f' % b.max_snr }} dB{% endif %}">
-                  <div class="timeline-stack">
-                    <div class="bar timeline-det rounded-t" {{ b.det_style_attr | safe }}></div>
-                    <div class="bar-scan timeline-scan rounded-t" {{ b.scan_style_attr | safe }}></div>
-                    <div class="bar-snr timeline-snr rounded-t" {{ b.snr_style_attr | safe }}></div>
+            <div class="chart-grid timeline-grid" {{ timeline.style_attr | safe }}>
+              <div class="timeline-track">
+                {% for b in timeline.buckets %}
+                  <div class="timeline-column" title="{{ b.detections }} detections, {{ b.scans }} scans{% if b.max_snr is not none %}, max SNR {{ '%.1f' % b.max_snr }} dB{% endif %}">
+                    <div class="timeline-stack">
+                      <div class="bar timeline-det rounded-t" {{ b.det_style_attr | safe }}></div>
+                      <div class="bar-scan timeline-scan rounded-t" {{ b.scan_style_attr | safe }}></div>
+                      <div class="bar-snr timeline-snr rounded-t" {{ b.snr_style_attr | safe }}></div>
+                    </div>
                   </div>
-                </div>
-              {% endfor %}
+                {% endfor %}
+              </div>
             </div>
             <div class="timeline-meta-row">
               {% for b in timeline.buckets %}
@@ -161,10 +163,12 @@
           <div><span class="muted">p90:</span> {{ '%.1f' % snr_stats.p90 }} dB</div>
           <div><span class="muted">Max:</span> {{ '%.1f' % snr_stats.p100 }} dB</div>
         </div>
-        <div class="chart-row snr-chart" {{ chart_style_attr | safe }}>
-          {% for b in snr_hist %}
-            <div class="bar snr-bar rounded-t" {{ b.style_attr | safe }} title="{{ b.count }} detections"></div>
-          {% endfor %}
+        <div class="chart-grid snr-grid" {{ chart_style_attr | safe }}>
+          <div class="chart-row snr-chart">
+            {% for b in snr_hist %}
+              <div class="bar snr-bar rounded-t" {{ b.style_attr | safe }} title="{{ b.count }} detections"></div>
+            {% endfor %}
+          </div>
         </div>
         <div class="chart-label-row snr-labels">
           {% for b in snr_hist %}

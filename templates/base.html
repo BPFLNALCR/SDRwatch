@@ -24,13 +24,15 @@
     .timeline-scan { width:8px; }
     .timeline-snr { width:6px; }
     .snr-bar { width:16px; }
-    .chart-row { display:flex; align-items:flex-end; gap:.35rem; }
+    .chart-grid { position:relative; display:flex; align-items:flex-end; width:100%; padding:0 .35rem .35rem; background-image:repeating-linear-gradient(to top, rgba(148,163,184,.25) 0, rgba(148,163,184,.25) 1px, transparent 1px, transparent 40px); }
+    .chart-row { display:flex; align-items:flex-end; gap:.35rem; width:100%; }
     .chart-label-row { display:flex; gap:.35rem; margin-top:.35rem; font-size:10px; color:#94a3b8; flex-wrap:wrap; }
     .chart-label-row span { flex:0 0 auto; min-width:32px; text-align:center; }
     .snr-labels { gap:.5rem; }
     .snr-labels span { min-width:40px; }
     .timeline-scroll { overflow-x:auto; padding-bottom:.5rem; }
-    .timeline-track-wrapper { display:inline-flex; flex-direction:column; gap:.25rem; min-width:max-content; }
+    .timeline-track-wrapper { display:inline-flex; flex-direction:column; gap:.35rem; min-width:max-content; }
+    .timeline-grid { min-width:max-content; }
     .timeline-track { display:flex; align-items:flex-end; gap:.5rem; }
     .timeline-column { flex:0 0 auto; display:flex; flex-direction:column; align-items:center; min-width:56px; }
     .timeline-stack { width:100%; display:flex; align-items:flex-end; gap:.2rem; }
@@ -42,11 +44,11 @@
     .pill.run { background:#16a34a; color:#052e16 }
     .yaxis { width: 40px; position: relative; }
     .yaxis .tick { position:absolute; left:0; right:0; font-size:10px; color:#94a3b8 }
-    .ygrid { position:relative; }
-    .ygrid::before, .ygrid::after { content:""; position:absolute; left:0; right:0; height:1px; background: rgba(255,255,255,.12); }
+    .ygrid { position:relative; background-image:repeating-linear-gradient(to top, rgba(255,255,255,.12) 0, rgba(255,255,255,.12) 1px, transparent 1px, transparent 25px); }
+    .ygrid::before, .ygrid::after { content:""; position:absolute; left:0; right:0; height:1px; background: rgba(255,255,255,.18); }
     .ygrid::before { top:0; }
     .ygrid::after { bottom:0; }
-    .ygrid .mid { position:absolute; left:0; right:0; top:50%; height:1px; background: rgba(255,255,255,.12); }
+    .ygrid .mid { position:absolute; left:0; right:0; top:50%; height:1px; background: rgba(255,255,255,.18); }
     .field { display:flex; flex-direction:column; gap:.25rem }
     .field label { font-size:.7rem; color:#cbd5e1; font-weight:500 }
     .subgrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.75rem }

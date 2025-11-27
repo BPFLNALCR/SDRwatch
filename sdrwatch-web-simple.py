@@ -329,6 +329,8 @@ def timeline_metrics(con: sqlite3.Connection, filters: Dict[str, Any], *, max_bu
         b["scan_style_attr"] = f'style="height:{b["scan_height"]}px;"'
         b["snr_style_attr"] = f'style="height:{b["snr_height"]}px;"'
 
+    buckets.reverse()  # Show newest buckets first (left to right)
+
     return {
         "bucket_hours": bucket_hours,
         "buckets": buckets,
