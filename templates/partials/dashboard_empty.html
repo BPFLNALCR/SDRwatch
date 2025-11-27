@@ -1,0 +1,10 @@
+<div class="empty-state prose max-w-xl mx-auto py-8 text-center">
+  <h2>Waiting for First Scan</h2>
+  <p>The database doesn&apos;t have any scan data yet. Start a sweep from the Control tab to populate the dashboard.</p>
+  {% if db_path %}
+  <p class="text-sm text-slate-500">Database path: <code>{{ db_path }}</code></p>
+  {% endif %}
+  {% if db_status_message %}
+  <p class="text-sm text-slate-500">{{ db_status_message }}</p>
+  {% endif %}
+</div>

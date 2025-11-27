@@ -634,13 +634,44 @@ class ControllerClient:
 
 def create_app(db_path: str) -> Flask:
     app = Flask(__name__, template_folder='templates', static_folder='static')
-    app._con = open_db_ro(db_path)
     app._db_path = db_path
+    app._db_error: Optional[str] = None
+    try:
+        app._con = open_db_ro(db_path)
+    except Exception as exc:
+        app._con = None
+        app._db_error = str(exc)
     app._ctl = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
     app._current_job = None
     app._last_logs = ""
 
     def con(): return app._con
+
+    def db_state() -> Tuple[str, str]:
+        if app._con is None:
+            return (
+                "unavailable",
+                app._db_error or "Database file could not be opened in read-only mode.",
+            )
+        try:
+            cur = app._con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('scans','detections','baseline')"
+            )
+            names = set()
+            for row in cur.fetchall():
+                if isinstance(row, dict):
+                    names.add(str(row.get('name', '')))
+                else:
+                    names.add(str(row[0]))
+            required = {"scans", "detections", "baseline"}
+            if not required.issubset(names):
+                return ("waiting", "")
+        except sqlite3.OperationalError as exc:
+            return (
+                "waiting",
+                f"Database not initialized yet ({exc}). Start a scan to populate it.",
+            )
+        return ("ready", "")
 
     def require_auth():
         if not API_TOKEN: return
@@ -655,6 +686,17 @@ def create_app(db_path: str) -> Flask:
 
     @app.route('/')
     def dashboard():
+        state, state_message = db_state()
+        if state != "ready":
+            context = {
+                "db_status": state,
+                "db_status_message": state_message,
+                "db_path": app._db_path,
+            }
+            if request.headers.get("HX-Request"):
+                return render_template("partials/dashboard_empty.html", **context)
+            return render_template("dashboard.html", **context)
+
         scans_total = q1(con(), "SELECT COUNT(*) AS c FROM scans")['c'] or 0
         detections_total = q1(con(), "SELECT COUNT(*) AS c FROM detections")['c'] or 0
         baseline_total = q1(con(), "SELECT COUNT(*) AS c FROM baseline")['c'] or 0
@@ -750,6 +792,9 @@ def create_app(db_path: str) -> Flask:
             filtered_detections=filtered_detections,
             heatmap_settings={"scans": heatmap_scans, "bins": heatmap_bins},
             format_ts_label=format_ts_label,
+            db_status="ready",
+            db_status_message="",
+            db_path=app._db_path,
         )
 
         if request.headers.get("HX-Request"):

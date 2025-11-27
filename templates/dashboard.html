@@ -1,6 +1,10 @@
     {% extends "base.html" %}
     {% block content %}
       <div id="dashboard-shell">
-        {% include "partials/dashboard_content.html" %}
+        {% if db_status != "ready" %}
+          {% include "partials/dashboard_empty.html" %}
+        {% else %}
+          {% include "partials/dashboard_content.html" %}
+        {% endif %}
       </div>
     {% endblock %}
