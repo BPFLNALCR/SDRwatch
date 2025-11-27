@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>SDRwatch</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/htmx.min.js') }}" defer></script>
   <style>
     .stat { border-radius: 1rem; padding: 1rem; background: #0f172a; color: #e2e8f0 }
     .card { border-radius: 1rem; padding: 1rem; background: rgba(255,255,255,.05); color: #e2e8f0; border: 1px solid rgba(255,255,255,.1) }
