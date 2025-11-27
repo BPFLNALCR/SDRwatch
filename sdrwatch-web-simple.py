@@ -638,8 +638,6 @@ def create_app(db_path: str) -> Flask:
     app._db_error: Optional[str] = None
     app._con: Optional[sqlite3.Connection] = None
     app._ctl = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
-    app._current_job = None
-    app._last_logs = ""
 
     def _ensure_con() -> Optional[sqlite3.Connection]:
         if app._con is not None:
@@ -702,6 +700,39 @@ def create_app(db_path: str) -> Flask:
         hdr = request.headers.get("Authorization", "")
         if hdr != f"Bearer {API_TOKEN}":
             abort(401)
+
+    def controller_active_job() -> Optional[Dict[str, Any]]:
+        try:
+            jobs = app._ctl.list_jobs()
+        except Exception:
+            return None
+        running = [j for j in jobs if str(j.get("status", "")).lower() == "running"]
+        running.sort(key=lambda j: float(j.get("created_ts") or 0.0), reverse=True)
+        return running[0] if running else None
+
+    def start_job_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        device_key = payload.get('device_key')
+        if not device_key:
+            abort(400, description='device_key is required')
+        label = payload.get('label') or 'web'
+        params = payload.get('params') or {}
+        try:
+            return app._ctl.start_job(device_key, label, params)
+        except Exception as exc:
+            abort(400, description=str(exc))
+
+    def stop_job_by_id(job_id: str) -> Dict[str, Any]:
+        try:
+            return app._ctl.stop_job(job_id)
+        except Exception as exc:
+            abort(400, description=str(exc))
+
+    def job_logs_response(job_id: str, tail: Optional[int] = None) -> Response:
+        try:
+            data = app._ctl.job_logs(job_id, tail=tail)
+            return Response(data or "", mimetype='text/plain')
+        except Exception as exc:
+            abort(404, description=str(exc))
 
     # ---------- Pages ----------
     @app.get('/control')
@@ -948,70 +979,86 @@ def create_app(db_path: str) -> Flask:
             hint = "unauthorized" if "401" in msg or "unauthorized" in msg.lower() else "unreachable"
             return jsonify({"error": f"controller_{hint}", "detail": msg})
 
-    @app.post('/api/scans')
-    def api_start_scan():
+    def active_state_payload() -> Dict[str, Any]:
+        job = controller_active_job()
+        if not job:
+            return {"state": "idle"}
+        return {"state": "running", "job": job}
+
+    def start_job_response():
         require_auth()
         payload = request.get_json(force=True, silent=False) or {}
-        device_key = payload.get('device_key')
-        label = payload.get('label') or 'web'
-        params = payload.get('params') or {}
-        if not device_key:
-            abort(400, description='device_key is required')
-        # Guard: running?
-        if app._current_job:
-            try:
-                st = app._ctl.job_detail(app._current_job)
-                if st and st.get('status') == 'running':
-                    abort(409, description='Scan already running')
-            except Exception:
-                app._current_job = None
+        job = start_job_from_payload(payload)
+        return jsonify({"state": job.get('status', 'running'), "job": job})
+
+    @app.get('/api/jobs')
+    def api_jobs_list():
+        require_auth()
         try:
-            job = app._ctl.start_job(device_key, label, params)
-            app._current_job = job.get('id')
-            return jsonify({"ok": True, "status": {"state":"running", "job_id": app._current_job}})
-        except Exception as e:
-            abort(400, description=str(e))
+            jobs = app._ctl.list_jobs()
+            return jsonify({"jobs": jobs})
+        except Exception as exc:
+            abort(502, description=str(exc))
+
+    @app.get('/api/jobs/active')
+    def api_jobs_active():
+        require_auth()
+        return jsonify(active_state_payload())
+
+    @app.post('/api/jobs')
+    def api_jobs_create():
+        return start_job_response()
+
+    @app.post('/api/scans')
+    def api_start_scan():
+        return start_job_response()
+
+    @app.get('/api/jobs/<job_id>')
+    def api_job_detail(job_id: str):
+        require_auth()
+        try:
+            job = app._ctl.job_detail(job_id)
+            return jsonify(job)
+        except Exception as exc:
+            abort(404, description=str(exc))
+
+    @app.delete('/api/jobs/<job_id>')
+    def api_job_delete(job_id: str):
+        require_auth()
+        data = stop_job_by_id(job_id)
+        return jsonify(data)
 
     @app.delete('/api/scans/active')
     def api_stop_active():
         require_auth()
-        if not app._current_job:
+        job = controller_active_job()
+        if not job:
             return jsonify({"ok": True})
-        try:
-            app._ctl.stop_job(app._current_job)
-        except Exception:
-            pass
-        app._current_job = None
-        return jsonify({"ok": True})
+        data = stop_job_by_id(str(job.get('id')))
+        return jsonify(data)
+
+    @app.get('/api/jobs/<job_id>/logs')
+    def api_job_logs(job_id: str):
+        require_auth()
+        tail = request.args.get('tail', type=int)
+        return job_logs_response(job_id, tail)
 
     @app.get('/api/now')
     def api_now():
         require_auth()
-        if not app._current_job:
-            return jsonify({"state":"idle"})
-        try:
-            st = app._ctl.job_detail(app._current_job)
-            state = st.get('status', 'finished')
-            if state != 'running':
-                app._current_job = None
-            return jsonify({"state": state, "job_id": st.get('id')})
-        except Exception:
-            app._current_job = None
-            return jsonify({"state":"idle"})
+        return jsonify(active_state_payload())
 
     @app.get('/api/logs')
     def api_logs():
-        job_id = app._current_job
-        if job_id:
-            try:
-                txt = app._ctl.job_logs(job_id, tail=500)
-                app._last_logs = txt or app._last_logs
-                return Response(app._last_logs, mimetype='text/plain')
-            except Exception:
-                # fall through to cached logs
-                pass
-        # If no active job or fetch failed, return cached logs (persistent)
-        return Response(app._last_logs or "", mimetype='text/plain')
+        require_auth()
+        job_id = request.args.get('job_id')
+        tail = request.args.get('tail', type=int)
+        if not job_id:
+            job = controller_active_job()
+            if not job:
+                return Response("", mimetype='text/plain')
+            job_id = str(job.get('id'))
+        return job_logs_response(job_id, tail)
 
     return app
 

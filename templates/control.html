@@ -141,10 +141,42 @@
 {% block scripts %}
 <script>
 const TOKEN = localStorage.getItem("SDRWATCH_TOKEN") || "";
-function authHeaders(){ return TOKEN ? {"Authorization":"Bearer "+TOKEN, "Content-Type":"application/json"} : {"Content-Type":"application/json"}; }
+function authHeaders(isJson=true){
+  const headers = {};
+  if (TOKEN) headers["Authorization"] = "Bearer "+TOKEN;
+  if (isJson) headers["Content-Type"] = "application/json";
+  return headers;
+}
 
 const pill = document.getElementById('state-pill');
 function setState(s){ pill.textContent = s; pill.className = 'pill ' + (s==='running'?'run':'idle'); }
+let activeJob = null;
+let lastJobId = null;
+let cachedLogs = '';
+
+function applyActiveResponse(resp){
+  if(resp && resp.job){
+    activeJob = resp.job;
+    if(activeJob?.id){ lastJobId = activeJob.id; }
+    setState(resp.state || 'running');
+    return;
+  }
+  activeJob = null;
+  if(resp && resp.state){ setState(resp.state); } else { setState('idle'); }
+}
+
+async function refreshActiveState(){
+  try{
+    const r = await fetch('/api/jobs/active', { headers: authHeaders(false) });
+    if(!r.ok){ throw new Error('state fetch failed'); }
+    const data = await r.json();
+    applyActiveResponse(data);
+    return data;
+  }catch(err){
+    console.error(err);
+    return null;
+  }
+}
 
 // Form persistence
 const FORM_STORAGE_KEY = 'SDRWATCH_CTL_FORM';
@@ -218,24 +250,35 @@ f.addEventListener('submit', async (e)=>{
   ['start','stop','step','samp_rate','fft','avg','threshold_db','guard_bins','min_width_bins','cfar_train','cfar_guard','cfar_quantile','cfar_alpha_db','new_ema_occ','sleep_between_sweeps','repeat'].forEach(maybeNum);
   if(body.mode==='loop'){ body.loop = true; }
   if(body.mode==='repeat'){ body.repeat = body.repeat||1; }
-  if(body.mode==='duration'){ /* keep duration string */ }
   delete body.mode;
   if(body.notify==='on'){ body.notify = true; }
 
   const device_key = body.device_key; delete body.device_key;
   const payload = { device_key, label: body.label || 'web', params: body };
 
-  fetch('/api/scans', { method:'POST', headers: authHeaders(), body: JSON.stringify(payload) })
-    .then(r=>r.json()).then(j=>{ setState(j.status?.state||'running'); }).catch(console.error);
+  try{
+    const r = await fetch('/api/jobs', { method:'POST', headers: authHeaders(), body: JSON.stringify(payload) });
+    const data = await r.json();
+    if(!r.ok){ throw new Error(data?.error || 'start failed'); }
+    applyActiveResponse(data);
+  }catch(err){
+    console.error(err);
+    alert('Failed to start scan: ' + err.message);
+  }
 });
-document.getElementById('stopBtn')?.addEventListener('click', ()=>{
-  fetch('/api/scans/active', { method:'DELETE', headers: authHeaders() })
-    .then(()=>setState('idle')).catch(console.error);
+document.getElementById('stopBtn')?.addEventListener('click', async ()=>{
+  try{
+    if(!activeJob){ await refreshActiveState(); }
+    if(!activeJob?.id){ setState('idle'); return; }
+    const r = await fetch(`/api/jobs/${encodeURIComponent(activeJob.id)}`, { method:'DELETE', headers: authHeaders() });
+    if(!r.ok){ throw new Error('stop failed'); }
+    applyActiveResponse({state:'idle'});
+  }catch(err){ console.error(err); }
 });
 
 // Poll status
 async function poll(){
-  try{ const r = await fetch('/api/now', {headers: authHeaders()}); const j = await r.json(); setState(j.state||'idle'); }catch(e){}
+  await refreshActiveState();
   setTimeout(poll, 1000);
 }
 poll();
@@ -249,16 +292,20 @@ log.addEventListener('scroll', ()=>{
   userScrolling = !nearBottom;
 });
 async function pollLogs(){
+  const jobId = activeJob?.id || lastJobId;
+  if(!jobId){
+    setTimeout(pollLogs, 1000);
+    return;
+  }
   try{
-    const r = await fetch('/api/logs');
+    const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/logs?tail=500`, { headers: authHeaders(false) });
     if(r.ok){
       const t = await r.text();
-      // Do not clear if backend returns empty; keep persistent logs
-      if (t && t.length > 0) { log.textContent = t; }
-      // Auto-scroll only if user isn't actively scrolling
+      if(t && t.length > 0){ cachedLogs = t; }
+      log.textContent = cachedLogs;
       if (!userScrolling) { log.scrollTop = log.scrollHeight; }
     }
-  }catch(e){}
+  }catch(e){ console.error(e); }
   setTimeout(pollLogs, 1000);
 }
 pollLogs();

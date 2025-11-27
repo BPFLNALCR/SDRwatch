@@ -41,17 +41,60 @@ STATE_PATH = BASE_DIR / "state.json"
 LOGS_DIR = BASE_DIR / "logs"
 LOCKS_DIR = BASE_DIR / "locks"
 
-# Resolve project + script paths eagerly so subprocesses never rely on CWD.
-PROJECT_DIR = Path(os.environ.get("SDRWATCH_PROJECT_DIR", Path(__file__).resolve().parent))
-SDRWATCH_SCRIPT_ENV = os.environ.get("SDRWATCH_SCRIPT")
-if SDRWATCH_SCRIPT_ENV:
-    SDRWATCH_SCRIPT = Path(SDRWATCH_SCRIPT_ENV).expanduser()
-else:
-    SDRWATCH_SCRIPT = PROJECT_DIR / "sdrwatch.py"
-SDRWATCH_SCRIPT = SDRWATCH_SCRIPT.resolve()
-
 # If your project locates scripts elsewhere, tweak these defaults:
 PYTHON_EXE = sys.executable or "python3"
+
+
+_SCRIPT_CACHE: Optional[Tuple[Path, Path]] = None  # (project_dir, script_path)
+
+
+def resolve_scanner_paths(force_refresh: bool = False) -> Tuple[Path, Path]:
+    """Return (project_dir, sdrwatch_script) with automatic fallback discovery."""
+    global _SCRIPT_CACHE
+    if not force_refresh and _SCRIPT_CACHE:
+        project_dir, script_path = _SCRIPT_CACHE
+        if script_path.exists():
+            return project_dir, script_path
+
+    candidates: List[Path] = []
+
+    def _add_candidate(path_like: Optional[Path] | str | None) -> None:
+        if not path_like:
+            return
+        p = Path(path_like).expanduser()
+        candidates.append(p)
+
+    # Ordered preference list
+    _add_candidate(os.environ.get("SDRWATCH_SCRIPT"))
+    project_env = os.environ.get("SDRWATCH_PROJECT_DIR")
+    if project_env:
+        _add_candidate(Path(project_env).expanduser() / "sdrwatch.py")
+    controller_dir = Path(__file__).resolve().parent
+    _add_candidate(controller_dir / "sdrwatch.py")
+    _add_candidate(controller_dir.parent / "sdrwatch.py")
+    _add_candidate(Path.cwd() / "sdrwatch.py")
+    # Common deployment roots
+    _add_candidate(Path("/opt/sdrwatch") / "sdrwatch.py")
+    _add_candidate(Path("/opt/sdrwatch/current") / "sdrwatch.py")
+
+    seen: set[str] = set()
+    for cand in candidates:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if cand.is_file():
+                script_path = cand.resolve()
+                project_dir = script_path.parent
+                _SCRIPT_CACHE = (project_dir, script_path)
+                return project_dir, script_path
+        except OSError:
+            continue
+
+    raise FileNotFoundError(
+        "Unable to locate sdrwatch.py. Set SDRWATCH_SCRIPT or keep it alongside sdrwatch-control.py."
+    )
 
 # ---------- Utilities ----------
 
@@ -306,6 +349,7 @@ class JobManager:
         t.start()
 
     def start_job(self, *, device_key: str, label: str, sdrwatch_args: Dict[str, Any]) -> Job:
+        project_dir, script_path = resolve_scanner_paths()
         # Refuse to start if the device is already locked (but clear stale locks first)
         self._acquire_device(device_key, owner="pending")
         try:
@@ -318,7 +362,7 @@ class JobManager:
 
             jid = short_uuid()
             log_path = str(LOGS_DIR / f"{jid}.log")
-            cmd = self._build_cmd(device_key=device_key, args=sdrwatch_args)
+            cmd = self._build_cmd(script_path=script_path, device_key=device_key, args=sdrwatch_args)
             # Update lock with owner id
             with self._lock_path(device_key).open("w", encoding="utf-8") as f:
                 f.write(jid)
@@ -329,8 +373,8 @@ class JobManager:
                     "stderr": subprocess.STDOUT,
                     "text": True,
                 }
-                if PROJECT_DIR and PROJECT_DIR.exists():
-                    popen_kwargs["cwd"] = str(PROJECT_DIR)
+                if project_dir.exists():
+                    popen_kwargs["cwd"] = str(project_dir)
                 proc = subprocess.Popen(cmd, **popen_kwargs)
 
             job = Job(
@@ -387,9 +431,9 @@ class JobManager:
         self._persist()
         return job
 
-    def _build_cmd(self, *, device_key: str, args: Dict[str, Any]) -> List[str]:
+    def _build_cmd(self, *, script_path: Path, device_key: str, args: Dict[str, Any]) -> List[str]:
         """Translate a stable API dict into the concrete sdrwatch.py CLI."""
-        cmd = [PYTHON_EXE, str(SDRWATCH_SCRIPT)]
+        cmd = [PYTHON_EXE, str(script_path)]
         soapy_args_kv: Dict[str, Any] = {}
         # Respect explicit driver override from caller (e.g., 'rtlsdr_native')
         explicit_driver = str(args.get("driver", "")).strip() if args.get("driver") is not None else ""
