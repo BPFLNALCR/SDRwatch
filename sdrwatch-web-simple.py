@@ -23,7 +23,7 @@ from __future__ import annotations
 import argparse, os, io, sqlite3, math, json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
-from flask import Flask, request, Response, render_template, render_template_string, jsonify, abort  # type: ignore
+from flask import Flask, request, Response, render_template, render_template_string, jsonify, abort, url_for  # type: ignore
 from urllib import request as urlreq, parse as urlparse, error as urlerr
 
 # ================================
@@ -861,42 +861,174 @@ def create_app(db_path: str) -> Flask:
         if state != "ready":
             return render_template("db_waiting.html", **db_waiting_context(state, state_message))
         args = request.args
-        service = args.get('service') or None
-        min_snr = args.get('min_snr')
-        fmin = args.get('f_min_mhz')
-        fmax = args.get('f_max_mhz')
-        hours = args.get('since_hours')
-        where = []
-        params: List[Any] = []
-        if service:
-            where.append("COALESCE(service,'Unknown') = ?"); params.append(service)
-        if min_snr not in (None, ''):
-            where.append("snr_db >= ?"); params.append(float(min_snr))
-        if fmin not in (None, ''):
-            where.append("f_center_hz >= ?"); params.append(int(float(fmin)*1e6))
-        if fmax not in (None, ''):
-            where.append("f_center_hz <= ?"); params.append(int(float(fmax)*1e6))
-        if hours not in (None, '') and int(float(hours))>0:
-            where.append("time_utc >= datetime('now', ?)"); params.append(f"-{int(float(hours))} hours")
-        where_sql = (" WHERE "+" AND ".join(where)) if where else ""
-        page = max(1, int(float(args.get('page',1))))
-        page_size = min(200, max(10, int(float(args.get('page_size',50)))))
-        total = q1(con(), f"SELECT COUNT(*) AS c FROM detections{where_sql}", tuple(params))['c']
-        offset = (page-1)*page_size
-        rows = qa(con(), f"""
-            SELECT time_utc, scan_id, f_center_hz, f_low_hz, f_high_hz,
-                   peak_db, noise_db, snr_db, service, region, notes
-            FROM detections {where_sql}
-            ORDER BY time_utc DESC
+        filters, form_defaults = parse_detection_filters(args)
+        conds, params = detection_predicates(filters, alias="d")
+        where_sql = " WHERE " + " AND ".join(conds) if conds else ""
+        params_tuple = tuple(params)
+        page = max(1, int(float(args.get('page', 1))))
+        page_size = min(200, max(10, int(float(args.get('page_size', 50)))))
+        offset = (page - 1) * page_size
+
+        detections_total = q1(con(), "SELECT COUNT(*) AS c FROM detections")['c']
+        filtered_row = q1(con(), f"SELECT COUNT(*) AS c FROM detections d{where_sql}", params_tuple) or {"c": 0}
+        filtered_total = int(filtered_row.get('c') or 0)
+
+        rows = qa(
+            con(),
+            f"""
+            SELECT d.time_utc, d.scan_id, d.f_center_hz, d.f_low_hz, d.f_high_hz,
+                   d.peak_db, d.noise_db, d.snr_db, d.service, d.region, d.notes
+            FROM detections d
+            {where_sql}
+            ORDER BY d.time_utc DESC
             LIMIT ? OFFSET ?
-        """, tuple(params)+(page_size, offset))
-        sv = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
-        qs = args.to_dict(flat=True)
-        qs = "&".join([f"{k}={v}" for k,v in qs.items()])
+        """,
+            params_tuple + (page_size, offset),
+        )
+
+        services = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
+        snr_hist, snr_stats = snr_histogram(con(), filters, bucket_db=3)
+        timeline = timeline_metrics(con(), filters)
+        top_services_data = top_services(con(), filters, limit=8)
+
+        freq_bounds = q1(con(), f"SELECT MIN(d.f_center_hz) AS fmin, MAX(d.f_center_hz) AS fmax FROM detections d{where_sql}", params_tuple)
+        unique_services_row = q1(con(), f"SELECT COUNT(DISTINCT COALESCE(d.service,'Unknown')) AS c FROM detections d{where_sql}", params_tuple) if filtered_total else {"c": 0}
+        avg_snr_row = q1(con(), f"SELECT AVG(d.snr_db) AS avg_snr FROM detections d{where_sql}", params_tuple) if filtered_total else {"avg_snr": None}
+        newest = q1(con(), f"SELECT d.time_utc FROM detections d{where_sql} ORDER BY d.time_utc DESC LIMIT 1", params_tuple)
+        oldest = q1(con(), f"SELECT d.time_utc FROM detections d{where_sql} ORDER BY d.time_utc ASC LIMIT 1", params_tuple)
+
+        summary_cards: List[Dict[str, Any]] = []
+        summary_cards.append({
+            "label": "Filtered detections",
+            "value": f"{filtered_total:,}",
+            "subtext": (f"{((filtered_total / detections_total) * 100):.1f}% of database" if detections_total else ""),
+        })
+        unique_services = int(unique_services_row.get('c') or 0)
+        summary_cards.append({
+            "label": "Unique services",
+            "value": f"{unique_services:,}" if unique_services else "0",
+            "subtext": "Based on current filters",
+        })
+        avg_snr_val = avg_snr_row.get('avg_snr') if avg_snr_row else None
+        snr_text = "—"
+        if snr_stats and snr_stats.get('p50') is not None:
+            snr_text = f"{snr_stats['p50']:.1f} dB"
+        elif avg_snr_val is not None:
+            snr_text = f"{float(avg_snr_val):.1f} dB"
+        summary_cards.append({
+            "label": "Median SNR",
+            "value": snr_text,
+            "subtext": (f"p90 {snr_stats['p90']:.1f} dB" if snr_stats and snr_stats.get('p90') is not None else ""),
+        })
+        freq_span_text = "No detections"
+        if freq_bounds and freq_bounds.get('fmin') is not None and freq_bounds.get('fmax') is not None and freq_bounds['fmax'] > freq_bounds['fmin']:
+            fmin_mhz = freq_bounds['fmin'] / 1e6
+            fmax_mhz = freq_bounds['fmax'] / 1e6
+            freq_span_text = f"{fmin_mhz:.3f}–{fmax_mhz:.3f} MHz"
+        summary_cards.append({
+            "label": "Frequency span",
+            "value": freq_span_text,
+            "subtext": "From selected detections",
+        })
+        window_text = "No time range"
+        if newest and newest.get('time_utc') and oldest and oldest.get('time_utc'):
+            window_text = f"{format_ts_label(oldest['time_utc'])} → {format_ts_label(newest['time_utc'])}"
+        summary_cards.append({
+            "label": "Time window",
+            "value": window_text,
+            "subtext": "UTC",
+        })
+
+        active_filters: List[Dict[str, str]] = []
+        if filters.get('service'):
+            active_filters.append({"label": "Service", "value": str(filters['service'])})
+        if filters.get('min_snr') is not None:
+            active_filters.append({"label": "Min SNR", "value": f"{filters['min_snr']:.1f} dB"})
+        if filters.get('f_min_hz') is not None or filters.get('f_max_hz') is not None:
+            lo = filters.get('f_min_hz')
+            hi = filters.get('f_max_hz')
+            if lo is not None and hi is not None:
+                active_filters.append({"label": "Freq", "value": f"{lo/1e6:.3f}–{hi/1e6:.3f} MHz"})
+            elif lo is not None:
+                active_filters.append({"label": "Freq ≥", "value": f"{lo/1e6:.3f} MHz"})
+            elif hi is not None:
+                active_filters.append({"label": "Freq ≤", "value": f"{hi/1e6:.3f} MHz"})
+        if filters.get('since_hours'):
+            active_filters.append({"label": "Lookback", "value": f"{int(filters['since_hours'])} h"})
+
+        base_args = {k: v for k, v in args.to_dict(flat=True).items() if v not in (None, '')}
+
+        def build_filter_url(overrides: Dict[str, Any], *, reset: bool = False) -> str:
+            query = {} if reset else dict(base_args)
+            for key, value in overrides.items():
+                if value in (None, ''):
+                    query.pop(key, None)
+                else:
+                    query[key] = str(value)
+            query.pop('page', None)
+            encoded = urlparse.urlencode(query)
+            return url_for('detections') + (f"?{encoded}" if encoded else "")
+
+        quick_range_options = []
+        for hours, label in [(1, "1h"), (6, "6h"), (24, "24h"), (168, "7d"), (720, "30d")]:
+            quick_range_options.append({
+                "label": label,
+                "href": build_filter_url({"since_hours": hours}),
+                "active": filters.get('since_hours') == hours,
+            })
+
+        min_snr_filter = filters.get('min_snr')
+        def _snr_active(target: float) -> bool:
+            return min_snr_filter is not None and abs(float(min_snr_filter) - float(target)) < 1e-6
+
+        quick_snr_options = []
+        for snr_val, label in [(3, "≥3 dB"), (6, "≥6 dB"), (10, "≥10 dB"), (15, "≥15 dB")]:
+            quick_snr_options.append({
+                "label": label,
+                "href": build_filter_url({"min_snr": snr_val}),
+                "active": _snr_active(snr_val),
+            })
+
+        freq_presets = [
+            {"label": "FM 88–108 MHz", "min": 88.0, "max": 108.0},
+            {"label": "Airband 118–137 MHz", "min": 118.0, "max": 137.0},
+            {"label": "UHF Satcom 240–270 MHz", "min": 240.0, "max": 270.0},
+            {"label": "ADS-B 1085–1095 MHz", "min": 1085.0, "max": 1095.0},
+        ]
+        quick_band_options = []
+        for preset in freq_presets:
+            min_hz = int(preset['min'] * 1e6)
+            max_hz = int(preset['max'] * 1e6)
+            quick_band_options.append({
+                "label": preset['label'],
+                "href": build_filter_url({"f_min_mhz": preset['min'], "f_max_mhz": preset['max']}),
+                "active": (filters.get('f_min_hz') == min_hz and filters.get('f_max_hz') == max_hz),
+            })
+
+        export_params = {k: v for k, v in base_args.items() if k in {"service", "min_snr", "f_min_mhz", "f_max_mhz", "since_hours"}}
+        qs = urlparse.urlencode(export_params)
+
         return render_template(
             "detections.html",
-            rows=rows, page_num=page, page_size=page_size, total=total,
-            services=sv, req_args=args, qs=qs
+            rows=rows,
+            page_num=page,
+            page_size=page_size,
+            total=filtered_total,
+            detections_total=detections_total,
+            services=services,
+            qs=qs,
+            form_defaults=form_defaults,
+            active_filters=active_filters,
+            summary_cards=summary_cards,
+            snr_hist=snr_hist,
+            snr_stats=snr_stats,
+            timeline=timeline,
+            top_services=top_services_data,
+            quick_ranges=quick_range_options,
+            quick_snrs=quick_snr_options,
+            quick_bands=quick_band_options,
+            chart_style_attr=f'style="height:{CHART_HEIGHT_PX}px;"',
+            clear_filters_url=build_filter_url({}, reset=True),
         )
 
     @app.route('/scans')
