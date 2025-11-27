@@ -163,17 +163,30 @@
           <div><span class="muted">p90:</span> {{ '%.1f' % snr_stats.p90 }} dB</div>
           <div><span class="muted">Max:</span> {{ '%.1f' % snr_stats.p100 }} dB</div>
         </div>
-        <div class="chart-grid snr-grid" {{ chart_style_attr | safe }}>
-          <div class="chart-row snr-chart">
-            {% for b in snr_hist %}
-              <div class="bar snr-bar rounded-t" {{ b.style_attr | safe }} title="{{ b.count }} detections"></div>
-            {% endfor %}
+        <div class="timeline-scroll snr-scroll">
+          <div class="timeline-track-wrapper">
+            <div class="chart-grid snr-grid" {{ chart_style_attr | safe }}>
+              <div class="timeline-track snr-track">
+                {% for b in snr_hist %}
+                  <div class="timeline-column snr-column" title="{{ b.count }} detections">
+                    <div class="timeline-stack">
+                      <div class="bar snr-bar rounded-t" {{ b.style_attr | safe }}></div>
+                    </div>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="timeline-meta-row snr-meta">
+              {% for b in snr_hist %}
+                <span>{{ b.count }}</span>
+              {% endfor %}
+            </div>
+            <div class="timeline-label-row snr-labels">
+              {% for b in snr_hist %}
+                <span>{{ b.label }}</span>
+              {% endfor %}
+            </div>
           </div>
-        </div>
-        <div class="chart-label-row snr-labels">
-          {% for b in snr_hist %}
-            <span>{{ b.label }}</span>
-          {% endfor %}
         </div>
       {% else %}
         <div class="text-sm muted">No SNR data for the current filters.</div>
@@ -207,8 +220,14 @@
             <div class="tick" style="top: calc(50% - 6px);">{{ (freq_max/2)|int }}</div>
             <div class="tick" style="bottom:-6px">0</div>
           </div>
-          <div class="ygrid w-full" {{ chart_style_attr | safe }}>
-            <div class="mid"></div>
+          <div class="ygrid w-full">
+            <div class="grid-labels">
+              <span>{{ freq_max }}</span>
+              <span>{{ (freq_max*0.75)|round(0) }}</span>
+              <span>{{ (freq_max*0.5)|round(0) }}</span>
+              <span>{{ (freq_max*0.25)|round(0) }}</span>
+              <span>0</span>
+            </div>
             <div class="flex gap-[2px] items-end h-full">
               {% for b in freq_bins %}
                 <div class="flex flex-col items-center" title="{{ '%.3f' % b.mhz_start }}–{{ '%.3f' % b.mhz_end }} MHz: {{ b.count }}">
@@ -233,8 +252,14 @@
             <div class="tick" style="top: calc(50% - 6px);">{{ (avg_max/2)|round(1) }}</div>
             <div class="tick" style="bottom:-6px">0</div>
           </div>
-          <div class="ygrid w-full" {{ chart_style_attr | safe }}>
-            <div class="mid"></div>
+          <div class="ygrid w-full">
+            <div class="grid-labels">
+              <span>{{ (avg_max)|round(1) }}</span>
+              <span>{{ (avg_max*0.75)|round(1) }}</span>
+              <span>{{ (avg_max*0.5)|round(1) }}</span>
+              <span>{{ (avg_max*0.25)|round(1) }}</span>
+              <span>0</span>
+            </div>
             <div class="flex gap-[2px] items-end h-full">
               {% for b in avg_bins %}
                 <div class="flex flex-col items-center" title="{{ '%.3f' % b.mhz_start }}–{{ '%.3f' % b.mhz_end }} MHz: avg {{ '%.2f' % b.count }} ({{ b.coverage }} scans)">
