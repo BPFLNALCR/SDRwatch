@@ -12,7 +12,7 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
 
 * **`sdrwatch-control.py` ("controller" / "manager")** — Long‑lived job manager. Discovers devices (serial/index/driver), enforces **file‑lock ownership** per device under `${SDRWATCH_CONTROL_BASE}/locks`, constructs the scanner command (`_build_cmd`), spawns and monitors scanner subprocesses, exposes an **HTTP API** for start/stop/list/health, and reaps stale locks.
 
-* **`sdrwatch-web-simple.py` ("web" / "UI")** — Flask front‑end. **Read‑only** queries to the SQLite DB (tables above). Proxies **control actions** to the controller via `SDRWATCH_CONTROL_URL` + bearer token. No direct device access.
+* **`sdrwatch-web-simple.py` ("web" / "UI")** — Flask front‑end. **Read‑only** queries to the SQLite DB (tables above). Proxies **control actions** to the controller via RESTful endpoints (`/api/jobs`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`, etc.) pointing at `SDRWATCH_CONTROL_URL` with bearer auth. No direct device access. Treat the web layer as a thin REST client; avoid reintroducing stateful coupling.
 
 * **Installer script (repo root, e.g., `install-sdrwatch.sh`)** — Provisioning helper for Raspberry Pi OS **Trixie**: installs apt deps (SoapySDR, plugins, Python build reqs), creates Python venv, installs Python deps, sets up directories (`/opt/sdrwatch`, logs, state), optionally installs/updates the systemd unit and env file.
 
@@ -50,11 +50,13 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
   * Device discovery (serial/index/driver).
   * **Lock protocol**: file locks under `locks/` named by `device_key`.
   * Job lifecycle: build command (`_build_cmd`), spawn, supervise, reap stale locks.
-  * HTTP API: start/stop/list jobs, health.
+  * Resolves `sdrwatch.py` via `resolve_scanner_paths()` every time a job starts so deployments under `/opt/sdrwatch`, symlinked releases, or manual runs keep working without restarting the daemon.
+  * HTTP API: RESTful start/stop/list jobs + log streaming.
 * `sdrwatch-web-simple.py`
 
-  * Flask endpoints to read tables (scans/detections/baseline) and proxy control actions.
-  * Templates in `templates/`.
+  * Flask endpoints to read tables (scans/detections/baseline).
+  * REST-first control layer: `/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`, `/ctl/devices`.
+  * Templates in `templates/`. Prefer server endpoints that act as stateless REST clients for the controller; UI scripts should call those REST endpoints, not flask internals.
 
 ---
 
@@ -191,17 +193,27 @@ Tables referenced by code/UI (column names are contract):
 
 ---
 
-## 13) Controller HTTP API (sketch)
+## 13) Controller + Web REST contract
+
+**Controller server (authoritative):**
 
 * `GET /devices` → discovered devices + keys
 * `GET /jobs` → list jobs
-* `POST /jobs` → start scan body `{device_key, label, params}`
-* `GET /jobs/{id}` → job detail
-* `GET /jobs/{id}/logs` → tail logs (optional `?tail=N`)
-* `DELETE /jobs/{id}` → stop
+* `POST /jobs` → start scan `{device_key, label, params}`
+* `GET /jobs/<id>` → job detail
+* `GET /jobs/<id>/logs` → log tail (optional `?tail=N`)
+* `DELETE /jobs/<id>` → stop job
 * Auth: bearer token via `SDRWATCH_CONTROL_TOKEN` when the server is started with a token.
 
-*If endpoint names differ in code, update this section to match exactly and add tests.*
+**Web proxy (RESTful façade used by templates/JS):**
+
+* `GET /api/jobs` → passthrough list
+* `GET /api/jobs/active` → derived active-state payload
+* `POST /api/jobs` (alias `/api/scans`) → start job
+* `GET /api/jobs/<id>` → passthrough detail
+* `DELETE /api/jobs/<id>` + `/api/scans/active` shim → stop job
+* `GET /api/jobs/<id>/logs` + `/api/logs` shim → streaming logs (requires auth)
+* Always keep these endpoints stateless and aligned with the controller. When adding UI features, extend the REST layer first, then build UI on top.
 
 ---
 
@@ -229,3 +241,4 @@ Tables referenced by code/UI (column names are contract):
 * Standardize `SDRWATCH_CONTROL_BASE` for tests/CI (tmp dir per run)?
 * Where to pin JSONL output format (doc + conformance test)?
 * Minimal **FakeSDR** interface not planned (hardware-based workflow confirmed).
+* Should `/api` remain Flask-only or split into FastAPI later? (Current plan: keep Flask but REST-first.)

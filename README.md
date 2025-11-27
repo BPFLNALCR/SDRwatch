@@ -43,10 +43,14 @@ At its current stage of development, SDR-Watch is:
   - 🕒 Trend timeline with hourly/daily buckets and strongest SNR snapshots.
   - 🗺️ Frequency-coverage heatmap with optional LAT/LONG tagging per scan.
   - 🎚️ Interactive filters for service, SNR, frequency span, and lookback windows.
+- **🧠 Self-healing controller**:
+  - Auto-discovers `sdrwatch.py` every launch via `resolve_scanner_paths()` so `/opt/sdrwatch` deployments, symlinked releases, and fresh installs work without restarting the daemon.
+  - Exposes a RESTful job API (`/jobs`, `/jobs/<id>`, `/jobs/<id>/logs`) that the web layer simply proxies.
 - **🔔 Alerts & Outputs**:
   - Desktop notifications (`notify-send`) for new detections.
   - JSONL stream for integration with Grafana, Loki, ELK.
 - **⚙️ Services Integration**: Systemd units for `sdrwatch-control` (API manager) and `sdrwatch-web` (dashboard).
+  - Web UI now uses REST endpoints (`/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`) so multiple browser sessions stay in sync and the architecture can scale horizontally.
 
 ---
 
@@ -111,6 +115,27 @@ Manual launch:
 ```bash
 python3 sdrwatch-web-simple.py --db sdrwatch.db --host 0.0.0.0 --port 8080
 ```
+
+The dashboard can render immediately even if the database is empty; it will auto-switch to the "waiting" state until the first scan populates tables.
+
+---
+
+## 🔗 Controller REST API & Tokens
+
+The controller exposes a stable REST surface consumed by the Flask frontend or any automation:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/devices` | Enumerate SDRs (key, kind, label, metadata). |
+| `GET` | `/jobs` | List jobs (status, params, timestamps). |
+| `POST` | `/jobs` | Start a job `{device_key, label, params}`. |
+| `GET` | `/jobs/<id>` | Inspect a specific job. |
+| `GET` | `/jobs/<id>/logs?tail=N` | Stream scanner logs from disk. |
+| `DELETE` | `/jobs/<id>` | Stop the job (SIGTERM/SIGKILL fallback). |
+
+Set `SDRWATCH_CONTROL_TOKEN` when running `sdrwatch-control.py serve` to require bearer auth. The web app reads `SDRWATCH_CONTROL_URL` / `SDRWATCH_CONTROL_TOKEN` and simply forwards REST calls, exposing its own `Bearer SDRWATCH_TOKEN` guard for the `/api/*` routes.
+
+**Scanner path discovery:** the controller looks for `sdrwatch.py` in the following order each time a job starts: `SDRWATCH_SCRIPT`, `SDRWATCH_PROJECT_DIR/sdrwatch.py`, alongside the controller script, project parent, current working directory, and `/opt/sdrwatch[/current]`. Override via environment variables if you relocate scripts.
 
 ---
 
