@@ -171,22 +171,22 @@ class Store:
     def _init(self):
         cur = self.con.cursor()
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS scans (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              t_start_utc TEXT,
-              t_end_utc   TEXT,
-              f_start_hz  INTEGER,
-              f_stop_hz   INTEGER,
-              step_hz     INTEGER,
-              samp_rate   INTEGER,
-              fft         INTEGER,
-              avg         INTEGER,
-                            device      TEXT,
-                            driver      TEXT,
-            )
-            """
-        )
+                    """
+                    CREATE TABLE IF NOT EXISTS scans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        t_start_utc TEXT,
+                        t_end_utc   TEXT,
+                        f_start_hz  INTEGER,
+                        f_stop_hz   INTEGER,
+                        step_hz     INTEGER,
+                        samp_rate   INTEGER,
+                        fft         INTEGER,
+                        avg         INTEGER,
+                        device      TEXT,
+                        driver      TEXT
+                    )
+                    """
+                )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS detections (
