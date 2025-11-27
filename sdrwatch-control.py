@@ -41,9 +41,17 @@ STATE_PATH = BASE_DIR / "state.json"
 LOGS_DIR = BASE_DIR / "logs"
 LOCKS_DIR = BASE_DIR / "locks"
 
+# Resolve project + script paths eagerly so subprocesses never rely on CWD.
+PROJECT_DIR = Path(os.environ.get("SDRWATCH_PROJECT_DIR", Path(__file__).resolve().parent))
+SDRWATCH_SCRIPT_ENV = os.environ.get("SDRWATCH_SCRIPT")
+if SDRWATCH_SCRIPT_ENV:
+    SDRWATCH_SCRIPT = Path(SDRWATCH_SCRIPT_ENV).expanduser()
+else:
+    SDRWATCH_SCRIPT = PROJECT_DIR / "sdrwatch.py"
+SDRWATCH_SCRIPT = SDRWATCH_SCRIPT.resolve()
+
 # If your project locates scripts elsewhere, tweak these defaults:
 PYTHON_EXE = sys.executable or "python3"
-SDRWATCH_SCRIPT = Path(os.environ.get("SDRWATCH_SCRIPT", "sdrwatch.py"))
 
 # ---------- Utilities ----------
 
@@ -316,7 +324,14 @@ class JobManager:
                 f.write(jid)
 
             with open(log_path, "w", encoding="utf-8") as logf:
-                proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, text=True)
+                popen_kwargs: Dict[str, Any] = {
+                    "stdout": logf,
+                    "stderr": subprocess.STDOUT,
+                    "text": True,
+                }
+                if PROJECT_DIR and PROJECT_DIR.exists():
+                    popen_kwargs["cwd"] = str(PROJECT_DIR)
+                proc = subprocess.Popen(cmd, **popen_kwargs)
 
             job = Job(
                 id=jid,

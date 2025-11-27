@@ -1,6 +1,16 @@
 <div class="empty-state prose max-w-xl mx-auto py-8 text-center">
-  <h2>Waiting for First Scan</h2>
-  <p>The database doesn&apos;t have any scan data yet. Start a sweep from the Control tab to populate the dashboard.</p>
+  <h2>
+    {% if db_status == "unavailable" %}
+      Database Unavailable
+    {% else %}
+      Waiting for First Scan
+    {% endif %}
+  </h2>
+  {% if db_status == "unavailable" %}
+    <p>The dashboard can&apos;t reach the SQLite file right now. Verify the install paths and permissions, then try again.</p>
+  {% else %}
+    <p>The database doesn&apos;t have any scan data yet. Start a sweep from the Control tab to populate the dashboard.</p>
+  {% endif %}
   {% if db_path %}
   <p class="text-sm text-slate-500">Database path: <code>{{ db_path }}</code></p>
   {% endif %}

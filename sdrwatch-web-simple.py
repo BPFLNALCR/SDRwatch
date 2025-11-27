@@ -636,25 +636,40 @@ def create_app(db_path: str) -> Flask:
     app = Flask(__name__, template_folder='templates', static_folder='static')
     app._db_path = db_path
     app._db_error: Optional[str] = None
-    try:
-        app._con = open_db_ro(db_path)
-    except Exception as exc:
-        app._con = None
-        app._db_error = str(exc)
+    app._con: Optional[sqlite3.Connection] = None
     app._ctl = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
     app._current_job = None
     app._last_logs = ""
 
-    def con(): return app._con
+    def _ensure_con() -> Optional[sqlite3.Connection]:
+        if app._con is not None:
+            return app._con
+        try:
+            app._con = open_db_ro(app._db_path)
+            app._db_error = None
+        except Exception as exc:
+            app._con = None
+            app._db_error = str(exc)
+        return app._con
+
+    # Attempt initial connection (tolerates failure if DB is missing)
+    _ensure_con()
+
+    def con() -> sqlite3.Connection:
+        connection = _ensure_con()
+        if connection is None:
+            raise RuntimeError("database connection unavailable")
+        return connection
 
     def db_state() -> Tuple[str, str]:
-        if app._con is None:
+        connection = _ensure_con()
+        if connection is None:
             return (
                 "unavailable",
                 app._db_error or "Database file could not be opened in read-only mode.",
             )
         try:
-            cur = app._con.execute(
+            cur = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('scans','detections','baseline')"
             )
             names = set()
@@ -667,11 +682,20 @@ def create_app(db_path: str) -> Flask:
             if not required.issubset(names):
                 return ("waiting", "")
         except sqlite3.OperationalError as exc:
+            app._con = None
+            app._db_error = str(exc)
             return (
                 "waiting",
                 f"Database not initialized yet ({exc}). Start a scan to populate it.",
             )
         return ("ready", "")
+
+    def db_waiting_context(state: str, message: str) -> Dict[str, Any]:
+        return {
+            "db_status": state,
+            "db_status_message": message,
+            "db_path": app._db_path,
+        }
 
     def require_auth():
         if not API_TOKEN: return
@@ -688,11 +712,7 @@ def create_app(db_path: str) -> Flask:
     def dashboard():
         state, state_message = db_state()
         if state != "ready":
-            context = {
-                "db_status": state,
-                "db_status_message": state_message,
-                "db_path": app._db_path,
-            }
+            context = db_waiting_context(state, state_message)
             if request.headers.get("HX-Request"):
                 return render_template("partials/dashboard_empty.html", **context)
             return render_template("dashboard.html", **context)
@@ -804,6 +824,9 @@ def create_app(db_path: str) -> Flask:
 
     @app.route('/detections')
     def detections():
+        state, state_message = db_state()
+        if state != "ready":
+            return render_template("db_waiting.html", **db_waiting_context(state, state_message))
         args = request.args
         service = args.get('service') or None
         min_snr = args.get('min_snr')
@@ -845,6 +868,9 @@ def create_app(db_path: str) -> Flask:
 
     @app.route('/scans')
     def scans():
+        state, state_message = db_state()
+        if state != "ready":
+            return render_template("db_waiting.html", **db_waiting_context(state, state_message))
         args = request.args
         page = max(1, int(float(args.get('page',1))))
         page_size = min(200, max(10, int(float(args.get('page_size',25)))))
@@ -863,6 +889,9 @@ def create_app(db_path: str) -> Flask:
 
     @app.route('/baseline')
     def baseline():
+        state, state_message = db_state()
+        if state != "ready":
+            return render_template("db_waiting.html", **db_waiting_context(state, state_message))
         args = request.args
         rows: List[Dict[str,Any]] = []
         if args.get('f_mhz') not in (None,''):
@@ -880,6 +909,9 @@ def create_app(db_path: str) -> Flask:
 
     @app.route('/export/detections.csv')
     def export_csv():
+        state, state_message = db_state()
+        if state != "ready":
+            abort(409, description=state_message or "Database not initialized yet")
         args = request.args
         params: List[Any] = []
         where = []
