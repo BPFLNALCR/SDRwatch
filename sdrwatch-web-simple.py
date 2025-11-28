@@ -757,6 +757,55 @@ def create_app(db_path: str) -> Flask:
         running.sort(key=lambda j: float(j.get("created_ts") or 0.0), reverse=True)
         return running[0] if running else None
 
+    def parse_window_log_line(line: str) -> Optional[Dict[str, Any]]:
+        prefix = "[scan] window"
+        if not isinstance(line, str):
+            return None
+        text = line.strip()
+        if not text.startswith(prefix):
+            return None
+        payload = text[len(prefix) :].strip()
+        if not payload:
+            return None
+        result: Dict[str, Any] = {"raw": line.rstrip("\n")}
+        required_keys = {"center_hz", "det_count", "mean_db", "p90_db", "anomalous"}
+        seen: Dict[str, Any] = {}
+        for chunk in payload.split():
+            if "=" not in chunk:
+                continue
+            key, value = chunk.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key == "center_hz":
+                try:
+                    seen[key] = float(value)
+                except Exception:
+                    return None
+            elif key == "det_count":
+                try:
+                    seen[key] = int(float(value))
+                except Exception:
+                    return None
+            elif key in {"mean_db", "p90_db"}:
+                try:
+                    seen[key] = float(value)
+                except Exception:
+                    return None
+            elif key == "anomalous":
+                try:
+                    seen[key] = bool(int(float(value)))
+                except Exception:
+                    if value.lower() in {"true", "false"}:
+                        seen[key] = value.lower() == "true"
+                    else:
+                        return None
+            else:
+                continue
+        if not required_keys.issubset(seen.keys()):
+            return None
+        result.update(seen)
+        return result
+
     def controller_profiles() -> List[Dict[str, Any]]:
         try:
             data = app._ctl.profiles()
@@ -909,6 +958,16 @@ def create_app(db_path: str) -> Flask:
     def control():
         return render_template("control.html", db_path=app._db_path, profiles=controller_profiles())
 
+    @app.route('/live')
+    def live():
+        state, state_message = db_state()
+        return render_template(
+            "live.html",
+            db_status=state,
+            db_status_message=state_message,
+            db_path=app._db_path,
+        )
+
     @app.route('/')
     def dashboard():
         state, state_message = db_state()
@@ -1027,6 +1086,72 @@ def create_app(db_path: str) -> Flask:
             return render_template("partials/dashboard_content.html", **context)
 
         return render_template("dashboard.html", **context)
+
+    @app.route('/timeline')
+    def timeline_view():
+        state, state_message = db_state()
+        if state != "ready":
+            abort(409, description=state_message or "Database not initialized yet")
+        filters, form_defaults = parse_detection_filters(request.args, default_since_hours=168)
+        confidence_available = detections_have_confidence()
+        filters["__confidence_available"] = confidence_available
+        hist, snr_stats = snr_histogram(con(), filters, bucket_db=3)
+        timeline_data = timeline_metrics(con(), filters, max_buckets=120)
+        conds, params = detection_predicates(filters, alias="d")
+        where_sql = " WHERE " + " AND ".join(conds) if conds else ""
+        params_tuple = tuple(params)
+        total_row = q1(con(), f"SELECT COUNT(*) AS c FROM detections d{where_sql}", params_tuple)
+        filtered_detections = int((total_row or {}).get("c") or 0)
+        buckets = timeline_data.get("buckets", [])
+        bucket_sum = sum(int(b.get("detections") or 0) for b in buckets)
+        bucket_count = len(buckets)
+        time_span = ""
+        if bucket_count:
+            newest = buckets[0].get("label", "")
+            oldest = buckets[-1].get("label", "")
+            if newest and oldest:
+                time_span = f"{oldest} → {newest}"
+        services = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
+        return render_template(
+            "timeline.html",
+            filters=filters,
+            form_defaults=form_defaults,
+            hist=hist,
+            snr_stats=snr_stats,
+            timeline=timeline_data,
+            services=services,
+            detection_total=filtered_detections,
+            bucket_sum=bucket_sum,
+            bucket_count=bucket_count,
+            time_span=time_span,
+            confidence_available=confidence_available,
+        )
+
+    @app.route('/coverage')
+    def coverage_view():
+        state, state_message = db_state()
+        if state != "ready":
+            abort(409, description=state_message or "Database not initialized yet")
+        filters, form_defaults = parse_detection_filters(request.args)
+        confidence_available = detections_have_confidence()
+        filters["__confidence_available"] = confidence_available
+        latest_bins, latest_meta, latest_max = frequency_bins_latest_scan(con(), filters, num_bins=60)
+        avg_bins, avg_start_mhz, avg_stop_mhz, avg_max = frequency_bins_all_scans_avg(con(), filters, num_bins=60)
+        services = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
+        return render_template(
+            "coverage.html",
+            filters=filters,
+            form_defaults=form_defaults,
+            latest_bins=latest_bins,
+            latest_meta=latest_meta,
+            latest_max=latest_max,
+            avg_bins=avg_bins,
+            avg_start_mhz=avg_start_mhz,
+            avg_stop_mhz=avg_stop_mhz,
+            avg_max=avg_max,
+            services=services,
+            confidence_available=confidence_available,
+        )
 
     @app.route('/detections')
     def detections():
@@ -1418,6 +1543,37 @@ def create_app(db_path: str) -> Flask:
                 return Response("", mimetype='text/plain')
             job_id = str(job.get('id'))
         return job_logs_response(job_id, tail)
+
+    @app.get('/api/live/windows')
+    def api_live_windows():
+        require_auth()
+        job_id = request.args.get('job_id')
+        tail = request.args.get('tail', type=int)
+        limit = request.args.get('limit', type=int) or 100
+        limit = max(1, min(500, limit))
+        tail = tail if tail and tail > 0 else 5000
+        if not job_id:
+            job = controller_active_job()
+            if not job:
+                return jsonify({"windows": []})
+            job_id = str(job.get('id'))
+        try:
+            log_text = app._ctl.job_logs(job_id, tail=tail)
+        except Exception as exc:
+            abort(502, description=str(exc))
+        windows: List[Dict[str, Any]] = []
+        for line in log_text.splitlines():
+            parsed = parse_window_log_line(line)
+            if not parsed:
+                continue
+            center_hz = float(parsed.get('center_hz', 0.0))
+            parsed['center_hz'] = center_hz
+            parsed['center_mhz'] = center_hz / 1e6
+            windows.append(parsed)
+        if not windows:
+            return jsonify({"windows": []})
+        windows = windows[-limit:]
+        return jsonify({"windows": windows})
 
     return app
 

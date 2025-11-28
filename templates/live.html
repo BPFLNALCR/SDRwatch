@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="space-y-4">
+  <div class="card">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      <div>
+        <h1 class="text-xl font-semibold">Live Windows</h1>
+        <p class="muted text-sm">Tails the scanner log via /api/live/windows for quick observability.</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <span id="live-state-pill" class="pill idle">Idle</span>
+        <div class="text-sm" id="live-job-label">No active scan</div>
+      </div>
+    </div>
+    <div class="text-xs muted mt-2">Browser API calls reuse the optional SDRWATCH_TOKEN stored in localStorage.</div>
+    <div id="live-error" class="text-xs text-red-300 mt-2 hidden"></div>
+  </div>
+
+  <div class="card">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="text-lg font-semibold">Recent windows</h2>
+      <div class="text-xs muted" id="live-updated">—</div>
+    </div>
+    <div id="live-no-job" class="text-sm text-amber-300 hidden">No active scan. Start a job to stream live windows.</div>
+    <div class="overflow-auto">
+      <table class="table text-sm">
+        <thead>
+          <tr class="text-slate-400">
+            <th class="th">#</th>
+            <th class="th">Freq (MHz)</th>
+            <th class="th">Detections</th>
+            <th class="th">Mean (dB)</th>
+            <th class="th">P90 (dB)</th>
+            <th class="th">Anomalous</th>
+            <th class="th">Raw</th>
+          </tr>
+        </thead>
+        <tbody id="windowRows"></tbody>
+      </table>
+      <div id="live-no-data" class="text-sm text-slate-400 py-3">No window data yet.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="text-lg font-semibold">Strip chart</h2>
+      <div class="text-xs muted">Height = det_count, color = anomaly</div>
+    </div>
+    <div id="windowStrip" class="flex items-end gap-1 min-h-[120px] overflow-x-auto"></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TOKEN = localStorage.getItem("SDRWATCH_TOKEN") || "";
+function authHeaders(isJson=true){
+  const headers = {};
+  if (TOKEN) headers["Authorization"] = "Bearer " + TOKEN;
+  if (isJson) headers["Content-Type"] = "application/json";
+  return headers;
+}
+
+function esc(val){
+  return String(val ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+const statePill = document.getElementById('live-state-pill');
+const jobLabel = document.getElementById('live-job-label');
+const errorBox = document.getElementById('live-error');
+const noJobNote = document.getElementById('live-no-job');
+const rowsEl = document.getElementById('windowRows');
+const noDataEl = document.getElementById('live-no-data');
+const stripEl = document.getElementById('windowStrip');
+const updatedEl = document.getElementById('live-updated');
+
+let currentJobId = null;
+let authFailed = false;
+
+function setState(state, label){
+  const isRunning = (state || '').toLowerCase() === 'running';
+  statePill.textContent = isRunning ? 'Running' : 'Idle';
+  statePill.className = 'pill ' + (isRunning ? 'run' : 'idle');
+  jobLabel.textContent = label || (isRunning ? 'Active scan' : 'No active scan');
+}
+
+function showError(msg){
+  if(!msg){ errorBox.classList.add('hidden'); errorBox.textContent = ''; return; }
+  errorBox.classList.remove('hidden');
+  errorBox.textContent = msg;
+}
+
+async function fetchActiveJob(){
+  try{
+    const resp = await fetch('/api/jobs/active', { headers: authHeaders(false) });
+    if(resp.status === 401){
+      authFailed = true;
+      showError('Unauthorized: set SDRWATCH_TOKEN in localStorage to access /api endpoints.');
+      currentJobId = null;
+      setState('idle');
+      return;
+    }
+    if(!resp.ok){ throw new Error('state fetch failed'); }
+    const data = await resp.json();
+    authFailed = false;
+    showError('');
+    if(data.state === 'running' && data.job){
+      currentJobId = String(data.job.id);
+      const label = data.job.label ? `${data.job.label} (#${data.job.id})` : `Job #${data.job.id}`;
+      setState('running', label);
+      noJobNote.classList.add('hidden');
+    } else {
+      currentJobId = null;
+      setState('idle');
+      noJobNote.classList.remove('hidden');
+    }
+  }catch(err){
+    console.error(err);
+    showError('Unable to reach API: ' + err.message);
+    currentJobId = null;
+    setState('idle');
+  }
+}
+
+function renderTable(windows){
+  if(!windows || windows.length === 0){
+    rowsEl.innerHTML = '';
+    noDataEl.classList.remove('hidden');
+    return;
+  }
+  noDataEl.classList.add('hidden');
+  const rows = windows.map((win, idx) => {
+    const order = windows.length - idx;
+    const freq = typeof win.center_mhz === 'number' ? win.center_mhz.toFixed(3) : '—';
+    const det = Number(win.det_count || 0);
+    const mean = typeof win.mean_db === 'number' ? win.mean_db.toFixed(1) : '—';
+    const p90 = typeof win.p90_db === 'number' ? win.p90_db.toFixed(1) : '—';
+    const anomalous = Boolean(win.anomalous);
+    const badgeClass = anomalous ? 'bg-amber-400 text-slate-900' : 'bg-emerald-400/70 text-slate-900';
+    const badgeText = anomalous ? 'Yes' : 'No';
+    const raw = win.raw || '';
+    return `
+      <tr>
+        <td class="td text-slate-400">${esc(order)}</td>
+        <td class="td font-mono">${esc(freq)}</td>
+        <td class="td">${esc(det)}</td>
+        <td class="td">${esc(mean)}</td>
+        <td class="td">${esc(p90)}</td>
+        <td class="td"><span class="pill ${badgeClass}" style="font-size:.65rem;">${badgeText}</span></td>
+        <td class="td text-xs text-slate-400 whitespace-nowrap">${esc(raw)}</td>
+      </tr>`;
+  }).join('');
+  rowsEl.innerHTML = rows;
+}
+
+function renderStrip(windows){
+  if(!windows || windows.length === 0){
+    stripEl.innerHTML = '<div class="text-sm text-slate-400">No data.</div>';
+    return;
+  }
+  const counts = windows.map(w => Number(w.det_count || 0));
+  const maxCount = Math.max(...counts, 1);
+  stripEl.innerHTML = windows.map((win, idx) => {
+    const det = counts[idx];
+    const height = Math.max(4, Math.round((det / maxCount) * 90));
+    const color = win.anomalous ? '#f97316' : '#38bdf8';
+    const freq = typeof win.center_mhz === 'number' ? win.center_mhz.toFixed(2) : '—';
+    return `
+      <div class="flex flex-col items-center gap-1 min-w-[38px]">
+        <div class="text-[0.65rem] text-slate-400">${esc(det)}</div>
+        <div class="w-5 rounded-sm" style="height:${height}px;background:${color};"></div>
+        <div class="text-[0.6rem] text-slate-500">${esc(freq)}</div>
+      </div>`;
+  }).join('');
+}
+
+function updateTimestamp(){
+  const now = new Date();
+  updatedEl.textContent = 'Updated ' + now.toLocaleTimeString();
+}
+
+async function fetchWindows(){
+  if(authFailed){ return; }
+  if(!currentJobId){
+    renderTable([]);
+    renderStrip([]);
+    return;
+  }
+  const params = new URLSearchParams({ limit: '100' });
+  params.set('job_id', currentJobId);
+  try{
+    const resp = await fetch(`/api/live/windows?${params.toString()}`, { headers: authHeaders(false) });
+    if(resp.status === 401){
+      authFailed = true;
+      showError('Unauthorized: set SDRWATCH_TOKEN in localStorage to access /api endpoints.');
+      return;
+    }
+    if(!resp.ok){ throw new Error('window fetch failed'); }
+    const data = await resp.json();
+    const windows = Array.isArray(data.windows) ? data.windows : [];
+    renderTable(windows);
+    renderStrip(windows.slice(-30));
+    updateTimestamp();
+  }catch(err){
+    console.error(err);
+    showError('Unable to fetch windows: ' + err.message);
+  }
+}
+
+async function refreshLoop(){
+  await fetchActiveJob();
+  await fetchWindows();
+  setTimeout(refreshLoop, 4000);
+}
+
+refreshLoop();
+</script>
+{% endblock %}

@@ -1176,16 +1176,12 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
 
             mean_psd_db = float(np.mean(psd_db))
             p90_psd_db = float(np.percentile(psd_db, 90.0))
-            is_anom, ema_power_db, delta_db = power_monitor.update(mean_psd_db)
+            is_anom, _ema_power_db, _delta_db = power_monitor.update(mean_psd_db)
             accepted_hits = 0
             spur_ignored = 0
             promoted = 0
 
             if is_anom:
-                print(
-                    f"[scan] window center={center/1e6:.6f} MHz flagged anomalous (mean={mean_psd_db:.1f} dB, ema={ema_power_db:.1f} dB, delta={delta_db:+.1f} dB, p90={p90_psd_db:.1f} dB)",
-                    flush=True,
-                )
                 if detection_engine:
                     accepted_hits, spur_ignored, promoted = detection_engine.ingest(scan_id, window_idx, [])
             else:
@@ -1209,14 +1205,22 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
             window_idx += 1
 
             # Progress log every window
-            flag = " (anomalous)" if is_anom else ""
-            spur_info = f" spur_masked={spur_ignored}" if detection_engine else ""
-            det_info = f" promoted={promoted}" if detection_engine else ""
-            acc_info = f" accepted={accepted_hits}" if detection_engine else ""
-            print(
-                f"[scan] window center={center/1e6:.6f} MHz hits={len(segs)}{acc_info}{det_info}{spur_info}{flag}",
-                flush=True,
-            )
+            fields = [
+                f"center_hz={center:.1f}",
+                f"det_count={len(segs)}",
+                f"mean_db={mean_psd_db:.1f}",
+                f"p90_db={p90_psd_db:.1f}",
+                f"anomalous={1 if is_anom else 0}",
+            ]
+            if detection_engine:
+                fields.extend(
+                    [
+                        f"accepted={accepted_hits}",
+                        f"promoted={promoted}",
+                        f"spur_masked={spur_ignored}",
+                    ]
+                )
+            print(f"[scan] window {' '.join(fields)}", flush=True)
             # Advance center frequency
             center += args.step
 
