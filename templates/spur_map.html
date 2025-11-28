@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="space-y-6">
+  <section class="card space-y-4">
+    <div class="flex items-center justify-between">
+      <div>
+        <h1 class="text-xl font-semibold">Spur Map</h1>
+        <p class="text-sm muted">Read-only view of stored spur bins</p>
+      </div>
+    </div>
+    {% if has_table %}
+      {% if rows %}
+        <div class="overflow-x-auto">
+          <table class="table text-sm">
+            <thead>
+              <tr class="text-slate-400">
+                <th class="th">Frequency (MHz)</th>
+                <th class="th">bin_hz</th>
+                <th class="th">Mean Power (dB)</th>
+                <th class="th">Hits</th>
+                <th class="th">Last Seen (UTC)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in rows %}
+                <tr class="hover:bg-white/5">
+                  <td class="td">{{ (row.bin_hz/1e6)|round(6) }}</td>
+                  <td class="td">{{ row.bin_hz }}</td>
+                  <td class="td">{{ '%.1f' % row.mean_power_db if row.mean_power_db is not none else '—' }}</td>
+                  <td class="td">{{ row.hits }}</td>
+                  <td class="td">{{ row.last_seen_utc or '—' }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="text-sm muted">Spur map table is present but empty.</div>
+      {% endif %}
+    {% else %}
+      <div class="text-sm muted">No spur map data yet. Run a spur calibration sweep to populate this table.</div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

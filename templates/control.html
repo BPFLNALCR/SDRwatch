@@ -23,6 +23,14 @@
         <div class="hint mt-1">Devices are enumerated from the controller. If empty, start the controller or attach an SDR.</div>
       </div>
 
+      <div>
+        <div class="section-title">Profile & Modes</div>
+        <div class="subgrid">
+          <div class="field"><label for="profile">Profile</label><input id="profile" class="input" name="profile" value="" placeholder="vhf_uhf_general" /></div>
+          <div class="field"><label class="flex items-center gap-2" for="spur_calibration"><input id="spur_calibration" type="checkbox" name="spur_calibration" /> <span>Spur calibration mode</span></label></div>
+        </div>
+      </div>
+
       <!-- Sweep -->
       <div>
         <div class="section-title">Sweep</div>
@@ -181,8 +189,27 @@ async function refreshActiveState(){
 // Form persistence
 const FORM_STORAGE_KEY = 'SDRWATCH_CTL_FORM';
 const f = document.getElementById('ctl');
-function saveForm(){ const fd = new FormData(f); const obj = Object.fromEntries(fd.entries()); obj.notify = f.notify?.checked ? 'on' : ''; localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(obj)); }
-function loadForm(){ try{ const obj = JSON.parse(localStorage.getItem(FORM_STORAGE_KEY)||'{}'); for(const [k,v] of Object.entries(obj)){ const el = f.elements[k]; if(!el) continue; if(el.type==='checkbox'){ el.checked = (v==='on'); } else { el.value = v; } } }catch(e){} }
+function saveForm(){
+  const fd = new FormData(f);
+  const obj = Object.fromEntries(fd.entries());
+  obj.notify = f.notify?.checked ? 'on' : '';
+  obj.spur_calibration = f.spur_calibration?.checked ? 'on' : '';
+  localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(obj));
+}
+function loadForm(){
+  try{
+    const obj = JSON.parse(localStorage.getItem(FORM_STORAGE_KEY)||'{}');
+    for(const [k,v] of Object.entries(obj)){
+      const el = f.elements[k];
+      if(!el) continue;
+      if(el.type==='checkbox'){
+        el.checked = (v==='on');
+      } else {
+        el.value = v;
+      }
+    }
+  }catch(e){}
+}
 f.addEventListener('input', saveForm);
 document.getElementById('resetBtn')?.addEventListener('click', ()=>{ localStorage.removeItem(FORM_STORAGE_KEY); location.reload(); });
 loadForm();
@@ -252,6 +279,13 @@ f.addEventListener('submit', async (e)=>{
   if(body.mode==='repeat'){ body.repeat = body.repeat||1; }
   delete body.mode;
   if(body.notify==='on'){ body.notify = true; }
+  const profile = (body.profile || '').toString().trim();
+  if(profile){ body.profile = profile; } else { delete body.profile; }
+  if(f.spur_calibration?.checked){
+    body.spur_calibration = true;
+  } else {
+    delete body.spur_calibration;
+  }
 
   const device_key = body.device_key; delete body.device_key;
   const payload = { device_key, label: body.label || 'web', params: body };

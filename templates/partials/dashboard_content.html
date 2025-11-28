@@ -198,7 +198,11 @@
         <thead><tr class="text-slate-400"><th class="th">MHz</th><th class="th">SNR</th><th class="th">Service</th></tr></thead>
         <tbody>
           {% for r in strongest %}
-            <tr class="hover:bg-white/5"><td class="td">{{ (r.f_center_hz/1e6)|round(6) }}</td><td class="td">{{ '%.1f' % r.snr_db }}</td><td class="td"><span class="chip">{{ r.service or 'Unknown' }}</span></td></tr>
+            <tr class="hover:bg-white/5">
+              <td class="td">{{ (r.f_center_hz/1e6)|round(6) }}</td>
+              <td class="td">{{ '%.1f' % r.snr_db }}{% if r.confidence is not none %} <span class="muted">(conf {{ '%.0f%%' % (r.confidence * 100) }})</span>{% endif %}</td>
+              <td class="td"><span class="chip">{{ r.service or 'Unknown' }}</span></td>
+            </tr>
           {% else %}
             <tr><td class="td" colspan="3">No detections.</td></tr>
           {% endfor %}

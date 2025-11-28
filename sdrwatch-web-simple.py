@@ -428,15 +428,16 @@ def frequency_bins_all_scans_avg(con: sqlite3.Connection, filters: Dict[str, Any
         b["style_attr"] = f'style="height:{int(b.get("height_px", 0))}px;"'
     return bins, f0 / 1e6, f1 / 1e6, maxc
 
-def strongest_signals(con: sqlite3.Connection, filters: Dict[str, Any], limit: int = 10):
+def strongest_signals(con: sqlite3.Connection, filters: Dict[str, Any], limit: int = 10, *, include_confidence: bool = False):
     conds, params = detection_predicates(filters, alias="d")
     conds.append("d.snr_db IS NOT NULL")
     where_sql = " WHERE " + " AND ".join(conds)
     params_tuple = tuple(params)
+    confidence_expr = "d.confidence" if include_confidence else "NULL"
     return qa(
         con,
         f"""
-        SELECT d.f_center_hz, d.snr_db, d.service
+        SELECT d.f_center_hz, d.snr_db, d.service, {confidence_expr} AS confidence
         FROM detections d
         {where_sql}
         ORDER BY d.snr_db DESC
@@ -637,8 +638,9 @@ class ControllerClient:
 def create_app(db_path: str) -> Flask:
     app = Flask(__name__, template_folder='templates', static_folder='static')
     app._db_path = db_path
-    app._db_error: Optional[str] = None
-    app._con: Optional[sqlite3.Connection] = None
+    app._db_error = None  
+    app._con = None  
+    app._has_confidence_column: Optional[bool] = None
     app._ctl = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
 
     def _ensure_con() -> Optional[sqlite3.Connection]:
@@ -647,9 +649,11 @@ def create_app(db_path: str) -> Flask:
         try:
             app._con = open_db_ro(app._db_path)
             app._db_error = None
+            app._has_confidence_column = None
         except Exception as exc:
             app._con = None
             app._db_error = str(exc)
+            app._has_confidence_column = None
         return app._con
 
     # Attempt initial connection (tolerates failure if DB is missing)
@@ -697,6 +701,29 @@ def create_app(db_path: str) -> Flask:
             "db_path": app._db_path,
         }
 
+    def detections_have_confidence() -> bool:
+        cached = app._has_confidence_column
+        if cached is not None:
+            return bool(cached)
+        connection = _ensure_con()
+        if connection is None:
+            app._has_confidence_column = False
+            return False
+        try:
+            cur = connection.execute("PRAGMA table_info(detections)")
+            rows = cur.fetchall()
+        except sqlite3.OperationalError:
+            app._has_confidence_column = False
+            return False
+        has_col = False
+        for row in rows:
+            name = row.get("name") if isinstance(row, dict) else row[1]
+            if name == "confidence":
+                has_col = True
+                break
+        app._has_confidence_column = has_col
+        return has_col
+
     def require_auth():
         if not API_TOKEN: return
         hdr = request.headers.get("Authorization", "")
@@ -712,7 +739,7 @@ def create_app(db_path: str) -> Flask:
         running.sort(key=lambda j: float(j.get("created_ts") or 0.0), reverse=True)
         return running[0] if running else None
 
-    def start_job_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def start_job_from_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         device_key = payload.get('device_key')
         if not device_key:
             abort(400, description='device_key is required')
@@ -728,6 +755,8 @@ def create_app(db_path: str) -> Flask:
             return app._ctl.stop_job(job_id)
         except Exception as exc:
             abort(400, description=str(exc))
+            # abort raises an HTTPException; provide an explicit return to satisfy static type checkers
+            return {"error": str(exc)}
 
     def job_logs_response(job_id: str, tail: Optional[int] = None) -> Response:
         try:
@@ -755,6 +784,7 @@ def create_app(db_path: str) -> Flask:
         baseline_total = q1(con(), "SELECT COUNT(*) AS c FROM baseline")['c'] or 0
 
         filters, form_defaults = parse_detection_filters(request.args, default_since_hours=168)
+        confidence_available = detections_have_confidence()
 
         snr_bucket_db = 3
         snr_bucket_raw = request.args.get('snr_bucket_db')
@@ -800,7 +830,7 @@ def create_app(db_path: str) -> Flask:
         heatmap = coverage_heatmap(con(), filters, max_scans=heatmap_scans, num_bins=heatmap_bins)
         services = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
         top_services_data = top_services(con(), filters, limit=10)
-        strongest = strongest_signals(con(), filters, limit=10)
+        strongest = strongest_signals(con(), filters, limit=10, include_confidence=confidence_available)
 
         active_filters: List[Dict[str, str]] = []
         if filters.get('service'):
@@ -845,6 +875,7 @@ def create_app(db_path: str) -> Flask:
             filtered_detections=filtered_detections,
             heatmap_settings={"scans": heatmap_scans, "bins": heatmap_bins},
             format_ts_label=format_ts_label,
+            confidence_available=confidence_available,
             db_status="ready",
             db_status_message="",
             db_path=app._db_path,
@@ -862,6 +893,8 @@ def create_app(db_path: str) -> Flask:
             return render_template("db_waiting.html", **db_waiting_context(state, state_message))
         args = request.args
         filters, form_defaults = parse_detection_filters(args)
+        confidence_available = detections_have_confidence()
+        confidence_sql = "d.confidence" if confidence_available else "NULL"
         conds, params = detection_predicates(filters, alias="d")
         where_sql = " WHERE " + " AND ".join(conds) if conds else ""
         params_tuple = tuple(params)
@@ -877,7 +910,8 @@ def create_app(db_path: str) -> Flask:
             con(),
             f"""
             SELECT d.time_utc, d.scan_id, d.f_center_hz, d.f_low_hz, d.f_high_hz,
-                   d.peak_db, d.noise_db, d.snr_db, d.service, d.region, d.notes
+                   d.peak_db, d.noise_db, d.snr_db, d.service, d.region, d.notes,
+                   {confidence_sql} AS confidence
             FROM detections d
             {where_sql}
             ORDER BY d.time_utc DESC
@@ -1029,6 +1063,7 @@ def create_app(db_path: str) -> Flask:
             quick_bands=quick_band_options,
             chart_style_attr=f'style="height:{CHART_HEIGHT_PX}px;"',
             clear_filters_url=build_filter_url({}, reset=True),
+            confidence_available=confidence_available,
         )
 
     @app.route('/scans')
@@ -1072,6 +1107,31 @@ def create_app(db_path: str) -> Flask:
             """, (center-half, center+half))
         return render_template("baseline.html", rows=rows, req_args=args)
 
+    @app.route('/spur-map')
+    def spur_map():
+        state, state_message = db_state()
+        if state != "ready":
+            return render_template("db_waiting.html", **db_waiting_context(state, state_message))
+        try:
+            exists_row = q1(
+                con(),
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='spur_map'",
+            )
+            has_table = bool(exists_row and exists_row.get('name'))
+        except sqlite3.OperationalError:
+            has_table = False
+        rows: List[Dict[str, Any]] = []
+        if has_table:
+            rows = qa(
+                con(),
+                """
+                SELECT bin_hz, mean_power_db, hits, last_seen_utc
+                FROM spur_map
+                ORDER BY bin_hz
+                """,
+            )
+        return render_template("spur_map.html", rows=rows, has_table=has_table)
+
     @app.route('/export/detections.csv')
     def export_csv():
         state, state_message = db_state()
@@ -1086,16 +1146,19 @@ def create_app(db_path: str) -> Flask:
         if args.get('f_max_mhz'): where.append("f_center_hz <= ?"); params.append(int(float(args.get('f_max_mhz'))*1e6))
         if args.get('since_hours'): where.append("time_utc >= datetime('now', ?)"); params.append(f"-{int(float(args.get('since_hours')))} hours")
         where_sql = (" WHERE "+" AND ".join(where)) if where else ""
+        confidence_available = detections_have_confidence()
+        confidence_sql = "confidence" if confidence_available else "NULL"
         rows = qa(con(), f"""
             SELECT time_utc, scan_id, f_center_hz, f_low_hz, f_high_hz,
-                   peak_db, noise_db, snr_db, service, region, notes
+                   peak_db, noise_db, snr_db, service, region, notes,
+                   {confidence_sql} AS confidence
             FROM detections {where_sql}
             ORDER BY time_utc DESC
             LIMIT 100000
         """, tuple(params))
         import csv
         buf = io.StringIO()
-        fieldnames = ["time_utc","scan_id","f_center_hz","f_low_hz","f_high_hz","peak_db","noise_db","snr_db","service","region","notes"]
+        fieldnames = ["time_utc","scan_id","f_center_hz","f_low_hz","f_high_hz","peak_db","noise_db","snr_db","service","region","notes","confidence"]
         w = csv.DictWriter(buf, fieldnames=fieldnames); w.writeheader()
         for r in rows: w.writerow({k:r.get(k,'') for k in fieldnames})
         buf.seek(0)
@@ -1123,7 +1186,8 @@ def create_app(db_path: str) -> Flask:
         require_auth()
         payload = request.get_json(force=True, silent=False) or {}
         job = start_job_from_payload(payload)
-        return jsonify({"state": job.get('status', 'running'), "job": job})
+        state_val = job.get('status', 'running') if isinstance(job, dict) else 'running'
+        return jsonify({"state": state_val, "job": job})
 
     @app.get('/api/jobs')
     def api_jobs_list():

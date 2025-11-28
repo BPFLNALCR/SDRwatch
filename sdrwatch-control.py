@@ -431,6 +431,7 @@ class JobManager:
         self._persist()
         return job
 
+    # Pass optional profile/spur_calibration/loop/repeat/duration/jsonl params through to sdrwatch.py.
     def _build_cmd(self, *, script_path: Path, device_key: str, args: Dict[str, Any]) -> List[str]:
         """Translate a stable API dict into the concrete sdrwatch.py CLI."""
         cmd = [PYTHON_EXE, str(script_path)]
@@ -475,31 +476,31 @@ class JobManager:
             "longitude": "--longitude",
         }
         for k, flag in mapping_num.items():
-            v = args.get(k)
-            if v is not None:
-                cmd += [flag, str(v)]
-
-        # Strings/paths
-        if args.get("db"):
-            cmd += ["--db", str(args["db"])]
-        if args.get("bandplan"):
+            if args.get("db"):
+                cmd += ["--db", str(args["db"]) ]
+            if args.get("bandplan"):
+                cmd += ["--bandplan", str(args["bandplan"])]
+            if args.get("gain"):
+                cmd += ["--gain", str(args["gain"]) ]
+            if args.get("profile"):
+                cmd += ["--profile", str(args["profile"])]
+            if args.get("duration"):
+                cmd += ["--duration", str(args["duration"]) ]
+            if args.get("jsonl"):
+                cmd += ["--jsonl", str(args["jsonl"]) ]
             cmd += ["--bandplan", str(args["bandplan"])]
         if args.get("gain"):
-            cmd += ["--gain", str(args["gain"]) ]
-        if args.get("duration"):
-            cmd += ["--duration", str(args["duration"]) ]
-
-        # Sweep control flags
-        if args.get("loop"):
-            cmd.append("--loop")
-        else:
+            if args.get("loop"):
+                cmd.append("--loop")
             repeat_val = args.get("repeat")
-            if repeat_val not in (None, ""):
-                try:
+            if repeat_val is not None:
+                cmd += ["--repeat", str(repeat_val)]
                     repeat_int = int(repeat_val)
                 except (TypeError, ValueError):
                     repeat_int = None
                 if repeat_int is not None and repeat_int > 0:
+            if args.get("spur_calibration"):
+                cmd.append("--spur-calibration")
                     cmd += ["--repeat", str(repeat_int)]
 
         # Booleans

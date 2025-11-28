@@ -8,7 +8,7 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
 
 **Authoritative script purposes (use these names in prompts/commits):**
 
-* **`sdrwatch.py` ("scanner")** — CLI tool that performs wideband sweeps on an SDR device, computes PSD/CFAR, updates the **SQLite DB** (`scans`, `detections`, `baseline`), and can emit JSONL and desktop/CLI notifications. Single-process, device-bound. Does **not** manage multiple devices.
+* **`sdrwatch.py` ("scanner")** — CLI tool that performs wideband sweeps on an SDR device, computes PSD/CFAR, updates the **SQLite DB** (`scans`, `detections`, `baseline`, `spur_map`), and can emit JSONL and desktop/CLI notifications. Single-process, device-bound. Includes scan profiles, anomalous-window gating, spur calibration/suppression, and a DetectionEngine that promotes persistent hits with confidence scores.
 
 * **`sdrwatch-control.py` ("controller" / "manager")** — Long‑lived job manager. Discovers devices (serial/index/driver), enforces **file‑lock ownership** per device under `${SDRWATCH_CONTROL_BASE}/locks`, constructs the scanner command (`_build_cmd`), spawns and monitors scanner subprocesses, exposes an **HTTP API** for start/stop/list/health, and reaps stale locks.
 
@@ -42,9 +42,9 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
 
 * `sdrwatch.py`
 
-  * CLI parsing, driver selection (SoapySDR default; `--driver rtlsdr_native` uses pyrtlsdr).
-  * Sweep loop: tune → capture → PSD (SciPy if present, fallback else) → CFAR/thresholding → batch DB writes → (optional) JSONL emit.
-  * Baseline maintenance (EMA/occurrence) and new-signal detection thresholding.
+  * CLI parsing + scan profile application (`--profile`) with fixed gain, absolute power floors, and optional spur calibration mode.
+  * Sweep loop: tune → capture → PSD → CFAR/abs-floor filtering → anomalous-window gating → baseline EMA updates for normal windows.
+  * DetectionEngine clusters hits across windows, consults `spur_map`, computes `confidence`, and only promotes persistent detections (JSONL emission mirrors DB rows).
 * `sdrwatch-control.py`
 
   * Device discovery (serial/index/driver).
@@ -65,8 +65,9 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
 Tables referenced by code/UI (column names are contract):
 
 * **`scans`**: `id INTEGER PK AUTOINCREMENT`, `t_start_utc TEXT`, `t_end_utc TEXT`, `f_start_hz INTEGER`, `f_stop_hz INTEGER`, `step_hz INTEGER`, `samp_rate INTEGER`, `fft INTEGER`, `avg INTEGER`, `device TEXT`, `driver TEXT`.
-* **`detections`**: `scan_id INTEGER`, `time_utc TEXT`, `f_center_hz INTEGER`, `f_low_hz INTEGER`, `f_high_hz INTEGER`, `peak_db REAL`, `noise_db REAL`, `snr_db REAL`, `service TEXT`, `region TEXT`, `notes TEXT`.
+* **`detections`**: `scan_id INTEGER`, `time_utc TEXT`, `f_center_hz INTEGER`, `f_low_hz INTEGER`, `f_high_hz INTEGER`, `peak_db REAL`, `noise_db REAL`, `snr_db REAL`, `service TEXT`, `region TEXT`, `notes TEXT`, `confidence REAL`.
 * **`baseline`**: `bin_hz INTEGER PRIMARY KEY`, `ema_occ REAL`, `ema_power_db REAL`, `last_seen_utc TEXT`, `total_obs INTEGER`, `hits INTEGER`.
+* **`spur_map`**: `bin_hz INTEGER PRIMARY KEY`, `mean_power_db REAL`, `hits INTEGER`, `last_seen_utc TEXT` (populated via `--spur-calibration`).
 
 **Migrations**: if you must change types/names, add a migration script in `migrations/` + version table `schema_version(version INTEGER, applied_ts TEXT)` and bump version in code. Update Web UI queries accordingly.
 
@@ -91,7 +92,8 @@ Tables referenced by code/UI (column names are contract):
     "service": "FM Broadcast",
     "region": "Global",
     "notes": "",
-    "is_new": true
+    "is_new": true,
+    "confidence": 0.82
   }
   ```
 
@@ -154,13 +156,13 @@ Tables referenced by code/UI (column names are contract):
 
 ## 10) CLI patterns (examples)
 
-* One-shot FM scan:
+* One-shot FM scan (optionally with a profile):
 
   ```bash
   python3 sdrwatch.py \
     --start 88e6 --stop 108e6 --step 1.8e6 \
     --samp-rate 2.4e6 --fft 4096 --avg 8 \
-    --driver rtlsdr --gain auto
+    --driver rtlsdr --gain auto --profile fm_broadcast
   ```
 * Controller API serve:
 
@@ -173,6 +175,13 @@ Tables referenced by code/UI (column names are contract):
   SDRWATCH_CONTROL_URL=http://127.0.0.1:8765 \
   SDRWATCH_CONTROL_TOKEN=secret123 \
   python3 sdrwatch-web-simple.py --db sdrwatch.db --host 0.0.0.0 --port 8080
+  ```
+
+* Spur calibration sweep:
+
+  ```bash
+  python3 sdrwatch.py --start 400e6 --stop 470e6 --step 2.4e6 \
+    --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr --spur-calibration
   ```
 
 ---

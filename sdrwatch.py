@@ -41,9 +41,9 @@ import os
 import sqlite3
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np  # type: ignore
 
@@ -100,6 +100,66 @@ class Segment:
     peak_db: float
     noise_db: float
     snr_db: float
+
+
+@dataclass
+class ScanProfile:
+    name: str
+    f_low_hz: int
+    f_high_hz: int
+    samp_rate: float
+    fft: int
+    avg: int
+    gain_db: float
+    threshold_db: float
+    min_width_bins: int
+    guard_bins: int
+    abs_power_floor_db: Optional[float] = None
+
+
+def default_scan_profiles() -> Dict[str, ScanProfile]:
+    profiles = [
+        ScanProfile(
+            name="vhf_uhf_general",
+            f_low_hz=400_000_000,
+            f_high_hz=470_000_000,
+            samp_rate=2.4e6,
+            fft=4096,
+            avg=8,
+            gain_db=20.0,
+            threshold_db=10.0,
+            min_width_bins=3,
+            guard_bins=1,
+            abs_power_floor_db=-95.0,
+        ),
+        ScanProfile(
+            name="fm_broadcast",
+            f_low_hz=88_000_000,
+            f_high_hz=108_000_000,
+            samp_rate=2.0e6,
+            fft=4096,
+            avg=6,
+            gain_db=12.0,
+            threshold_db=8.0,
+            min_width_bins=4,
+            guard_bins=1,
+            abs_power_floor_db=-90.0,
+        ),
+        ScanProfile(
+            name="ism_902",
+            f_low_hz=902_000_000,
+            f_high_hz=928_000_000,
+            samp_rate=2.4e6,
+            fft=4096,
+            avg=10,
+            gain_db=25.0,
+            threshold_db=12.0,
+            min_width_bins=3,
+            guard_bins=1,
+            abs_power_floor_db=-92.0,
+        ),
+    ]
+    return {p.name.lower(): p for p in profiles}
 
 
 # ------------------------------
@@ -169,57 +229,69 @@ class Store:
         self._init()
 
     def _init(self):
-        cur = self.con.cursor()
-        cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS scans (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        t_start_utc TEXT,
-                        t_end_utc   TEXT,
-                        f_start_hz  INTEGER,
-                        f_stop_hz   INTEGER,
-                        step_hz     INTEGER,
-                        samp_rate   INTEGER,
-                        fft         INTEGER,
-                        avg         INTEGER,
-                        device      TEXT,
-                        driver      TEXT
-                    )
-                    """
+                cur = self.con.cursor()
+                cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS scans (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                t_start_utc TEXT,
+                                t_end_utc   TEXT,
+                                f_start_hz  INTEGER,
+                                f_stop_hz   INTEGER,
+                                step_hz     INTEGER,
+                                samp_rate   INTEGER,
+                                fft         INTEGER,
+                                avg         INTEGER,
+                                device      TEXT,
+                                driver      TEXT
+                        )
+                        """
                 )
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS detections (
-              scan_id     INTEGER,
-              time_utc    TEXT,
-              f_center_hz INTEGER,
-              f_low_hz    INTEGER,
-              f_high_hz   INTEGER,
-              peak_db     REAL,
-              noise_db    REAL,
-              snr_db      REAL,
-              service     TEXT,
-              region      TEXT,
-              notes       TEXT
-            )
-            """
-        )
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS baseline (
-              bin_hz      INTEGER PRIMARY KEY,
-              ema_occ     REAL,
-              ema_power_db REAL,
-              last_seen_utc TEXT,
-              total_obs   INTEGER,
-              hits        INTEGER
-            )
-            """
-        )
-        self.con.commit()
-        # Backfill new nullable columns when upgrading existing deployments
-        self._ensure_column("scans", "latitude", "latitude REAL")
-        self._ensure_column("scans", "longitude", "longitude REAL")
+                cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS detections (
+                            scan_id     INTEGER,
+                            time_utc    TEXT,
+                            f_center_hz INTEGER,
+                            f_low_hz    INTEGER,
+                            f_high_hz   INTEGER,
+                            peak_db     REAL,
+                            noise_db    REAL,
+                            snr_db      REAL,
+                            service     TEXT,
+                            region      TEXT,
+                            notes       TEXT,
+                            confidence  REAL
+                        )
+                        """
+                )
+                cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS baseline (
+                            bin_hz      INTEGER PRIMARY KEY,
+                            ema_occ     REAL,
+                            ema_power_db REAL,
+                            last_seen_utc TEXT,
+                            total_obs   INTEGER,
+                            hits        INTEGER
+                        )
+                        """
+                )
+                cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS spur_map (
+                            bin_hz        INTEGER PRIMARY KEY,
+                            mean_power_db REAL,
+                            hits          INTEGER,
+                            last_seen_utc TEXT
+                        )
+                        """
+                )
+                self.con.commit()
+                # Backfill new nullable columns when upgrading existing deployments
+                self._ensure_column("scans", "latitude", "latitude REAL")
+                self._ensure_column("scans", "longitude", "longitude REAL")
+                self._ensure_column("detections", "confidence", "confidence REAL")
 
     # Transaction helpers
     def begin(self):
@@ -266,11 +338,11 @@ class Store:
         self.con.execute("UPDATE scans SET t_end_utc = ? WHERE id = ?", (t_end_utc, scan_id))
         self.con.commit()
 
-    def add_detection(self, scan_id: int, seg: Segment, service: str, region: str, notes: str):
+    def add_detection(self, scan_id: int, seg: Segment, service: str, region: str, notes: str, confidence: Optional[float] = None):
         self.con.execute(
             """
-            INSERT INTO detections(scan_id, time_utc, f_center_hz, f_low_hz, f_high_hz, peak_db, noise_db, snr_db, service, region, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO detections(scan_id, time_utc, f_center_hz, f_low_hz, f_high_hz, peak_db, noise_db, snr_db, service, region, notes, confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 scan_id,
@@ -284,6 +356,7 @@ class Store:
                 service,
                 region,
                 notes,
+                float(confidence) if confidence is not None else None,
             ),
         )
 
@@ -323,6 +396,54 @@ class Store:
         cur.execute("SELECT ema_occ FROM baseline WHERE bin_hz = ?", (int(f_center_hz),))
         row = cur.fetchone()
         return float(row[0]) if row and row[0] is not None else None
+
+    def update_spur_bin(self, bin_hz: int, power_db: float, hits_increment: int = 1, ema_alpha: float = 0.2):
+        cur = self.con.cursor()
+        cur.execute("SELECT mean_power_db, hits FROM spur_map WHERE bin_hz = ?", (int(bin_hz),))
+        row = cur.fetchone()
+        tnow = utc_now_str()
+        if row is None:
+            cur.execute(
+                """
+                INSERT INTO spur_map(bin_hz, mean_power_db, hits, last_seen_utc)
+                VALUES (?, ?, ?, ?)
+                """,
+                (int(bin_hz), float(power_db), int(max(1, hits_increment)), tnow),
+            )
+        else:
+            prev_mean, prev_hits = row
+            prev_mean = float(prev_mean) if prev_mean is not None else float(power_db)
+            prev_hits = int(prev_hits or 0)
+            new_mean = (1.0 - ema_alpha) * prev_mean + ema_alpha * float(power_db)
+            cur.execute(
+                """
+                UPDATE spur_map
+                SET mean_power_db = ?, hits = ?, last_seen_utc = ?
+                WHERE bin_hz = ?
+                """,
+                (float(new_mean), int(prev_hits + max(1, hits_increment)), tnow, int(bin_hz)),
+            )
+        self.con.commit()
+
+    def lookup_spur(self, f_center_hz: int, tolerance_hz: int = 5_000) -> Optional[Tuple[int, float, int]]:
+        cur = self.con.cursor()
+        low = int(f_center_hz - tolerance_hz)
+        high = int(f_center_hz + tolerance_hz)
+        cur.execute(
+            """
+            SELECT bin_hz, mean_power_db, hits
+            FROM spur_map
+            WHERE bin_hz BETWEEN ? AND ?
+            ORDER BY ABS(bin_hz - ?)
+            LIMIT 1
+            """,
+            (low, high, int(f_center_hz)),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        bin_hz_val, mean_power_db, hits = row
+        return int(bin_hz_val), float(mean_power_db), int(hits)
 
 
 # ------------------------------
@@ -485,6 +606,7 @@ def detect_segments(
     cfar_guard: int = 4,
     cfar_quantile: float = 0.75,
     cfar_alpha_db: Optional[float] = None,
+    abs_power_floor_db: Optional[float] = None,
 ) -> Tuple[List[Segment], np.ndarray, np.ndarray]:
     """Detect contiguous energy segments.
     If cfar_mode != 'off', use OS-CFAR to produce the detection mask. Otherwise use a global robust noise floor.
@@ -549,7 +671,275 @@ def detect_segments(
         else:
             i += 1
 
+    if abs_power_floor_db is not None:
+        floor = float(abs_power_floor_db)
+        segs = [seg for seg in segs if seg.peak_db >= floor]
+
     return segs, above, noise_for_snr_db
+
+
+@dataclass
+class DetectionCluster:
+    f_low_hz: int
+    f_high_hz: int
+    first_seen_ts: str
+    last_seen_ts: str
+    first_window: int
+    last_window: int
+    hits: int = 0
+    windows: Set[int] = field(default_factory=set)
+    best_seg: Segment = field(default_factory=lambda: Segment(0, 0, 0, -999.0, -999.0, -999.0))
+    emitted: bool = False
+
+
+class DetectionEngine:
+    def __init__(
+        self,
+        store: "Store",
+        bandplan: Bandplan,
+        args,
+        *,
+        bin_hz: float,
+        min_hits: int = 2,
+        min_windows: int = 2,
+        max_gap_windows: int = 3,
+        freq_merge_hz: Optional[float] = None,
+    ):
+        self.store = store
+        self.bandplan = bandplan
+        self.args = args
+        self.bin_hz = float(bin_hz)
+        self.min_hits = max(1, int(min_hits))
+        self.min_windows = max(1, int(min_windows))
+        self.max_gap_windows = max(1, int(max_gap_windows))
+        self.freq_merge_hz = float(freq_merge_hz if freq_merge_hz is not None else max(self.bin_hz * 2, 25_000.0))
+        self.min_width_hz = max(self.bin_hz * float(args.min_width_bins), self.bin_hz)
+        self.clusters: List[DetectionCluster] = []
+        self._last_window_idx = -1
+        self.spur_tolerance_hz = 5_000.0
+        self.spur_margin_db = 4.0
+        self.spur_min_hits = 5
+        self.spur_override_snr = 10.0
+        self.spur_penalty_max = 0.35
+        self._pending_emits = 0
+
+    def ingest(self, scan_id: int, window_idx: int, segments: List[Segment]) -> Tuple[int, int, int]:
+        self._last_window_idx = max(self._last_window_idx, window_idx)
+        accepted = 0
+        spur_ignored = 0
+        if not segments:
+            self._prune_clusters(scan_id, window_idx)
+            return accepted, spur_ignored, self._drain_pending_emits()
+        timestamp = utc_now_str()
+        for seg in segments:
+            if self._spur_should_ignore(seg):
+                spur_ignored += 1
+                continue
+            self._record_hit(scan_id, window_idx, seg, timestamp)
+            accepted += 1
+        self._prune_clusters(scan_id, window_idx)
+        return accepted, spur_ignored, self._drain_pending_emits()
+
+    def flush(self, scan_id: int) -> int:
+        self._prune_clusters(scan_id, self._last_window_idx if self._last_window_idx >= 0 else 0, force=True)
+        return self._drain_pending_emits()
+
+    def _record_hit(self, scan_id: int, window_idx: int, seg: Segment, timestamp: str):
+        cluster = self._find_cluster(seg)
+        if cluster is None:
+            cluster = DetectionCluster(
+                f_low_hz=seg.f_low_hz,
+                f_high_hz=seg.f_high_hz,
+                first_seen_ts=timestamp,
+                last_seen_ts=timestamp,
+                first_window=window_idx,
+                last_window=window_idx,
+                hits=1,
+                windows={window_idx},
+                best_seg=seg,
+            )
+            self.clusters.append(cluster)
+        else:
+            cluster.f_low_hz = min(cluster.f_low_hz, seg.f_low_hz)
+            cluster.f_high_hz = max(cluster.f_high_hz, seg.f_high_hz)
+            cluster.last_seen_ts = timestamp
+            cluster.last_window = window_idx
+            cluster.hits += 1
+            cluster.windows.add(window_idx)
+            if seg.snr_db >= cluster.best_seg.snr_db:
+                cluster.best_seg = seg
+
+        self._maybe_emit_cluster(scan_id, cluster)
+
+    def _find_cluster(self, seg: Segment) -> Optional[DetectionCluster]:
+        for cluster in self.clusters:
+            if self._segments_overlap(cluster, seg):
+                return cluster
+        return None
+
+    def _segments_overlap(self, cluster: DetectionCluster, seg: Segment) -> bool:
+        return not (
+            seg.f_high_hz < (cluster.f_low_hz - self.freq_merge_hz)
+            or seg.f_low_hz > (cluster.f_high_hz + self.freq_merge_hz)
+        )
+
+    def _maybe_emit_cluster(self, scan_id: int, cluster: DetectionCluster):
+        if cluster.emitted:
+            return
+        if not self._cluster_qualifies(cluster):
+            return
+        self._emit_detection(scan_id, cluster)
+
+    def _cluster_qualifies(self, cluster: DetectionCluster) -> bool:
+        width_hz = float(cluster.f_high_hz - cluster.f_low_hz)
+        return (
+            cluster.hits >= self.min_hits
+            and len(cluster.windows) >= self.min_windows
+            and width_hz >= self.min_width_hz
+        )
+
+    def _emit_detection(self, scan_id: int, cluster: DetectionCluster):
+        cluster.emitted = True
+        best_seg = cluster.best_seg
+        confidence = self._compute_confidence(cluster)
+        combined_seg = Segment(
+            f_low_hz=cluster.f_low_hz,
+            f_high_hz=cluster.f_high_hz,
+            f_center_hz=int((cluster.f_low_hz + cluster.f_high_hz) / 2),
+            peak_db=best_seg.peak_db,
+            noise_db=best_seg.noise_db,
+            snr_db=best_seg.snr_db,
+        )
+        svc, reg, note = self.bandplan.lookup(combined_seg.f_center_hz)
+
+        self.store.begin()
+        self.store.add_detection(scan_id, combined_seg, svc, reg, note, confidence)
+        self.store.commit()
+        self._pending_emits += 1
+
+        occ = self.store.baseline_occ(combined_seg.f_center_hz)
+        is_new = occ is not None and occ < self.args.new_ema_occ
+
+        record = {
+            "time_utc": utc_now_str(),
+            "f_center_hz": combined_seg.f_center_hz,
+            "f_low_hz": combined_seg.f_low_hz,
+            "f_high_hz": combined_seg.f_high_hz,
+            "peak_db": combined_seg.peak_db,
+            "noise_db": combined_seg.noise_db,
+            "snr_db": combined_seg.snr_db,
+            "service": svc,
+            "region": reg,
+            "notes": note,
+            "is_new": bool(is_new),
+            "confidence": confidence,
+        }
+        maybe_emit_jsonl(self.args.jsonl, record)
+        if is_new:
+            body = f"{combined_seg.f_center_hz/1e6:.6f} MHz; SNR {combined_seg.snr_db:.1f} dB; {svc or 'Unknown'} {reg or ''}"
+            maybe_notify("SDRWatch: New signal", body, self.args.notify)
+
+    def _prune_clusters(self, scan_id: int, window_idx: int, force: bool = False):
+        to_remove: List[DetectionCluster] = []
+        for cluster in self.clusters:
+            gap = window_idx - cluster.last_window
+            if force or gap > self.max_gap_windows:
+                if not cluster.emitted and self._cluster_qualifies(cluster):
+                    self._emit_detection(scan_id, cluster)
+                to_remove.append(cluster)
+        for cluster in to_remove:
+            self.clusters.remove(cluster)
+
+    def _spur_should_ignore(self, seg: Segment) -> bool:
+        if getattr(self.args, "spur_calibration", False):
+            return False
+        spur = self.store.lookup_spur(seg.f_center_hz, int(self.spur_tolerance_hz))
+        if not spur:
+            return False
+        _, mean_power_db, hits = spur
+        if hits < self.spur_min_hits:
+            return False
+        if seg.peak_db >= mean_power_db + self.spur_margin_db:
+            return False
+        if seg.snr_db >= self.spur_override_snr:
+            return False
+        return True
+
+    def _compute_confidence(self, cluster: DetectionCluster) -> float:
+        best_seg = cluster.best_seg
+        snr_component = float(np.clip(best_seg.snr_db / 30.0, 0.0, 1.0))
+        hit_component = float(np.clip(cluster.hits / 6.0, 0.0, 1.0))
+        span_windows = max(cluster.last_window - cluster.first_window + 1, 1)
+        persistence_component = float(np.clip(len(cluster.windows) / span_windows, 0.0, 1.0))
+        duration_component = float(np.clip(span_windows / 8.0, 0.0, 1.0))
+        raw_score = (
+            0.45 * snr_component
+            + 0.25 * hit_component
+            + 0.2 * persistence_component
+            + 0.1 * duration_component
+        )
+        penalty = self._spur_confidence_penalty(cluster)
+        return float(np.clip(raw_score - penalty, 0.0, 1.0))
+
+    def _spur_confidence_penalty(self, cluster: DetectionCluster) -> float:
+        if getattr(self.args, "spur_calibration", False):
+            return 0.0
+        seg = cluster.best_seg
+        spur = self.store.lookup_spur(seg.f_center_hz, int(self.spur_tolerance_hz))
+        if not spur:
+            return 0.0
+        _, mean_power_db, hits = spur
+        if hits < self.spur_min_hits:
+            return 0.0
+        diff = float(seg.peak_db - mean_power_db)
+        if diff >= self.spur_margin_db + 5.0:
+            return 0.05
+        if diff >= self.spur_margin_db:
+            return min(0.15, self.spur_penalty_max)
+        return self.spur_penalty_max
+
+    def _drain_pending_emits(self) -> int:
+        emitted = self._pending_emits
+        self._pending_emits = 0
+        return emitted
+
+
+class WindowPowerMonitor:
+    def __init__(self, spike_db: float = 8.0, ema_alpha: float = 0.2, warmup_windows: int = 3):
+        self.spike_db = float(spike_db)
+        self.ema_alpha = float(np.clip(ema_alpha, 1e-3, 1.0))
+        self.warmup_windows = max(0, int(warmup_windows))
+        self.ema: Optional[float] = None
+        self.count = 0
+
+    def update(self, mean_db: float) -> Tuple[bool, float, float]:
+        self.count += 1
+        if self.ema is None:
+            self.ema = mean_db
+            return False, mean_db, 0.0
+        delta = float(mean_db - self.ema)
+        is_anom = self.count > self.warmup_windows and delta > self.spike_db
+        self.ema = (1.0 - self.ema_alpha) * self.ema + self.ema_alpha * mean_db
+        return is_anom, float(self.ema), delta
+
+
+def _track_spur_hits(tracker: Dict[int, Dict[str, float]], segments: List[Segment]):
+    for seg in segments:
+        entry = tracker.setdefault(seg.f_center_hz, {"hits": 0.0, "power_sum": 0.0})
+        entry["hits"] += 1.0
+        entry["power_sum"] += float(seg.peak_db)
+
+
+def _persist_spur_calibration(store: Store, tracker: Dict[int, Dict[str, float]], total_windows: int, min_ratio: float = 0.6):
+    if not total_windows:
+        return
+    min_hits = max(1, int(total_windows * min_ratio))
+    for bin_hz, stats in tracker.items():
+        hits = int(stats.get("hits", 0))
+        if hits < min_hits:
+            continue
+        avg_power = float(stats.get("power_sum", 0.0)) / float(max(hits, 1))
+        store.update_spur_bin(bin_hz, avg_power, hits_increment=hits)
 
 
 def compute_psd_db(samples: np.ndarray, samp_rate: float, fft_size: int, avg: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -646,6 +1036,59 @@ def _parse_duration_to_seconds(text: Optional[str]) -> Optional[float]:
         raise ValueError(f"Invalid duration string: {text}")
 
 
+def _set_default(args, overrides: set, name: str, value):
+    if hasattr(args, name):
+        overrides.add(name)
+    else:
+        setattr(args, name, value)
+
+
+def _apply_scan_profile(args, parser: argparse.ArgumentParser):
+    profile_name = getattr(args, "profile", None)
+    if not profile_name:
+        return
+    profiles = default_scan_profiles()
+    prof = profiles.get(profile_name.lower())
+    if prof is None:
+        parser.error(f"Unknown scan profile '{profile_name}'. Available: {', '.join(sorted(profiles.keys()))}")
+
+    requested_low = min(args.start, args.stop)
+    requested_high = max(args.start, args.stop)
+    if requested_low < prof.f_low_hz or requested_high > prof.f_high_hz:
+        print(
+            f"[profile] Requested span {requested_low/1e6:.3f}-{requested_high/1e6:.3f} MHz outside profile '{prof.name}' band, skipping profile defaults.",
+            file=sys.stderr,
+        )
+        return
+
+    def maybe_set(attr: str, value):
+        if attr not in args._cli_overrides:
+            setattr(args, attr, value)
+
+    maybe_set("samp_rate", prof.samp_rate)
+    maybe_set("fft", prof.fft)
+    maybe_set("avg", prof.avg)
+    maybe_set("threshold_db", prof.threshold_db)
+    maybe_set("guard_bins", prof.guard_bins)
+    maybe_set("min_width_bins", prof.min_width_bins)
+
+    if prof.abs_power_floor_db is not None:
+        setattr(args, "abs_power_floor_db", prof.abs_power_floor_db)
+
+    gain_override = "gain" in args._cli_overrides and not (
+        isinstance(getattr(args, "gain"), str) and getattr(args, "gain").lower() == "auto"
+    )
+    if not gain_override:
+        if isinstance(getattr(args, "gain"), str) and getattr(args, "gain").lower() == "auto":
+            print(
+                f"[profile] Overriding auto gain with fixed {prof.gain_db:.1f} dB from profile '{prof.name}'.",
+                file=sys.stderr,
+            )
+        setattr(args, "gain", float(prof.gain_db))
+
+    print(f"[profile] Applied profile '{prof.name}'", flush=True)
+
+
 def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
     """Perform a single full sweep across [start, stop] inclusive, returning the scan_id."""
     meta = dict(
@@ -663,8 +1106,23 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
     )
     scan_id = store.start_scan(meta)
 
+    bin_hz = float(args.samp_rate) / float(args.fft) if args.fft else float(args.samp_rate)
+    detection_engine: Optional[DetectionEngine]
+    if args.spur_calibration:
+        detection_engine = None
+    else:
+        detection_engine = DetectionEngine(
+            store,
+            bandplan,
+            args,
+            bin_hz=bin_hz,
+        )
+    power_monitor = WindowPowerMonitor()
+    spur_tracker: Dict[int, Dict[str, float]] = {}
+
     try:
         center = args.start
+        window_idx = 0
         print(f"[scan] begin sweep id={scan_id} range={args.start/1e6:.3f}-{args.stop/1e6:.3f} MHz step={args.step/1e6:.3f} samp_rate={args.samp_rate/1e6:.3f} fft={args.fft} avg={args.avg}", flush=True)
         while center <= args.stop:
             src.tune(center)
@@ -688,54 +1146,62 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
                 cfar_guard=args.cfar_guard,
                 cfar_quantile=args.cfar_quantile,
                 cfar_alpha_db=args.cfar_alpha_db,
+                abs_power_floor_db=getattr(args, "abs_power_floor_db", None),
             )
 
-            # Occupancy mask per bin for baseline update
-            noise_db = robust_noise_floor_db(psd_db)
-            dynamic = noise_db + args.threshold_db
-            occupied_mask = occ_mask_cfar if (args.cfar and args.cfar != 'off') else (psd_db > dynamic)
+            mean_psd_db = float(np.mean(psd_db))
+            p90_psd_db = float(np.percentile(psd_db, 90.0))
+            is_anom, ema_power_db, delta_db = power_monitor.update(mean_psd_db)
+            accepted_hits = 0
+            spur_ignored = 0
+            promoted = 0
 
-            # --- begin per-window batched DB writes ---
-            store.begin()
+            if is_anom:
+                print(
+                    f"[scan] window center={center/1e6:.6f} MHz flagged anomalous (mean={mean_psd_db:.1f} dB, ema={ema_power_db:.1f} dB, delta={delta_db:+.1f} dB, p90={p90_psd_db:.1f} dB)",
+                    flush=True,
+                )
+                if detection_engine:
+                    accepted_hits, spur_ignored, promoted = detection_engine.ingest(scan_id, window_idx, [])
+            else:
+                # Occupancy mask per bin for baseline update
+                noise_db = robust_noise_floor_db(psd_db)
+                dynamic = noise_db + args.threshold_db
+                occupied_mask = occ_mask_cfar if (args.cfar and args.cfar != 'off') else (psd_db > dynamic)
 
-            store.update_baseline(rf_freqs, psd_db, occupied_mask)
+                # --- begin per-window batched DB writes ---
+                store.begin()
 
-            # Persist detections and possibly alert on "new" bins
-            for seg in segs:
-                svc, reg, note = bandplan.lookup(seg.f_center_hz)
-                store.add_detection(scan_id, seg, svc, reg, note)
+                store.update_baseline(rf_freqs, psd_db, occupied_mask)
 
-                # Decide "new to baseline": occupancy EMA below threshold
-                occ = store.baseline_occ(seg.f_center_hz)
-                is_new = (occ is not None and occ < args.new_ema_occ)
+                # commit batched writes for this window
+                store.commit()
 
-                record = {
-                    "time_utc": utc_now_str(),
-                    "f_center_hz": seg.f_center_hz,
-                    "f_low_hz": seg.f_low_hz,
-                    "f_high_hz": seg.f_high_hz,
-                    "peak_db": seg.peak_db,
-                    "noise_db": seg.noise_db,
-                    "snr_db": seg.snr_db,
-                    "service": svc,
-                    "region": reg,
-                    "notes": note,
-                    "is_new": bool(is_new),
-                }
-                maybe_emit_jsonl(args.jsonl, record)
-                if is_new:
-                    body = f"{seg.f_center_hz/1e6:.6f} MHz; SNR {seg.snr_db:.1f} dB; {svc or 'Unknown'} {reg or ''}"
-                    maybe_notify("SDRWatch: New signal", body, args.notify)
-
-            # commit batched writes for this window
-            store.commit()
+                if args.spur_calibration:
+                    _track_spur_hits(spur_tracker, segs)
+                if detection_engine:
+                    accepted_hits, spur_ignored, promoted = detection_engine.ingest(scan_id, window_idx, segs)
+            window_idx += 1
 
             # Progress log every window
-            print(f"[scan] window center={center/1e6:.6f} MHz det={len(segs)}", flush=True)
+            flag = " (anomalous)" if is_anom else ""
+            spur_info = f" spur_masked={spur_ignored}" if detection_engine else ""
+            det_info = f" promoted={promoted}" if detection_engine else ""
+            acc_info = f" accepted={accepted_hits}" if detection_engine else ""
+            print(
+                f"[scan] window center={center/1e6:.6f} MHz hits={len(segs)}{acc_info}{det_info}{spur_info}{flag}",
+                flush=True,
+            )
             # Advance center frequency
             center += args.step
 
     finally:
+        if detection_engine:
+            flushed = detection_engine.flush(scan_id)
+            if flushed:
+                print(f"[scan] sweep id={scan_id} flushed pending detections={flushed}", flush=True)
+        if args.spur_calibration:
+            _persist_spur_calibration(store, spur_tracker, window_idx)
         # End scan (always set end time)
         store.end_scan(scan_id, utc_now_str())
         print(f"[scan] end sweep id={scan_id}", flush=True)
@@ -744,6 +1210,20 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
 
 
 def run(args):
+    """Scanning pipeline overview.
+
+    run() decides how many sweeps execute by inspecting --loop/--repeat/--duration,
+    then repeatedly calls _do_one_sweep() until that termination policy is satisfied.
+    _do_one_sweep() walks center frequency from --start to --stop in --step increments,
+    tuning the SDR, collecting samples, and invoking compute_psd_db() to turn each
+    capture into a baseband PSD. detect_segments() (with CFAR via cfar_os_mask) turns
+    each PSD into contiguous hits, while Store.update_baseline() ingests every bin's
+    PSD/noise occupancy EMA. DetectionEngine accumulates those hits over multiple
+    windows, consults spur_map to suppress known hardware artifacts, and only invokes
+    Store.add_detection() (plus JSONL/notifies) once a frequency region shows
+    repeat/persistent energy. In --spur-calibration mode the same sweep populates
+    spur_map instead of emitting detections.
+    """
     # Optional TMPDIR override (steer off tmpfs /tmp on Trixie)
     if args.tmpdir:
         os.environ["TMPDIR"] = args.tmpdir
@@ -856,37 +1336,45 @@ def run(args):
 # CLI
 # ------------------------------
 
-def parse_args():
-    p = argparse.ArgumentParser(description="Wideband scanner & baseline builder using SoapySDR or native RTL-SDR")
+def parse_args(argv: Optional[List[str]] = None):
+    if argv is None:
+        argv = sys.argv[1:]
+
+    p = argparse.ArgumentParser(
+        description="Wideband scanner & baseline builder using SoapySDR or native RTL-SDR",
+        argument_default=argparse.SUPPRESS,
+    )
     p.add_argument("--start", type=float, required=True, help="Start frequency in Hz (e.g., 88e6)")
     p.add_argument("--stop", type=float, required=True, help="Stop frequency in Hz (e.g., 108e6)")
-    p.add_argument("--step", type=float, default=2.4e6, help="Center frequency step per window [Hz]")
+    p.add_argument("--step", type=float, help="Center frequency step per window [Hz] (default 2.4e6)")
 
-    p.add_argument("--samp-rate", type=float, default=2.4e6, help="Sample rate [Hz]")
-    p.add_argument("--fft", type=int, default=4096, help="FFT size (per Welch segment)")
-    p.add_argument("--avg", type=int, default=8, help="Averaging factor (segments per PSD)")
+    p.add_argument("--samp-rate", dest="samp_rate", type=float, help="Sample rate [Hz] (default 2.4e6)")
+    p.add_argument("--fft", type=int, help="FFT size (per Welch segment) (default 4096)")
+    p.add_argument("--avg", type=int, help="Averaging factor (segments per PSD) (default 8)")
 
-    p.add_argument("--driver", type=str, default="rtlsdr", help="Soapy driver key (e.g., rtlsdr, hackrf, airspy, etc.) or 'rtlsdr_native' for direct librtlsdr")
-    p.add_argument("--soapy-args", type=str, default=None, help="Comma-separated Soapy device args (e.g., 'serial=00000001,index=0')")
-    p.add_argument("--gain", type=str, default="auto", help='Gain in dB or "auto"')
+    p.add_argument("--driver", type=str, help="Soapy driver key (e.g., rtlsdr, hackrf, airspy, etc.) or 'rtlsdr_native' for direct librtlsdr (default rtlsdr)")
+    p.add_argument("--soapy-args", type=str, help="Comma-separated Soapy device args (e.g., 'serial=00000001,index=0')")
+    p.add_argument("--gain", type=str, help='Gain in dB or "auto" (default auto)')
 
-    p.add_argument("--threshold-db", type=float, default=8.0, help="Detection threshold above noise floor [dB]")
-    p.add_argument("--guard-bins", type=int, default=1, help="Allow this many below-threshold bins inside a detection")
-    p.add_argument("--min-width-bins", type=int, default=2, help="Minimum contiguous bins for a detection")
+    p.add_argument("--threshold-db", dest="threshold_db", type=float, help="Detection threshold above noise floor [dB] (default 8.0)")
+    p.add_argument("--guard-bins", dest="guard_bins", type=int, help="Allow this many below-threshold bins inside a detection (default 1)")
+    p.add_argument("--min-width-bins", dest="min_width_bins", type=int, help="Minimum contiguous bins for a detection (default 2)")
     # CFAR options
-    p.add_argument("--cfar", choices=["off", "os", "ca"], default="os", help="CFAR mode (default: os)")
-    p.add_argument("--cfar-train", type=int, default=24, help="Training cells per side for CFAR")
-    p.add_argument("--cfar-guard", type=int, default=4, help="Guard cells per side (excluded around CUT) for CFAR")
-    p.add_argument("--cfar-quantile", type=float, default=0.75, help="Quantile (0..1) for OS-CFAR order statistic")
-    p.add_argument("--cfar-alpha-db", type=float, default=None, help="Override threshold scaling for CFAR in dB; defaults to --threshold-db")
+    p.add_argument("--cfar", choices=["off", "os", "ca"], help="CFAR mode (default: os)")
+    p.add_argument("--cfar-train", dest="cfar_train", type=int, help="Training cells per side for CFAR (default 24)")
+    p.add_argument("--cfar-guard", dest="cfar_guard", type=int, help="Guard cells per side (excluded around CUT) for CFAR (default 4)")
+    p.add_argument("--cfar-quantile", dest="cfar_quantile", type=float, help="Quantile (0..1) for OS-CFAR order statistic (default 0.75)")
+    p.add_argument("--cfar-alpha-db", dest="cfar_alpha_db", type=float, help="Override threshold scaling for CFAR in dB; defaults to --threshold-db")
 
-    p.add_argument("--bandplan", type=str, default=None, help="Optional bandplan CSV to map detections")
-    p.add_argument("--db", type=str, default="sdrwatch.db", help="SQLite DB path")
-    p.add_argument("--jsonl", type=str, default=None, help="Emit detections as line-delimited JSON to this path")
+    p.add_argument("--bandplan", type=str, help="Optional bandplan CSV to map detections")
+    p.add_argument("--db", type=str, help="SQLite DB path (default sdrwatch.db)")
+    p.add_argument("--jsonl", type=str, help="Emit detections as line-delimited JSON to this path")
     p.add_argument("--notify", action="store_true", help="Desktop notifications for new signals")
-    p.add_argument("--new-ema-occ", type=float, default=0.02, help="EMA occupancy threshold to flag a bin as NEW")
-    p.add_argument("--latitude", type=float, default=None, help="Optional latitude in decimal degrees for this scan")
-    p.add_argument("--longitude", type=float, default=None, help="Optional longitude in decimal degrees for this scan")
+    p.add_argument("--new-ema-occ", dest="new_ema_occ", type=float, help="EMA occupancy threshold to flag a bin as NEW (default 0.02)")
+    p.add_argument("--latitude", type=float, help="Optional latitude in decimal degrees for this scan")
+    p.add_argument("--longitude", type=float, help="Optional longitude in decimal degrees for this scan")
+    p.add_argument("--profile", type=str, help="Scan profile name to pre-load sane defaults (see documentation)")
+    p.add_argument("--spur-calibration", dest="spur_calibration", action="store_true", help="Learn persistent internal spurs instead of emitting detections")
 
     # Sweep control modes (mutually exclusive)
     group = p.add_mutually_exclusive_group()
@@ -894,12 +1382,49 @@ def parse_args():
     group.add_argument("--repeat", type=int, help="Run exactly N full sweep cycles, then exit")
     group.add_argument("--duration", type=str, help="Run sweeps for a duration (e.g., '300', '10m', '2h'). Overrides --repeat count while time remains")
 
-    p.add_argument("--sleep-between-sweeps", type=float, default=0.0, help="Seconds to sleep between sweep cycles")
+    p.add_argument("--sleep-between-sweeps", dest="sleep_between_sweeps", type=float, help="Seconds to sleep between sweep cycles (default 0)")
 
     # Trixie scratch steering
-    p.add_argument("--tmpdir", type=str, default=os.environ.get("TMPDIR", None), help="Scratch directory for temp files (defaults to $TMPDIR)")
+    p.add_argument("--tmpdir", type=str, help="Scratch directory for temp files (defaults to $TMPDIR)")
 
-    args = p.parse_args()
+    args = p.parse_args(argv)
+    args._cli_overrides = set()
+
+    _set_default(args, args._cli_overrides, "step", 2.4e6)
+    _set_default(args, args._cli_overrides, "samp_rate", 2.4e6)
+    _set_default(args, args._cli_overrides, "fft", 4096)
+    _set_default(args, args._cli_overrides, "avg", 8)
+    _set_default(args, args._cli_overrides, "driver", "rtlsdr")
+    _set_default(args, args._cli_overrides, "soapy_args", None)
+    _set_default(args, args._cli_overrides, "gain", "auto")
+    _set_default(args, args._cli_overrides, "threshold_db", 8.0)
+    _set_default(args, args._cli_overrides, "guard_bins", 1)
+    _set_default(args, args._cli_overrides, "min_width_bins", 2)
+    _set_default(args, args._cli_overrides, "cfar", "os")
+    _set_default(args, args._cli_overrides, "cfar_train", 24)
+    _set_default(args, args._cli_overrides, "cfar_guard", 4)
+    _set_default(args, args._cli_overrides, "cfar_quantile", 0.75)
+    _set_default(args, args._cli_overrides, "cfar_alpha_db", None)
+    _set_default(args, args._cli_overrides, "bandplan", None)
+    _set_default(args, args._cli_overrides, "db", "sdrwatch.db")
+    _set_default(args, args._cli_overrides, "jsonl", None)
+    _set_default(args, args._cli_overrides, "notify", False)
+    _set_default(args, args._cli_overrides, "new_ema_occ", 0.02)
+    _set_default(args, args._cli_overrides, "latitude", None)
+    _set_default(args, args._cli_overrides, "longitude", None)
+    _set_default(args, args._cli_overrides, "profile", None)
+    _set_default(args, args._cli_overrides, "spur_calibration", False)
+    _set_default(args, args._cli_overrides, "loop", False)
+    _set_default(args, args._cli_overrides, "repeat", None)
+    _set_default(args, args._cli_overrides, "duration", None)
+    _set_default(args, args._cli_overrides, "sleep_between_sweeps", 0.0)
+    _set_default(args, args._cli_overrides, "tmpdir", os.environ.get("TMPDIR"))
+    setattr(args, "abs_power_floor_db", None)
+
+    _apply_scan_profile(args, p)
+    if hasattr(args, "_cli_overrides"):
+        delattr(args, "_cli_overrides")
+
     # Backend availability check: only require Soapy if not using rtlsdr_native
     if args.driver != "rtlsdr_native" and not HAVE_SOAPY:
         p.error("python3-soapysdr not installed. Install it (or use --driver rtlsdr_native).")
