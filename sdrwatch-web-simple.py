@@ -21,6 +21,7 @@ Auth notes:
 """
 from __future__ import annotations
 import argparse, os, io, sqlite3, math, json
+from bisect import bisect_left
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from flask import Flask, request, Response, render_template, render_template_string, jsonify, abort, url_for  # type: ignore
@@ -33,6 +34,7 @@ CHART_HEIGHT_PX = 160
 API_TOKEN = os.getenv("SDRWATCH_TOKEN", "")  # page auth (optional)
 CONTROL_URL = os.getenv("SDRWATCH_CONTROL_URL", "http://127.0.0.1:8765")
 CONTROL_TOKEN = os.getenv("SDRWATCH_CONTROL_TOKEN", "") or os.getenv("SDRWATCH_TOKEN", "")
+BASELINE_NEW_THRESHOLD = 0.2
 
 # ================================
 # DB helpers
@@ -103,6 +105,7 @@ def parse_detection_filters(args, *, default_since_hours: Optional[int] = None) 
         "f_min_hz": None,
         "f_max_hz": None,
         "since_hours": default_since_hours,
+        "min_conf": None,
     }
     form_defaults: Dict[str, str] = {
         "service": "",
@@ -110,6 +113,7 @@ def parse_detection_filters(args, *, default_since_hours: Optional[int] = None) 
         "f_min_mhz": "",
         "f_max_mhz": "",
         "since_hours": "" if default_since_hours is None else str(default_since_hours),
+        "min_conf": "",
     }
 
     service = _clean_str("service")
@@ -150,6 +154,13 @@ def parse_detection_filters(args, *, default_since_hours: Optional[int] = None) 
     elif default_since_hours is None:
         filters["since_hours"] = None
 
+    min_conf_raw = _clean_str("min_conf")
+    min_conf_val = _coerce_float(min_conf_raw)
+    if min_conf_val is not None:
+        filters["min_conf"] = float(min_conf_val)
+    if min_conf_raw:
+        form_defaults["min_conf"] = min_conf_raw
+
     return filters, form_defaults
 
 
@@ -176,8 +187,12 @@ def detection_predicates(filters: Dict[str, Any], *, alias: str = "d") -> Tuple[
     if since_hours is not None and since_hours > 0:
         conds.append(f"{alias}.time_utc >= datetime('now', ?)")
         params.append(f"-{int(since_hours)} hours")
+    min_conf = filters.get("min_conf")
+    confidence_available = bool(filters.get("__confidence_available"))
+    if confidence_available and min_conf is not None:
+        conds.append(f"{alias}.confidence >= ?")
+        params.append(float(min_conf))
     return conds, params
-
 
 def scan_predicates(filters: Dict[str, Any], *, alias: str = "s") -> Tuple[List[str], List[Any]]:
     conds: List[str] = []
@@ -631,6 +646,9 @@ class ControllerClient:
         params = {"tail": int(tail)} if tail else None
         return self._req('GET', f'/jobs/{job_id}/logs', params=params, want_text=True)
 
+    def profiles(self):
+        return self._req('GET', '/profiles')
+
 # ================================
 # Flask app
 # ================================
@@ -638,9 +656,9 @@ class ControllerClient:
 def create_app(db_path: str) -> Flask:
     app = Flask(__name__, template_folder='templates', static_folder='static')
     app._db_path = db_path
-    app._db_error = None  
-    app._con = None  
-    app._has_confidence_column: Optional[bool] = None
+    app._db_error = None
+    app._con = None
+    app._has_confidence_column = None
     app._ctl = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
 
     def _ensure_con() -> Optional[sqlite3.Connection]:
@@ -739,6 +757,127 @@ def create_app(db_path: str) -> Flask:
         running.sort(key=lambda j: float(j.get("created_ts") or 0.0), reverse=True)
         return running[0] if running else None
 
+    def controller_profiles() -> List[Dict[str, Any]]:
+        try:
+            data = app._ctl.profiles()
+        except Exception as exc:
+            app.logger.warning("controller /profiles fetch failed: %s", exc)
+            return []
+        if isinstance(data, dict):
+            profiles = data.get("profiles")
+            if isinstance(profiles, list):
+                return profiles
+            app.logger.warning("controller /profiles payload missing list: %s", data)
+            return []
+        app.logger.warning("controller /profiles unexpected payload type: %r", type(data))
+        return []
+
+    def load_spur_bins() -> List[int]:
+        connection = _ensure_con()
+        if connection is None:
+            return []
+        try:
+            rows = qa(connection, "SELECT bin_hz FROM spur_map")
+        except sqlite3.OperationalError:
+            return []
+        except sqlite3.Error:
+            return []
+        bins: List[int] = []
+        for row in rows:
+            try:
+                val = row.get("bin_hz") if isinstance(row, dict) else row[0]
+                if val is not None:
+                    bins.append(int(val))
+            except Exception:
+                continue
+        bins.sort()
+        return bins
+
+    def annotate_near_spur(records: List[Dict[str, Any]], bins: List[int], *, tolerance_hz: int = 5_000) -> None:
+        if not bins:
+            for rec in records:
+                rec["near_spur"] = False
+            return
+        for rec in records:
+            fc = rec.get("f_center_hz")
+            near = False
+            if fc is not None:
+                try:
+                    fc_int = int(fc)
+                    idx = bisect_left(bins, fc_int)
+                    for pos in (idx, idx - 1):
+                        if 0 <= pos < len(bins) and abs(fc_int - bins[pos]) <= tolerance_hz:
+                            near = True
+                            break
+                except Exception:
+                    near = False
+            rec["near_spur"] = near
+    def load_baseline_bins(f_min: Optional[int], f_max: Optional[int]) -> List[Tuple[int, float]]:
+        connection = _ensure_con()
+        if connection is None:
+            return []
+        query = "SELECT bin_hz, ema_occ FROM baseline"
+        params: List[Any] = []
+        clauses: List[str] = []
+        if f_min is not None:
+            clauses.append("bin_hz >= ?")
+            params.append(int(f_min))
+        if f_max is not None:
+            clauses.append("bin_hz <= ?")
+            params.append(int(f_max))
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY bin_hz"
+        try:
+            rows = qa(connection, query, tuple(params))
+        except sqlite3.OperationalError:
+            return []
+        except sqlite3.Error:
+            return []
+        bins: List[Tuple[int, float]] = []
+        for row in rows:
+            try:
+                bin_hz = row.get("bin_hz") if isinstance(row, dict) else row[0]
+                occ = row.get("ema_occ") if isinstance(row, dict) else row[1]
+                if bin_hz is None or occ is None:
+                    continue
+                bins.append((int(bin_hz), float(occ)))
+            except Exception:
+                continue
+        return bins
+
+    def annotate_baseline_status(records: List[Dict[str, Any]], bins: List[Tuple[int, float]], threshold: float) -> None:
+        if not bins:
+            for rec in records:
+                rec["baseline_status"] = "unknown"
+                rec["is_new"] = None
+            return
+        freqs = [b[0] for b in bins]
+        for rec in records:
+            fc = rec.get("f_center_hz")
+            status = "unknown"
+            is_new = None
+            if fc is not None:
+                try:
+                    fc_int = int(fc)
+                    idx = bisect_left(freqs, fc_int)
+                    closest_occ = None
+                    best_diff = None
+                    for pos in (idx, idx - 1):
+                        if 0 <= pos < len(freqs):
+                            diff = abs(fc_int - freqs[pos])
+                            if best_diff is None or diff < best_diff:
+                                closest_occ = bins[pos]
+                                best_diff = diff
+                    if closest_occ is not None:
+                        occ_val = closest_occ[1]
+                        is_new = bool(occ_val < threshold)
+                        status = "new" if is_new else "known"
+                except Exception:
+                    status = "unknown"
+            rec["baseline_status"] = status
+            rec["is_new"] = is_new
+
     def start_job_from_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         device_key = payload.get('device_key')
         if not device_key:
@@ -768,7 +907,7 @@ def create_app(db_path: str) -> Flask:
     # ---------- Pages ----------
     @app.get('/control')
     def control():
-        return render_template("control.html", db_path=app._db_path)
+        return render_template("control.html", db_path=app._db_path, profiles=controller_profiles())
 
     @app.route('/')
     def dashboard():
@@ -785,6 +924,7 @@ def create_app(db_path: str) -> Flask:
 
         filters, form_defaults = parse_detection_filters(request.args, default_since_hours=168)
         confidence_available = detections_have_confidence()
+        filters["__confidence_available"] = confidence_available
 
         snr_bucket_db = 3
         snr_bucket_raw = request.args.get('snr_bucket_db')
@@ -837,6 +977,8 @@ def create_app(db_path: str) -> Flask:
             active_filters.append({"label": "Service", "value": str(filters['service'])})
         if filters.get('min_snr') is not None:
             active_filters.append({"label": "Min SNR", "value": f"{filters['min_snr']:.1f} dB"})
+        if confidence_available and filters.get('min_conf') is not None:
+            active_filters.append({"label": "Confidence", "value": f"≥ {filters['min_conf']:.2f}"})
         if filters.get('f_min_hz') is not None or filters.get('f_max_hz') is not None:
             lo = filters.get('f_min_hz')
             hi = filters.get('f_max_hz')
@@ -894,6 +1036,7 @@ def create_app(db_path: str) -> Flask:
         args = request.args
         filters, form_defaults = parse_detection_filters(args)
         confidence_available = detections_have_confidence()
+        filters["__confidence_available"] = confidence_available
         confidence_sql = "d.confidence" if confidence_available else "NULL"
         conds, params = detection_predicates(filters, alias="d")
         where_sql = " WHERE " + " AND ".join(conds) if conds else ""
@@ -919,6 +1062,15 @@ def create_app(db_path: str) -> Flask:
         """,
             params_tuple + (page_size, offset),
         )
+
+        freq_values = [r.get('f_center_hz') for r in rows if r.get('f_center_hz') is not None]
+        freq_min = int(min(freq_values)) if freq_values else None
+        freq_max = int(max(freq_values)) if freq_values else None
+        baseline_bins = load_baseline_bins(freq_min, freq_max)
+        annotate_baseline_status(rows, baseline_bins, BASELINE_NEW_THRESHOLD)
+
+        spur_bins = load_spur_bins()
+        annotate_near_spur(rows, spur_bins)
 
         services = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
         snr_hist, snr_stats = snr_histogram(con(), filters, bucket_db=3)
@@ -978,6 +1130,8 @@ def create_app(db_path: str) -> Flask:
             active_filters.append({"label": "Service", "value": str(filters['service'])})
         if filters.get('min_snr') is not None:
             active_filters.append({"label": "Min SNR", "value": f"{filters['min_snr']:.1f} dB"})
+        if confidence_available and filters.get('min_conf') is not None:
+            active_filters.append({"label": "Confidence", "value": f"≥ {filters['min_conf']:.2f}"})
         if filters.get('f_min_hz') is not None or filters.get('f_max_hz') is not None:
             lo = filters.get('f_min_hz')
             hi = filters.get('f_max_hz')
@@ -1039,7 +1193,7 @@ def create_app(db_path: str) -> Flask:
                 "active": (filters.get('f_min_hz') == min_hz and filters.get('f_max_hz') == max_hz),
             })
 
-        export_params = {k: v for k, v in base_args.items() if k in {"service", "min_snr", "f_min_mhz", "f_max_mhz", "since_hours"}}
+        export_params = {k: v for k, v in base_args.items() if k in {"service", "min_snr", "min_conf", "f_min_mhz", "f_max_mhz", "since_hours"}}
         qs = urlparse.urlencode(export_params)
 
         return render_template(
@@ -1064,6 +1218,9 @@ def create_app(db_path: str) -> Flask:
             chart_style_attr=f'style="height:{CHART_HEIGHT_PX}px;"',
             clear_filters_url=build_filter_url({}, reset=True),
             confidence_available=confidence_available,
+            spur_hint_available=bool(spur_bins),
+            baseline_threshold=BASELINE_NEW_THRESHOLD,
+            baseline_hint_available=bool(baseline_bins),
         )
 
     @app.route('/scans')
@@ -1142,11 +1299,15 @@ def create_app(db_path: str) -> Flask:
         where = []
         if args.get('service'): where.append("COALESCE(service,'Unknown') = ?"); params.append(args.get('service'))
         if args.get('min_snr'): where.append("snr_db >= ?"); params.append(float(args.get('min_snr')))
+        min_conf_arg = args.get('min_conf')
+        confidence_available = detections_have_confidence()
+        if min_conf_arg and confidence_available:
+            where.append("confidence >= ?")
+            params.append(float(min_conf_arg))
         if args.get('f_min_mhz'): where.append("f_center_hz >= ?"); params.append(int(float(args.get('f_min_mhz'))*1e6))
         if args.get('f_max_mhz'): where.append("f_center_hz <= ?"); params.append(int(float(args.get('f_max_mhz'))*1e6))
         if args.get('since_hours'): where.append("time_utc >= datetime('now', ?)"); params.append(f"-{int(float(args.get('since_hours')))} hours")
         where_sql = (" WHERE "+" AND ".join(where)) if where else ""
-        confidence_available = detections_have_confidence()
         confidence_sql = "confidence" if confidence_available else "NULL"
         rows = qa(con(), f"""
             SELECT time_utc, scan_id, f_center_hz, f_low_hz, f_high_hz,

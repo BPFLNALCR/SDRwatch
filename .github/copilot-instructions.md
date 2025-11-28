@@ -4,6 +4,16 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
 
 ---
 
+## Layered runtime model (scanner ↔ controller ↔ web)
+
+* **Scanner (`sdrwatch.py`)** owns SDR/DSP loops, detection heuristics, spur calibration, and all SQLite writes (`scans`, `detections`, `baseline`, `spur_map`). It now exports built-in profiles via `--list-profiles`.
+* **Controller (`sdrwatch-control.py`)** is the only process that spawns scanners. It accepts structured scan requests (`device_key`, `label`, `params`), builds CLI args, enforces device locks, monitors child processes, and exposes metadata like `/profiles` by shelling out `sdrwatch.py --list-profiles`.
+* **Web (`sdrwatch-web-simple.py`)** never touches SDR hardware or IQ streams. It only talks to the controller’s HTTP API (start/stop/list/logs/profiles) and reads SQLite directly for dashboards. Do not duplicate DSP logic outside the scanner.
+
+Treat the scanner’s DB schema + CLI behavior as authoritative. Controller/web layers should remain thin adapters around those contracts.
+
+---
+
 ## 1) Big picture (runtime topology)
 
 **Authoritative script purposes (use these names in prompts/commits):**
@@ -36,6 +46,13 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
 
 **Goal for contributors**: make changes safe for long‑running service on Raspberry Pi OS **Trixie** + Pi 5 with RTL‑SDR by default, optional HackRF/SoapySDR.
 
+### ScanRequest JSON (web → controller)
+
+* Web posts to controller `/jobs` with payload `{ "device_key": "rtl:0", "label": "web", "params": { ... } }`.
+* `params` mirrors CLI flags: `start`, `stop`, `step`, `samp_rate`, `fft`, `avg`, `gain`, `threshold_db`, `cfar_*`, `loop`, `repeat`, `duration`, `sleep_between_sweeps`, `jsonl`, etc.
+* High-level toggles map directly to scanner flags: `params["profile"]` → `--profile`, `params["spur_calibration"]` → `--spur-calibration`. Controller must keep this translation 1:1; do not reimplement DSP logic elsewhere.
+* Any optional hints (`soapy_args`, `extra_args`, `notify`) should pass straight through to `_build_cmd` without filtering.
+
 ---
 
 ## 2) Key entrypoints & responsibilities
@@ -51,12 +68,14 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
   * **Lock protocol**: file locks under `locks/` named by `device_key`.
   * Job lifecycle: build command (`_build_cmd`), spawn, supervise, reap stale locks.
   * Resolves `sdrwatch.py` via `resolve_scanner_paths()` every time a job starts so deployments under `/opt/sdrwatch`, symlinked releases, or manual runs keep working without restarting the daemon.
-  * HTTP API: RESTful start/stop/list jobs + log streaming.
+  * HTTP API: RESTful start/stop/list jobs + log streaming, plus `/profiles` which caches `sdrwatch.py --list-profiles` output for the web.
 * `sdrwatch-web-simple.py`
 
   * Flask endpoints to read tables (scans/detections/baseline).
-  * REST-first control layer: `/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`, `/ctl/devices`.
+  * REST-first control layer: `/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`, `/ctl/devices`, plus `/profiles` consumption.
   * Templates in `templates/`. Prefer server endpoints that act as stateless REST clients for the controller; UI scripts should call those REST endpoints, not flask internals.
+  * Control page renders a **profile dropdown** populated from controller `/profiles`, exposes a **mode selector** (“Normal scan” vs “Spur calibration”), and posts `params` so `profile`/`spur_calibration` flow through unchanged.
+  * Detections view surfaces `confidence`, a `spur?` badge for frequencies near spur_map bins, and “New/Known” status derived from baseline EMA occupancy (currently `<0.2` = new). Keep these annotations data-driven; no DSP logic in the web layer.
 
 ---
 
@@ -200,6 +219,7 @@ Tables referenced by code/UI (column names are contract):
 * Preserve optional dependency behavior (SciPy/Soapy presence toggles paths).
 * When touching lock logic, keep file names, stale reaper, and atomicity.
 * For detection math, keep SciPy fallback functionally equivalent; add/adjust tests first.
+* When touching controller/web layers, do **not** parse IQ samples or rebuild DSP logic—use scanner outputs/DB (`confidence`, baseline status, spur_map) as the source of truth.
 
 ---
 
@@ -213,6 +233,7 @@ Tables referenced by code/UI (column names are contract):
 * `GET /jobs/<id>` → job detail
 * `GET /jobs/<id>/logs` → log tail (optional `?tail=N`)
 * `DELETE /jobs/<id>` → stop job
+* `GET /profiles` → cached profiles from `sdrwatch.py --list-profiles`
 * Auth: bearer token via `SDRWATCH_CONTROL_TOKEN` when the server is started with a token.
 
 **Web proxy (RESTful façade used by templates/JS):**

@@ -46,6 +46,9 @@ PYTHON_EXE = sys.executable or "python3"
 
 
 _SCRIPT_CACHE: Optional[Tuple[Path, Path]] = None  # (project_dir, script_path)
+_PROFILE_CACHE: Optional[Dict[str, Any]] = None
+_PROFILE_CACHE_TS: float = 0.0
+_PROFILE_CACHE_TTL = 30.0
 
 
 def resolve_scanner_paths(force_refresh: bool = False) -> Tuple[Path, Path]:
@@ -95,6 +98,37 @@ def resolve_scanner_paths(force_refresh: bool = False) -> Tuple[Path, Path]:
     raise FileNotFoundError(
         "Unable to locate sdrwatch.py. Set SDRWATCH_SCRIPT or keep it alongside sdrwatch-control.py."
     )
+
+
+def _fetch_profiles_payload(force_refresh: bool = False) -> Dict[str, Any]:
+    global _PROFILE_CACHE, _PROFILE_CACHE_TS
+    now = time.time()
+    if not force_refresh and _PROFILE_CACHE and (now - _PROFILE_CACHE_TS) < _PROFILE_CACHE_TTL:
+        return _PROFILE_CACHE
+
+    project_dir, script_path = resolve_scanner_paths()
+    cmd = [PYTHON_EXE, str(script_path), "--list-profiles"]
+    popen_kwargs: Dict[str, Any] = {
+        "capture_output": True,
+        "text": True,
+    }
+    if project_dir.exists():
+        popen_kwargs["cwd"] = str(project_dir)
+
+    result = subprocess.run(cmd, **popen_kwargs)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or "sdrwatch.py returned non-zero"
+        raise RuntimeError(detail)
+    try:
+        payload = json.loads(result.stdout)
+    except Exception as exc:
+        raise RuntimeError(f"invalid JSON from sdrwatch.py: {exc}")
+
+    _PROFILE_CACHE = payload
+    _PROFILE_CACHE_TS = now
+    return payload
 
 # ---------- Utilities ----------
 
@@ -568,6 +602,15 @@ def make_app(manager: JobManager, token: Optional[str] = None):
     def devices():
         devs = [asdict(d) for d in discover_devices()]
         return jsonify(devs)
+
+    @app.get("/profiles")
+    def profiles():
+        try:
+            payload = _fetch_profiles_payload()
+        except Exception as exc:
+            detail = str(exc)
+            return (jsonify({"error": "failed_to_list_profiles", "detail": detail}), 500)
+        return app.response_class(json.dumps(payload), mimetype="application/json")
 
     @app.get("/jobs")
     def jobs():

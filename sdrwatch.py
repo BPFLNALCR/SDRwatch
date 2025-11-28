@@ -36,6 +36,7 @@ License: MIT
 
 import argparse
 import csv
+import json
 import math
 import os
 import sqlite3
@@ -160,6 +161,30 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
         ),
     ]
     return {p.name.lower(): p for p in profiles}
+
+
+def _emit_profiles_json() -> None:
+    profiles = default_scan_profiles()
+    ordered = sorted(profiles.values(), key=lambda p: p.name.lower())
+    payload = {
+        "profiles": [
+            {
+                "name": prof.name,
+                "f_low_hz": prof.f_low_hz,
+                "f_high_hz": prof.f_high_hz,
+                "samp_rate": prof.samp_rate,
+                "fft": prof.fft,
+                "avg": prof.avg,
+                "gain_db": prof.gain_db,
+                "threshold_db": prof.threshold_db,
+                "min_width_bins": prof.min_width_bins,
+                "guard_bins": prof.guard_bins,
+                "abs_power_floor_db": prof.abs_power_floor_db,
+            }
+            for prof in ordered
+        ]
+    }
+    print(json.dumps(payload))
 
 
 # ------------------------------
@@ -1224,6 +1249,10 @@ def run(args):
     repeat/persistent energy. In --spur-calibration mode the same sweep populates
     spur_map instead of emitting detections.
     """
+    if getattr(args, "list_profiles", False):
+        _emit_profiles_json()
+        return
+
     # Optional TMPDIR override (steer off tmpfs /tmp on Trixie)
     if args.tmpdir:
         os.environ["TMPDIR"] = args.tmpdir
@@ -1344,8 +1373,8 @@ def parse_args(argv: Optional[List[str]] = None):
         description="Wideband scanner & baseline builder using SoapySDR or native RTL-SDR",
         argument_default=argparse.SUPPRESS,
     )
-    p.add_argument("--start", type=float, required=True, help="Start frequency in Hz (e.g., 88e6)")
-    p.add_argument("--stop", type=float, required=True, help="Stop frequency in Hz (e.g., 108e6)")
+    p.add_argument("--start", type=float, help="Start frequency in Hz (e.g., 88e6)")
+    p.add_argument("--stop", type=float, help="Stop frequency in Hz (e.g., 108e6)")
     p.add_argument("--step", type=float, help="Center frequency step per window [Hz] (default 2.4e6)")
 
     p.add_argument("--samp-rate", dest="samp_rate", type=float, help="Sample rate [Hz] (default 2.4e6)")
@@ -1375,6 +1404,7 @@ def parse_args(argv: Optional[List[str]] = None):
     p.add_argument("--longitude", type=float, help="Optional longitude in decimal degrees for this scan")
     p.add_argument("--profile", type=str, help="Scan profile name to pre-load sane defaults (see documentation)")
     p.add_argument("--spur-calibration", dest="spur_calibration", action="store_true", help="Learn persistent internal spurs instead of emitting detections")
+    p.add_argument("--list-profiles", dest="list_profiles", action="store_true", help="Print built-in scan profiles as JSON and exit")
 
     # Sweep control modes (mutually exclusive)
     group = p.add_mutually_exclusive_group()
@@ -1414,6 +1444,7 @@ def parse_args(argv: Optional[List[str]] = None):
     _set_default(args, args._cli_overrides, "longitude", None)
     _set_default(args, args._cli_overrides, "profile", None)
     _set_default(args, args._cli_overrides, "spur_calibration", False)
+    _set_default(args, args._cli_overrides, "list_profiles", False)
     _set_default(args, args._cli_overrides, "loop", False)
     _set_default(args, args._cli_overrides, "repeat", None)
     _set_default(args, args._cli_overrides, "duration", None)
@@ -1421,17 +1452,24 @@ def parse_args(argv: Optional[List[str]] = None):
     _set_default(args, args._cli_overrides, "tmpdir", os.environ.get("TMPDIR"))
     setattr(args, "abs_power_floor_db", None)
 
-    _apply_scan_profile(args, p)
+    has_span = hasattr(args, "start") and hasattr(args, "stop")
+    if not args.list_profiles and not has_span:
+        p.error("--start and --stop are required unless --list-profiles is used")
+
+    if has_span:
+        _apply_scan_profile(args, p)
+
     if hasattr(args, "_cli_overrides"):
         delattr(args, "_cli_overrides")
 
-    # Backend availability check: only require Soapy if not using rtlsdr_native
-    if args.driver != "rtlsdr_native" and not HAVE_SOAPY:
-        p.error("python3-soapysdr not installed. Install it (or use --driver rtlsdr_native).")
-    if args.driver == "rtlsdr_native" and not HAVE_RTLSDR:
-        p.error("pyrtlsdr not installed. Install with: pip3 install pyrtlsdr")
-    if args.stop < args.start:
-        p.error("--stop must be >= --start")
+    # Backend availability check: only require hardware dependencies when scanning
+    if not args.list_profiles:
+        if args.driver != "rtlsdr_native" and not HAVE_SOAPY:
+            p.error("python3-soapysdr not installed. Install it (or use --driver rtlsdr_native).")
+        if args.driver == "rtlsdr_native" and not HAVE_RTLSDR:
+            p.error("pyrtlsdr not installed. Install with: pip3 install pyrtlsdr")
+        if args.stop < args.start:
+            p.error("--stop must be >= --start")
 
     # Validate duration string early
     if args.duration:

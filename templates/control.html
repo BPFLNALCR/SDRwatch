@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% set profile_list = profiles or [] %}
+{% set has_profiles = profile_list|length > 0 %}
 {% block content %}
 <section class="grid grid-cols-1 lg:grid-cols-3 gap-4">
   <div class="card lg:col-span-2">
@@ -26,8 +28,30 @@
       <div>
         <div class="section-title">Profile & Modes</div>
         <div class="subgrid">
-          <div class="field"><label for="profile">Profile</label><input id="profile" class="input" name="profile" value="" placeholder="vhf_uhf_general" /></div>
-          <div class="field"><label class="flex items-center gap-2" for="spur_calibration"><input id="spur_calibration" type="checkbox" name="spur_calibration" /> <span>Spur calibration mode</span></label></div>
+          <div class="field">
+            <label for="profile">Profile</label>
+            <select id="profile" class="input" name="profile" {% if not has_profiles %}disabled{% endif %}>
+              <option value="">(manual selection)</option>
+              {% for prof in profile_list %}
+              <option value="{{ prof.name }}">{{ prof.name }}</option>
+              {% endfor %}
+            </select>
+            <div class="hint mt-1 text-xs" id="profileMeta">
+              {% if has_profiles %}
+                Select a profile to preview its range and defaults, or leave manual.
+              {% else %}
+                Profiles unavailable (controller offline?); enter parameters manually.
+              {% endif %}
+            </div>
+          </div>
+          <div class="field">
+            <label for="scan_mode">Scan mode</label>
+            <select id="scan_mode" class="input" name="scan_mode">
+              <option value="normal">Normal scan</option>
+              <option value="spur">Spur calibration</option>
+            </select>
+            <div class="hint mt-1 text-xs">Spur calibration populates the spur map and suppresses detections.</div>
+          </div>
         </div>
       </div>
 
@@ -148,6 +172,7 @@
 
 {% block scripts %}
 <script>
+const PROFILE_DATA = {{ profile_list|tojson }};
 const TOKEN = localStorage.getItem("SDRWATCH_TOKEN") || "";
 function authHeaders(isJson=true){
   const headers = {};
@@ -189,11 +214,14 @@ async function refreshActiveState(){
 // Form persistence
 const FORM_STORAGE_KEY = 'SDRWATCH_CTL_FORM';
 const f = document.getElementById('ctl');
+const profileSelect = document.getElementById('profile');
+const profileMeta = document.getElementById('profileMeta');
+const scanModeSelect = document.getElementById('scan_mode');
+
 function saveForm(){
   const fd = new FormData(f);
   const obj = Object.fromEntries(fd.entries());
   obj.notify = f.notify?.checked ? 'on' : '';
-  obj.spur_calibration = f.spur_calibration?.checked ? 'on' : '';
   localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(obj));
 }
 function loadForm(){
@@ -210,9 +238,39 @@ function loadForm(){
     }
   }catch(e){}
 }
+function updateProfileMeta(){
+  if(!profileMeta){ return; }
+  if(!profileSelect || profileSelect.disabled || PROFILE_DATA.length === 0){
+    profileMeta.textContent = PROFILE_DATA.length === 0 ? 'Profiles unavailable (controller offline?).' : 'Custom/manual parameters.';
+    return;
+  }
+  const selected = profileSelect.value;
+  if(!selected){
+    profileMeta.textContent = 'Custom/manual parameters.';
+    return;
+  }
+  const prof = PROFILE_DATA.find(p => String(p.name) === selected);
+  if(!prof){
+    profileMeta.textContent = 'Custom/manual parameters.';
+    return;
+  }
+  const span = `${(prof.f_low_hz/1e6).toFixed(3)}–${(prof.f_high_hz/1e6).toFixed(3)} MHz`;
+  const samp = prof.samp_rate ? `${(Number(prof.samp_rate)/1e6).toFixed(2)} MS/s` : null;
+  const parts = [span];
+  if(samp){ parts.push(`samp ${samp}`); }
+  parts.push(`FFT ${prof.fft}`, `avg ${prof.avg}`);
+  if(prof.gain_db !== undefined && prof.gain_db !== null){
+    parts.push(`gain ${prof.gain_db} dB`);
+  }
+  profileMeta.textContent = parts.join(' · ');
+}
+
 f.addEventListener('input', saveForm);
+profileSelect?.addEventListener('change', ()=>{ updateProfileMeta(); saveForm(); });
+scanModeSelect?.addEventListener('change', saveForm);
 document.getElementById('resetBtn')?.addEventListener('click', ()=>{ localStorage.removeItem(FORM_STORAGE_KEY); location.reload(); });
 loadForm();
+updateProfileMeta();
 
 // Devices
 async function loadDevices(){
@@ -278,14 +336,16 @@ f.addEventListener('submit', async (e)=>{
   if(body.mode==='loop'){ body.loop = true; }
   if(body.mode==='repeat'){ body.repeat = body.repeat||1; }
   delete body.mode;
-  if(body.notify==='on'){ body.notify = true; }
+  if(body.notify==='on'){ body.notify = true; } else { delete body.notify; }
   const profile = (body.profile || '').toString().trim();
   if(profile){ body.profile = profile; } else { delete body.profile; }
-  if(f.spur_calibration?.checked){
+  const scanMode = (body.scan_mode || '').toString();
+  if(scanMode === 'spur'){
     body.spur_calibration = true;
   } else {
     delete body.spur_calibration;
   }
+  delete body.scan_mode;
 
   const device_key = body.device_key; delete body.device_key;
   const payload = { device_key, label: body.label || 'web', params: body };

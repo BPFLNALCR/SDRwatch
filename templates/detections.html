@@ -23,6 +23,16 @@
         <input class="input" id="flt-min-snr" type="number" step="0.1" name="min_snr" value="{{ form_defaults.min_snr }}" placeholder="e.g. 10" />
       </div>
       <div class="field">
+        <label class="text-xs uppercase muted" for="flt-min-conf">Min confidence</label>
+        <select class="input" id="flt-min-conf" name="min_conf" {% if not confidence_available %}disabled{% endif %}>
+          <option value="">Any</option>
+          {% for opt in [0.3, 0.5, 0.7, 0.85, 0.9] %}
+            <option value="{{ '%.2f' % opt }}" {% if form_defaults.min_conf|float == opt %}selected{% endif %}>≥ {{ '%.0f' % (opt*100) }}%</option>
+          {% endfor %}
+        </select>
+        {% if not confidence_available %}<div class="hint text-[11px]">Confidence column missing; filter disabled.</div>{% endif %}
+      </div>
+      <div class="field">
         <label class="text-xs uppercase muted" for="flt-fmin">Min freq (MHz)</label>
         <input class="input" id="flt-fmin" type="number" step="0.1" name="f_min_mhz" value="{{ form_defaults.f_min_mhz }}" placeholder="Start" />
       </div>
@@ -208,16 +218,28 @@
 
     <div id="detections-table" class="overflow-x-auto">
       <table class="table">
-        <thead><tr class="text-slate-400"><th class="th">Time (UTC)</th><th class="th">Scan</th><th class="th">Center (MHz)</th><th class="th">Low–High (MHz)</th><th class="th">Peak (dB)</th><th class="th">Noise (dB)</th><th class="th">SNR (dB)</th><th class="th">Confidence</th><th class="th">Service</th><th class="th">Region</th><th class="th">Notes</th></tr></thead>
+        <thead><tr class="text-slate-400"><th class="th">Time (UTC)</th><th class="th">Scan</th><th class="th">Center (MHz)</th><th class="th">Low–High (MHz)</th><th class="th">Peak (dB)</th><th class="th">Noise (dB)</th><th class="th">SNR (dB)</th><th class="th">Status</th><th class="th">Confidence</th><th class="th">Service</th><th class="th">Region</th><th class="th">Notes</th></tr></thead>
         <tbody>
           {% for r in rows %}
             <tr class="hover:bg-white/5">
               <td class="td">{{ r.time_utc }}</td><td class="td">{{ r.scan_id }}</td>
-              <td class="td">{{ (r.f_center_hz/1e6)|round(6) }}</td>
+              <td class="td">
+                {{ (r.f_center_hz/1e6)|round(6) }}
+                {% if r.near_spur %}<span class="chip text-amber-300 border border-amber-400/40 text-[11px] ml-1" title="Near known spur bin">spur?</span>{% endif %}
+              </td>
               <td class="td">{{ (r.f_low_hz/1e6)|round(6) }}–{{ (r.f_high_hz/1e6)|round(6) }}</td>
               <td class="td">{{ '%.1f' % r.peak_db if r.peak_db is not none else '' }}</td>
               <td class="td">{{ '%.1f' % r.noise_db if r.noise_db is not none else '' }}</td>
               <td class="td">{{ '%.1f' % r.snr_db if r.snr_db is not none else '' }}</td>
+              <td class="td">
+                {% if r.baseline_status == 'new' %}
+                  <span class="chip chip-active text-emerald-200" title="EMA occ &lt; {{ '%.2f' % baseline_threshold }}">New</span>
+                {% elif r.baseline_status == 'known' %}
+                  <span class="chip text-slate-200" title="EMA occ ≥ {{ '%.2f' % baseline_threshold }}">Known</span>
+                {% else %}
+                  <span class="chip text-slate-400">Unknown</span>
+                {% endif %}
+              </td>
               <td class="td">{% if r.confidence is not none %}{{ '%.0f%%' % (r.confidence * 100) }}{% else %}—{% endif %}</td>
               <td class="td"><span class="chip">{{ r.service or 'Unknown' }}</span></td>
               <td class="td">{{ r.region or '' }}</td>
@@ -235,6 +257,7 @@
         <input type="hidden" name="page_size" value="{{ page_size }}" />
         <input type="hidden" name="service" value="{{ form_defaults.service }}" />
         <input type="hidden" name="min_snr" value="{{ form_defaults.min_snr }}" />
+        <input type="hidden" name="min_conf" value="{{ form_defaults.min_conf }}" />
         <input type="hidden" name="f_min_mhz" value="{{ form_defaults.f_min_mhz }}" />
         <input type="hidden" name="f_max_mhz" value="{{ form_defaults.f_max_mhz }}" />
         <input type="hidden" name="since_hours" value="{{ form_defaults.since_hours }}" />
@@ -244,6 +267,7 @@
       <form method="get" action="/detections" class="ml-auto flex items-center gap-2">
         <input type="hidden" name="service" value="{{ form_defaults.service }}" />
         <input type="hidden" name="min_snr" value="{{ form_defaults.min_snr }}" />
+        <input type="hidden" name="min_conf" value="{{ form_defaults.min_conf }}" />
         <input type="hidden" name="f_min_mhz" value="{{ form_defaults.f_min_mhz }}" />
         <input type="hidden" name="f_max_mhz" value="{{ form_defaults.f_max_mhz }}" />
         <input type="hidden" name="since_hours" value="{{ form_defaults.since_hours }}" />
@@ -256,5 +280,9 @@
       </form>
     </div>
   </section>
+  <div class="text-xs muted space-y-1">
+    {% if spur_hint_available %}<div><span class="chip text-amber-300 border border-amber-400/40 text-[11px]">spur?</span> denotes proximity to a known spur bin.</div>{% endif %}
+    {% if baseline_hint_available %}<div><span class="chip chip-active text-emerald-200">New</span> uses EMA occupancy &lt; {{ '%.2f' % baseline_threshold }}, else <span class="chip text-slate-200">Known</span>.</div>{% endif %}
+  </div>
 </div>
 {% endblock %}
