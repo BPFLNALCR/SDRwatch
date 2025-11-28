@@ -476,32 +476,39 @@ class JobManager:
             "longitude": "--longitude",
         }
         for k, flag in mapping_num.items():
-            if args.get("db"):
-                cmd += ["--db", str(args["db"]) ]
-            if args.get("bandplan"):
-                cmd += ["--bandplan", str(args["bandplan"])]
-            if args.get("gain"):
-                cmd += ["--gain", str(args["gain"]) ]
-            if args.get("profile"):
-                cmd += ["--profile", str(args["profile"])]
-            if args.get("duration"):
-                cmd += ["--duration", str(args["duration"]) ]
-            if args.get("jsonl"):
-                cmd += ["--jsonl", str(args["jsonl"]) ]
+            v = args.get(k)
+            if v is not None:
+                cmd += [flag, str(v)]
+
+        # Simple string/file params
+        if args.get("db"):
+            cmd += ["--db", str(args["db"])]
+        if args.get("bandplan"):
             cmd += ["--bandplan", str(args["bandplan"])]
         if args.get("gain"):
-            if args.get("loop"):
-                cmd.append("--loop")
-            repeat_val = args.get("repeat")
-            if repeat_val is not None:
-                cmd += ["--repeat", str(repeat_val)]
-                    repeat_int = int(repeat_val)
-                except (TypeError, ValueError):
-                    repeat_int = None
-                if repeat_int is not None and repeat_int > 0:
-            if args.get("spur_calibration"):
-                cmd.append("--spur-calibration")
-                    cmd += ["--repeat", str(repeat_int)]
+            cmd += ["--gain", str(args["gain"])]
+        if args.get("profile"):
+            cmd += ["--profile", str(args["profile"])]
+        if args.get("duration"):
+            cmd += ["--duration", str(args["duration"])]
+        if args.get("jsonl"):
+            cmd += ["--jsonl", str(args["jsonl"])]
+
+        # Loop/repeat flags
+        if args.get("loop"):
+            cmd.append("--loop")
+        repeat_val = args.get("repeat")
+        if repeat_val is not None:
+            try:
+                repeat_int = int(repeat_val)
+            except (TypeError, ValueError):
+                repeat_int = None
+            if repeat_int is not None:
+                cmd += ["--repeat", str(repeat_int)]
+
+        # Spur calibration toggle
+        if args.get("spur_calibration"):
+            cmd.append("--spur-calibration")
 
         # Booleans
         if args.get("use_baseline"):
