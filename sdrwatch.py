@@ -250,7 +250,12 @@ class Bandplan:
 class Store:
     def __init__(self, path: str):
         # SQLite 3.44+ on Trixie — keep default isolation; WAL can be enabled via pragma if needed.
-        self.con = sqlite3.connect(path)
+        self.con = sqlite3.connect(path, timeout=30.0)
+        try:
+            self.con.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass
+        self.con.execute("PRAGMA busy_timeout=5000")
         self._init()
 
     def _init(self):
