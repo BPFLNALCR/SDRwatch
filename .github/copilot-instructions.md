@@ -1,16 +1,16 @@
 # SDRwatch — AI coding assistant guide (for Copilot/ChatGPT)
 
-Keep guidance short and operational. Prefer **small diffs** over whole-file rewrites. Prioritize **runtime topology**, **CLI↔service wiring**, **DB schema & migrations**, **device locking**, and **tests**.
+Keep guidance short and operational. Prefer **small diffs** over whole-file rewrites. Prioritize **runtime topology**, **baseline-first DB contracts**, **CLI↔service wiring**, **device locking**, and **tests**.
 
 ---
 
-## Layered runtime model (scanner ↔ controller ↔ web)
+## Layered runtime model (baseline-oriented scanner ↔ controller ↔ web)
 
-* **Scanner (`sdrwatch.py`)** owns SDR/DSP loops, detection heuristics, spur calibration, and all SQLite writes (`scans`, `detections`, `baseline`, `spur_map`). It now exports built-in profiles via `--list-profiles`.
-* **Controller (`sdrwatch-control.py`)** is the only process that spawns scanners. It accepts structured scan requests (`device_key`, `label`, `params`), builds CLI args, enforces device locks, monitors child processes, and exposes metadata like `/profiles` by shelling out `sdrwatch.py --list-profiles`.
-* **Web (`sdrwatch-web-simple.py`)** never touches SDR hardware or IQ streams. It only talks to the controller’s HTTP API (start/stop/list/logs/profiles) and reads SQLite directly for dashboards. Do not duplicate DSP logic outside the scanner.
+* **Scanner (`sdrwatch.py`)** owns SDR/DSP loops and now operates in a **baseline-first** flow: every scan is tied to an active baseline (`--baseline-id`). Each sweep loads the baseline, runs PSD/CFAR, updates **baseline EMAs/occupancy**, persists detections into `baseline_detections`, writes lightweight `scan_updates`, and handles spur calibration into `spur_map`. It still exports built-in profiles via `--list-profiles` and can emit JSONL per detection tagged with `baseline_id`.
+* **Controller (`sdrwatch-control.py`)** is the only process that spawns scanners. All jobs must include a `baseline_id`; the controller builds the CLI, enforces device locks, monitors child processes, shells out for `/profiles`, and brokers baseline metadata via new `/baselines` endpoints.
+* **Web (`sdrwatch-web-simple.py`)** never touches SDR hardware or IQ streams. It manages baseline selection/creation, proxies control actions (jobs/logs/devices/profiles/baselines) to the controller, and reads SQLite directly for dashboards that highlight baseline stats and persistent detections. No DSP logic outside the scanner.
 
-Treat the scanner’s DB schema + CLI behavior as authoritative. Controller/web layers should remain thin adapters around those contracts.
+Treat the scanner’s baseline-oriented DB schema + CLI behavior as authoritative. Controller/web layers stay thin adapters around those contracts.
 
 ---
 
@@ -18,11 +18,11 @@ Treat the scanner’s DB schema + CLI behavior as authoritative. Controller/web 
 
 **Authoritative script purposes (use these names in prompts/commits):**
 
-* **`sdrwatch.py` ("scanner")** — CLI tool that performs wideband sweeps on an SDR device, computes PSD/CFAR, updates the **SQLite DB** (`scans`, `detections`, `baseline`, `spur_map`), and can emit JSONL and desktop/CLI notifications. Single-process, device-bound. Includes scan profiles, anomalous-window gating, spur calibration/suppression, and a DetectionEngine that promotes persistent hits with confidence scores.
+* **`sdrwatch.py` ("scanner")** — CLI tool that performs wideband sweeps tied to an active baseline, computes PSD/CFAR, updates **baseline tables** (`baselines`, `baseline_stats`, `baseline_detections`, `scan_updates`, `spur_map`), and can emit JSONL events that reference the baseline. Single-process, device-bound. Includes scan profiles, anomalous-window gating, spur calibration/suppression, and a DetectionEngine that now promotes persistence via baseline tracking.
 
-* **`sdrwatch-control.py` ("controller" / "manager")** — Long‑lived job manager. Discovers devices (serial/index/driver), enforces **file‑lock ownership** per device under `${SDRWATCH_CONTROL_BASE}/locks`, constructs the scanner command (`_build_cmd`), spawns and monitors scanner subprocesses, exposes an **HTTP API** for start/stop/list/health, and reaps stale locks.
+* **`sdrwatch-control.py` ("controller" / "manager")** — Long‑lived job manager. Discovers devices (serial/index/driver), enforces **file‑lock ownership** per device under `${SDRWATCH_CONTROL_BASE}/locks`, constructs the scanner command (`_build_cmd`) with the required `--baseline-id`, spawns and monitors scanner subprocesses, exposes an **HTTP API** for start/stop/list/health/baseline CRUD, and reaps stale locks.
 
-* **`sdrwatch-web-simple.py` ("web" / "UI")** — Flask front‑end. **Read‑only** queries to the SQLite DB (tables above). Proxies **control actions** to the controller via RESTful endpoints (`/api/jobs`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`, etc.) pointing at `SDRWATCH_CONTROL_URL` with bearer auth. No direct device access. Treat the web layer as a thin REST client; avoid reintroducing stateful coupling.
+* **`sdrwatch-web-simple.py` ("web" / "UI")** — Baseline-centric Flask front‑end. **Read‑only** queries to the SQLite DB (baseline tables + spur map). Proxies **control actions** (jobs/logs/devices/profiles/baselines) to the controller via RESTful endpoints pointing at `SDRWATCH_CONTROL_URL` with bearer auth. No direct device access. Treat the web layer as a thin REST client; avoid reintroducing stateful coupling.
 
 * **Installer script (repo root, e.g., `install-sdrwatch.sh`)** — Provisioning helper for Raspberry Pi OS **Trixie**: installs apt deps (SoapySDR, plugins, Python build reqs), creates Python venv, installs Python deps, sets up directories (`/opt/sdrwatch`, logs, state), optionally installs/updates the systemd unit and env file.
 
@@ -44,13 +44,13 @@ Treat the scanner’s DB schema + CLI behavior as authoritative. Controller/web 
 * `SDRWATCH_CONTROL_BASE` (default `/tmp/sdrwatch-control/`) → `locks/`, `logs/`, and `state.json` at the base.
 * Default DB file: `sdrwatch.db` (overridable with `--db`).
 
-**Goal for contributors**: make changes safe for long‑running service on Raspberry Pi OS **Trixie** + Pi 5 with RTL‑SDR by default, optional HackRF/SoapySDR.
+**Goal for contributors**: make changes safe for long‑running service on Raspberry Pi OS **Trixie** + Pi 5 with RTL‑SDR by default, optional HackRF/SoapySDR, while keeping baseline persistence the primary unit of state.
 
 ### ScanRequest JSON (web → controller)
 
-* Web posts to controller `/jobs` with payload `{ "device_key": "rtl:0", "label": "web", "params": { ... } }`.
+* Web posts to controller `/jobs` with payload `{ "device_key": "rtl:0", "label": "web", "baseline_id": 3, "params": { ... } }`.
 * `params` mirrors CLI flags: `start`, `stop`, `step`, `samp_rate`, `fft`, `avg`, `gain`, `threshold_db`, `cfar_*`, `loop`, `repeat`, `duration`, `sleep_between_sweeps`, `jsonl`, etc.
-* High-level toggles map directly to scanner flags: `params["profile"]` → `--profile`, `params["spur_calibration"]` → `--spur-calibration`. Controller must keep this translation 1:1; do not reimplement DSP logic elsewhere.
+* High-level toggles map directly to scanner flags: `params["profile"]` → `--profile`, `params["spur_calibration"]` → `--spur-calibration`. Controller must keep this translation 1:1; do not reimplement DSP logic elsewhere, and always pass the selected `baseline_id` through as `--baseline-id`.
 * Any optional hints (`soapy_args`, `extra_args`, `notify`) should pass straight through to `_build_cmd` without filtering.
 
 ---
@@ -59,23 +59,23 @@ Treat the scanner’s DB schema + CLI behavior as authoritative. Controller/web 
 
 * `sdrwatch.py`
 
-  * CLI parsing + scan profile application (`--profile`) with fixed gain, absolute power floors, and optional spur calibration mode.
-  * Sweep loop: tune → capture → PSD → CFAR/abs-floor filtering → anomalous-window gating → baseline EMA updates for normal windows.
-  * DetectionEngine clusters hits across windows, consults `spur_map`, computes `confidence`, and only promotes persistent detections (JSONL emission mirrors DB rows).
+  * CLI parsing + scan profile application (`--profile`) with fixed gain, absolute power floors, baseline loader (`--baseline-id` required), and optional spur calibration mode.
+  * Sweep loop: tune → capture → PSD → CFAR/abs-floor filtering → anomalous-window gating → baseline EMA updates + occupancy tracking → persistence updates in `baseline_detections` and lightweight `scan_updates` rows.
+  * DetectionEngine clusters hits across windows, consults `spur_map`, computes `confidence`, and only promotes persistent, baseline-linked detections (JSONL emission mirrors `baseline_detections` and always includes `baseline_id`).
 * `sdrwatch-control.py`
 
   * Device discovery (serial/index/driver).
   * **Lock protocol**: file locks under `locks/` named by `device_key`.
-  * Job lifecycle: build command (`_build_cmd`), spawn, supervise, reap stale locks.
+  * Job lifecycle: build command (`_build_cmd`) including `--baseline-id`, spawn, supervise, reap stale locks.
   * Resolves `sdrwatch.py` via `resolve_scanner_paths()` every time a job starts so deployments under `/opt/sdrwatch`, symlinked releases, or manual runs keep working without restarting the daemon.
-  * HTTP API: RESTful start/stop/list jobs + log streaming, plus `/profiles` which caches `sdrwatch.py --list-profiles` output for the web.
+  * HTTP API: RESTful start/stop/list jobs + log streaming, `/profiles` cache from `sdrwatch.py --list-profiles`, and `/baselines` CRUD that always enforce `baseline_id` presence when starting scans.
 * `sdrwatch-web-simple.py`
 
-  * Flask endpoints to read tables (scans/detections/baseline).
-  * REST-first control layer: `/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`, `/ctl/devices`, plus `/profiles` consumption.
+  * Flask endpoints to read baseline tables (`baselines`, `baseline_stats`, `baseline_detections`, `scan_updates`, `spur_map`). Legacy scan pages should be deprecated rather than expanded.
+  * REST-first control layer: `/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`, `/ctl/devices`, `/profiles`, plus new `/baselines` passthroughs.
   * Templates in `templates/`. Prefer server endpoints that act as stateless REST clients for the controller; UI scripts should call those REST endpoints, not flask internals.
-  * Control page renders a **profile dropdown** populated from controller `/profiles`, exposes a **mode selector** (“Normal scan” vs “Spur calibration”), and posts `params` so `profile`/`spur_calibration` flow through unchanged.
-  * Detections view surfaces `confidence`, a `spur?` badge for frequencies near spur_map bins, and “New/Known” status derived from baseline EMA occupancy (currently `<0.2` = new). Keep these annotations data-driven; no DSP logic in the web layer.
+  * Control page renders a **baseline selector/creator** plus **profile dropdown** populated from controller `/profiles`, exposes a **mode selector** (“Normal scan” vs “Spur calibration”), and posts `baseline_id` + `params` so `profile`/`spur_calibration` flow through unchanged.
+  * Detections view surfaces `confidence`, a `spur?` badge for frequencies near spur_map bins, and “New/Known” status derived from baseline EMA occupancy (<0.2 = new). Keep these annotations data-driven; no DSP logic in the web layer.
 
 ---
 
@@ -83,12 +83,11 @@ Treat the scanner’s DB schema + CLI behavior as authoritative. Controller/web 
 
 Tables referenced by code/UI (column names are contract):
 
-* **`scans`**: `id INTEGER PK AUTOINCREMENT`, `t_start_utc TEXT`, `t_end_utc TEXT`, `f_start_hz INTEGER`, `f_stop_hz INTEGER`, `step_hz INTEGER`, `samp_rate INTEGER`, `fft INTEGER`, `avg INTEGER`, `device TEXT`, `driver TEXT`.
-* **`detections`**: `scan_id INTEGER`, `time_utc TEXT`, `f_center_hz INTEGER`, `f_low_hz INTEGER`, `f_high_hz INTEGER`, `peak_db REAL`, `noise_db REAL`, `snr_db REAL`, `service TEXT`, `region TEXT`, `notes TEXT`, `confidence REAL`.
-* **`baseline`**: `bin_hz INTEGER PRIMARY KEY`, `ema_occ REAL`, `ema_power_db REAL`, `last_seen_utc TEXT`, `total_obs INTEGER`, `hits INTEGER`.
+* **`baselines`**: `id`, `name`, `created_at`, `location_lat`, `location_lon`, `sdr_serial`, `antenna`, `notes`, `freq_start_hz`, `freq_stop_hz`, `bin_hz`, `baseline_version`.
+* **`baseline_stats`**: `baseline_id`, `freq_hz` (or `bin_index` depending on migration), `noise_floor_ema`, `power_ema`, `occ_count`, `last_seen_utc`.
+* **`baseline_detections`**: `id`, `baseline_id`, `f_low_hz`, `f_high_hz`, `f_center_hz`, `first_seen_utc`, `last_seen_utc`, `total_hits`, `total_windows`, `confidence`.
+* **`scan_updates`**: `id`, `baseline_id`, `timestamp_utc`, `num_hits`, `num_segments`, `num_new_signals`.
 * **`spur_map`**: `bin_hz INTEGER PRIMARY KEY`, `mean_power_db REAL`, `hits INTEGER`, `last_seen_utc TEXT` (populated via `--spur-calibration`).
-
-**Migrations**: if you must change types/names, add a migration script in `migrations/` + version table `schema_version(version INTEGER, applied_ts TEXT)` and bump version in code. Update Web UI queries accordingly.
 
 ---
 
@@ -97,10 +96,11 @@ Tables referenced by code/UI (column names are contract):
 * **Bandplan CSV** (header contract): `low_hz,high_hz,service,region,notes`.
 
   * Add rows; avoid renaming headers. Unit is Hz.
-* **JSONL emit** (optional): one object per detection (current keys):
+* **JSONL emit** (optional): one object per detection (must include the active `baseline_id` alongside the existing fields):
 
   ```json
   {
+    "baseline_id": 3,
     "time_utc": "2025-11-10T21:30:05Z",
     "f_center_hz": 100500000,
     "f_low_hz": 100437500,
@@ -139,6 +139,7 @@ Tables referenced by code/UI (column names are contract):
 
 * **FFT sizes** should fit memory; avoid ballooning arrays—prefer streaming windows.
 * Prefer **vectorized** numpy ops over Python loops.
+* Baseline EMA and occupancy updates must remain lightweight (array ops, avoid per-row commits).
 * Place temporary arrays in function scope (let GC free between sweeps).
 * CLI defaults should be conservative for RTL-SDR (2.4 MS/s, FFT≤4096, `avg` small).
 * When adding features, guard with `--flag` and keep defaults fast.
@@ -151,6 +152,8 @@ Tables referenced by code/UI (column names are contract):
 * No simulated SDR layer or fake capture system is required; the development cycle includes physically operating and observing the hardware.
 * Use repeatable test bands (e.g., FM, ADS-B, known carriers) for verifying changes.
 * Capture small reference sweeps for later regression comparisons (optional but useful).
+* Validate baseline workflows: create/select baselines when swapping antennas/locations and ensure scanner refuses jobs without `baseline_id`.
+* Observe that persistent carriers accumulate `total_windows`/`total_hits` while NEW events transition as expected once occupancy rises.
 * Ensure each code change preserves expected hardware behavior (lock creation, DB writes, detection counts, runtime stability).
 * Optional lightweight tests can verify math correctness (CFAR thresholds, PSD outputs) if desired but are not mandatory for normal iteration.
 * Maintainer runs validation on real hardware; Copilot should skip automated tests locally and instead call out any specific on-device checks the maintainer should perform.
@@ -175,10 +178,11 @@ Tables referenced by code/UI (column names are contract):
 
 ## 10) CLI patterns (examples)
 
-* One-shot FM scan (optionally with a profile):
+* One-shot FM scan (optionally with a profile) tied to an active baseline (create/select the baseline via controller or web first):
 
   ```bash
   python3 sdrwatch.py \
+    --baseline-id 3 \
     --start 88e6 --stop 108e6 --step 1.8e6 \
     --samp-rate 2.4e6 --fft 4096 --avg 8 \
     --driver rtlsdr --gain auto --profile fm_broadcast
@@ -216,6 +220,7 @@ Tables referenced by code/UI (column names are contract):
 ## 12) Safe-change guidelines (Copilot guardrails)
 
 * **Do not** rename SQLite columns or change types without adding a migration and updating Web UI queries.
+* Keep the baseline-first workflow intact: scanner jobs must require `baseline_id`, controller/web endpoints must pass it through, and baseline persistence tables remain the source of truth.
 * Preserve optional dependency behavior (SciPy/Soapy presence toggles paths).
 * When touching lock logic, keep file names, stale reaper, and atomicity.
 * For detection math, keep SciPy fallback functionally equivalent; add/adjust tests first.
@@ -229,29 +234,32 @@ Tables referenced by code/UI (column names are contract):
 
 * `GET /devices` → discovered devices + keys
 * `GET /jobs` → list jobs
-* `POST /jobs` → start scan `{device_key, label, params}`
+* `POST /jobs` → start scan `{device_key, label, baseline_id, params}` (controller rejects requests missing `baseline_id`)
 * `GET /jobs/<id>` → job detail
 * `GET /jobs/<id>/logs` → log tail (optional `?tail=N`)
 * `DELETE /jobs/<id>` → stop job
 * `GET /profiles` → cached profiles from `sdrwatch.py --list-profiles`
+* `GET /baselines` / `POST /baselines` / `PATCH /baselines/<id>` → baseline list/create/update helpers shared with the web UI
 * Auth: bearer token via `SDRWATCH_CONTROL_TOKEN` when the server is started with a token.
 
 **Web proxy (RESTful façade used by templates/JS):**
 
 * `GET /api/jobs` → passthrough list
 * `GET /api/jobs/active` → derived active-state payload
-* `POST /api/jobs` (alias `/api/scans`) → start job
+* `POST /api/jobs` (alias `/api/scans`) → start job (requires `baseline_id`)
 * `GET /api/jobs/<id>` → passthrough detail
 * `DELETE /api/jobs/<id>` + `/api/scans/active` shim → stop job
 * `GET /api/jobs/<id>/logs` + `/api/logs` shim → streaming logs (requires auth)
+* `GET/POST/PATCH /api/baselines` → passthrough baseline CRUD
 * Always keep these endpoints stateless and aligned with the controller. When adding UI features, extend the REST layer first, then build UI on top.
 
 ---
 
 ## 14) Observability
 
-* Optional: add timing around capture→PSD→DB if needed (no `duration_ms` field in `scans` currently).
+* Optional: add timing around capture→PSD→DB if needed (no `duration_ms` field in `scan_updates` currently).
 * Optional: Prometheus **textfile** writer with a few gauges/counters (scans/sec, detections/sec, db_commit_ms).
+* Consider exporting baseline health metrics (age, number of persistent detections, recent NEW events) for dashboards.
 * Debug logging toggled by `--verbose` and/or `SDRWATCH_DEBUG=1`.
 
 ---
@@ -273,3 +281,6 @@ Tables referenced by code/UI (column names are contract):
 * Where to pin JSONL output format (doc + conformance test)?
 * Minimal **FakeSDR** interface not planned (hardware-based workflow confirmed).
 * Should `/api` remain Flask-only or split into FastAPI later? (Current plan: keep Flask but REST-first.)
+* How should baseline definitions be versioned for long-term stability?
+* Should `baseline_detections` support geometric clustering updates?
+* Should the web tier expose comparison dashboards across multiple baselines?

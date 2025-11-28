@@ -633,8 +633,14 @@ class ControllerClient:
     def list_jobs(self):
         return self._req('GET', '/jobs')
 
-    def start_job(self, device_key: str, label: str, params: Dict[str, Any]):
-        return self._req('POST', '/jobs', body={"device_key": device_key, "label": label, "params": params})
+    def start_job(self, device_key: str, label: str, baseline_id: int, params: Dict[str, Any]):
+        body = {
+            "device_key": device_key,
+            "label": label,
+            "baseline_id": int(baseline_id),
+            "params": params,
+        }
+        return self._req('POST', '/jobs', body=body)
 
     def job_detail(self, job_id: str):
         return self._req('GET', f'/jobs/{job_id}')
@@ -648,6 +654,9 @@ class ControllerClient:
 
     def profiles(self):
         return self._req('GET', '/profiles')
+
+    def baselines(self):
+        return self._req('GET', '/baselines')
 
 # ================================
 # Flask app
@@ -673,6 +682,14 @@ def create_app(db_path: str) -> Flask:
             app._db_error = str(exc)
             app._has_confidence_column = None
         return app._con
+
+    def reset_ro_connection() -> None:
+        if app._con is not None:
+            try:
+                app._con.close()
+            except Exception:
+                pass
+        app._con = None
 
     # Attempt initial connection (tolerates failure if DB is missing)
     _ensure_con()
@@ -821,6 +838,187 @@ def create_app(db_path: str) -> Flask:
         app.logger.warning("controller /profiles unexpected payload type: %r", type(data))
         return []
 
+    def controller_baselines() -> List[Dict[str, Any]]:
+        try:
+            data = app._ctl.baselines()
+        except Exception as exc:
+            app.logger.warning("controller /baselines fetch failed: %s", exc)
+            return []
+        if isinstance(data, list):
+            return data
+        app.logger.warning("controller /baselines unexpected payload: %r", data)
+        return []
+
+    def baseline_summary_map() -> Dict[int, Dict[str, Any]]:
+        connection = _ensure_con()
+        if connection is None:
+            return {}
+        summaries: Dict[int, Dict[str, Any]] = {}
+
+        def ensure_entry(baseline_id: int) -> Dict[str, Any]:
+            return summaries.setdefault(
+                baseline_id,
+                {
+                    "baseline_id": baseline_id,
+                    "persistent_detections": 0,
+                    "last_detection_utc": None,
+                    "last_update_utc": None,
+                    "total_windows": 0,
+                },
+            )
+
+        try:
+            rows = qa(
+                connection,
+                "SELECT id AS baseline_id, total_windows FROM baselines",
+            )
+            for row in rows:
+                raw_id = row.get("baseline_id")
+                if raw_id is None:
+                    continue
+                bid = int(raw_id)
+                entry = ensure_entry(bid)
+                entry["total_windows"] = int(row.get("total_windows") or 0)
+        except sqlite3.OperationalError:
+            return summaries
+
+        try:
+            det_rows = qa(
+                connection,
+                """
+                SELECT baseline_id, COUNT(*) AS detection_count, MAX(last_seen_utc) AS last_detection_utc
+                FROM baseline_detections
+                GROUP BY baseline_id
+                """,
+            )
+            for row in det_rows:
+                raw_id = row.get("baseline_id")
+                if raw_id is None:
+                    continue
+                bid = int(raw_id)
+                entry = ensure_entry(bid)
+                entry["persistent_detections"] = int(row.get("detection_count") or 0)
+                entry["last_detection_utc"] = row.get("last_detection_utc")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            update_rows = qa(
+                connection,
+                """
+                SELECT baseline_id, MAX(timestamp_utc) AS last_update_utc
+                FROM scan_updates
+                GROUP BY baseline_id
+                """,
+            )
+            for row in update_rows:
+                raw_id = row.get("baseline_id")
+                if raw_id is None:
+                    continue
+                bid = int(raw_id)
+                entry = ensure_entry(bid)
+                entry["last_update_utc"] = row.get("last_update_utc")
+        except sqlite3.OperationalError:
+            pass
+
+        return summaries
+
+    def create_baseline_entry(data: Dict[str, Any]) -> Dict[str, Any]:
+        name = str(data.get("name", "")).strip()
+        if not name:
+            raise ValueError("name is required")
+
+        def _coerce_int(value: Any, field: str) -> int:
+            if value in (None, ""):
+                raise ValueError(f"{field} is required")
+            try:
+                return int(float(value))
+            except Exception as exc:
+                raise ValueError(f"{field} must be a number") from exc
+
+        def _coerce_float(value: Any) -> Optional[float]:
+            if value in (None, ""):
+                return None
+            try:
+                return float(value)
+            except Exception as exc:
+                raise ValueError("Invalid coordinate value") from exc
+
+        freq_start = _coerce_int(data.get("freq_start_hz"), "freq_start_hz")
+        freq_stop = _coerce_int(data.get("freq_stop_hz"), "freq_stop_hz")
+        if freq_stop <= freq_start:
+            raise ValueError("freq_stop_hz must be greater than freq_start_hz")
+
+        bin_val_raw = data.get("bin_hz")
+        try:
+            bin_hz = float(bin_val_raw) if bin_val_raw not in (None, "") else 0.0
+        except Exception as exc:
+            raise ValueError("bin_hz must be numeric if provided") from exc
+
+        payload = {
+            "name": name,
+            "created_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "location_lat": _coerce_float(data.get("location_lat")),
+            "location_lon": _coerce_float(data.get("location_lon")),
+            "sdr_serial": (str(data.get("sdr_serial") or "").strip() or None),
+            "antenna": (str(data.get("antenna") or "").strip() or None),
+            "notes": (str(data.get("notes") or "").strip() or None),
+            "freq_start_hz": freq_start,
+            "freq_stop_hz": freq_stop,
+            "bin_hz": bin_hz,
+            "baseline_version": int(data.get("baseline_version") or 1),
+        }
+
+        try:
+            conn = sqlite3.connect(app._db_path)
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"failed to open database for baseline creation: {exc}")
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO baselines(
+                    name, created_at, location_lat, location_lon,
+                    sdr_serial, antenna, notes, freq_start_hz, freq_stop_hz,
+                    bin_hz, baseline_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["name"],
+                    payload["created_at"],
+                    payload["location_lat"],
+                    payload["location_lon"],
+                    payload["sdr_serial"],
+                    payload["antenna"],
+                    payload["notes"],
+                    payload["freq_start_hz"],
+                    payload["freq_stop_hz"],
+                    payload["bin_hz"],
+                    payload["baseline_version"],
+                ),
+            )
+            baseline_id = int(cur.lastrowid)
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT id, name, created_at, location_lat, location_lon,
+                       sdr_serial, antenna, notes, freq_start_hz, freq_stop_hz,
+                       bin_hz, total_windows
+                FROM baselines WHERE id = ?
+                """,
+                (baseline_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+            reset_ro_connection()
+            _ensure_con()
+
+        if row is None:
+            raise RuntimeError("baseline created but could not be reloaded")
+        result = dict(row)
+        result["baseline_id"] = result.get("id")
+        return result
+
     def load_spur_bins() -> List[int]:
         connection = _ensure_con()
         if connection is None:
@@ -933,8 +1131,15 @@ def create_app(db_path: str) -> Flask:
             abort(400, description='device_key is required')
         label = payload.get('label') or 'web'
         params = payload.get('params') or {}
+        baseline_id = payload.get('baseline_id')
+        if baseline_id in (None, ""):
+            abort(400, description='baseline_id is required; create or select a baseline first.')
         try:
-            return app._ctl.start_job(device_key, label, params)
+            baseline_id_int = int(baseline_id)
+        except Exception as exc:
+            abort(400, description=f'invalid baseline_id: {exc}')
+        try:
+            return app._ctl.start_job(device_key, label, baseline_id_int, params)
         except Exception as exc:
             abort(400, description=str(exc))
 
@@ -956,7 +1161,15 @@ def create_app(db_path: str) -> Flask:
     # ---------- Pages ----------
     @app.get('/control')
     def control():
-        return render_template("control.html", db_path=app._db_path, profiles=controller_profiles())
+        baseline_list = controller_baselines()
+        summaries = baseline_summary_map()
+        return render_template(
+            "control.html",
+            db_path=app._db_path,
+            profiles=controller_profiles(),
+            baselines=baseline_list,
+            baseline_summaries=summaries,
+        )
 
     @app.route('/live')
     def live():
@@ -1461,6 +1674,28 @@ def create_app(db_path: str) -> Flask:
             msg = str(e)
             hint = "unauthorized" if "401" in msg or "unauthorized" in msg.lower() else "unreachable"
             return jsonify({"error": f"controller_{hint}", "detail": msg})
+
+    @app.get('/api/baselines')
+    def api_baselines_list():
+        require_auth()
+        baselines_payload = {
+            "baselines": controller_baselines(),
+            "summaries": baseline_summary_map(),
+        }
+        return jsonify(baselines_payload)
+
+    @app.post('/api/baselines')
+    def api_baselines_create():
+        require_auth()
+        payload = request.get_json(force=True, silent=False) or {}
+        try:
+            row = create_baseline_entry(payload)
+        except ValueError as exc:
+            abort(400, description=str(exc))
+        except RuntimeError as exc:
+            abort(500, description=str(exc))
+        summaries = baseline_summary_map()
+        return (jsonify({"baseline": row, "summaries": summaries}), 201)
 
     def active_state_payload() -> Dict[str, Any]:
         job = controller_active_job()

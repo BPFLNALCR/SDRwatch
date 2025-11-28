@@ -26,6 +26,7 @@ import json
 import os
 import shlex
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -129,6 +130,17 @@ def _fetch_profiles_payload(force_refresh: bool = False) -> Dict[str, Any]:
     _PROFILE_CACHE = payload
     _PROFILE_CACHE_TS = now
     return payload
+
+
+def _default_db_path() -> Path:
+    explicit = os.environ.get("SDRWATCH_DB")
+    if explicit:
+        return Path(explicit).expanduser()
+    try:
+        project_dir, _ = resolve_scanner_paths()
+        return project_dir / "sdrwatch.db"
+    except FileNotFoundError:
+        return Path.cwd() / "sdrwatch.db"
 
 # ---------- Utilities ----------
 
@@ -273,6 +285,7 @@ class Job:
     created_ts: float
     label: str
     device_key: str
+    baseline_id: Optional[int]
     status: str              # "running", "stopped", "finished", "error"
     pid: Optional[int]
     cmd: List[str]
@@ -286,8 +299,11 @@ class JobManager:
     def __init__(self) -> None:
         ensure_dirs()
         self.state = read_state()
+        self.default_db_path = _default_db_path()
         self.jobs: Dict[str, Job] = {}
         for jid, j in self.state.get("jobs", {}).items():
+            if "baseline_id" not in j:
+                j["baseline_id"] = None
             job = Job(**j)
             # Reconcile process liveness and cleanup locks at startup
             if job.pid and job.status == "running" and not pid_alive(job.pid):
@@ -382,7 +398,11 @@ class JobManager:
         t = threading.Thread(target=_watch, name=f"reaper-{job_id}", daemon=True)
         t.start()
 
-    def start_job(self, *, device_key: str, label: str, sdrwatch_args: Dict[str, Any]) -> Job:
+    def start_job(self, *, device_key: str, label: str, baseline_id: int, sdrwatch_args: Dict[str, Any]) -> Job:
+        try:
+            baseline_id_int = int(baseline_id)
+        except (TypeError, ValueError):
+            raise ValueError("baseline_id must be an integer")
         project_dir, script_path = resolve_scanner_paths()
         # Refuse to start if the device is already locked (but clear stale locks first)
         self._acquire_device(device_key, owner="pending")
@@ -396,7 +416,12 @@ class JobManager:
 
             jid = short_uuid()
             log_path = str(LOGS_DIR / f"{jid}.log")
-            cmd = self._build_cmd(script_path=script_path, device_key=device_key, args=sdrwatch_args)
+            cmd = self._build_cmd(
+                script_path=script_path,
+                device_key=device_key,
+                baseline_id=baseline_id_int,
+                args=sdrwatch_args,
+            )
             # Update lock with owner id
             with self._lock_path(device_key).open("w", encoding="utf-8") as f:
                 f.write(jid)
@@ -416,6 +441,7 @@ class JobManager:
                 created_ts=now_ts(),
                 label=label,
                 device_key=device_key,
+                baseline_id=baseline_id_int,
                 status="running",
                 pid=proc.pid,
                 cmd=cmd,
@@ -466,9 +492,18 @@ class JobManager:
         return job
 
     # Pass optional profile/spur_calibration/loop/repeat/duration/jsonl params through to sdrwatch.py.
-    def _build_cmd(self, *, script_path: Path, device_key: str, args: Dict[str, Any]) -> List[str]:
+    def _build_cmd(
+        self,
+        *,
+        script_path: Path,
+        device_key: str,
+        baseline_id: Optional[int],
+        args: Dict[str, Any],
+    ) -> List[str]:
         """Translate a stable API dict into the concrete sdrwatch.py CLI."""
-        cmd = [PYTHON_EXE, str(script_path)]
+        if baseline_id is None:
+            raise ValueError("baseline_id is required for scanner command")
+        cmd = [PYTHON_EXE, str(script_path), "--baseline-id", str(int(baseline_id))]
         soapy_args_kv: Dict[str, Any] = {}
         # Respect explicit driver override from caller (e.g., 'rtlsdr_native')
         explicit_driver = str(args.get("driver", "")).strip() if args.get("driver") is not None else ""
@@ -575,6 +610,42 @@ class JobManager:
             return "\n".join(lines[-tail:])
         return data
 
+    # ---- baseline helpers ----
+    def list_baselines(self) -> List[Dict[str, Any]]:
+        return self._query_baselines()
+
+    def get_baseline(self, baseline_id: int) -> Dict[str, Any]:
+        rows = self._query_baselines(baseline_id=baseline_id)
+        if not rows:
+            raise KeyError(f"Baseline {baseline_id} not found")
+        return rows[0]
+
+    def _query_baselines(self, baseline_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        db_path = self.default_db_path
+        if not db_path.exists():
+            return []
+        columns = "id, name, created_at, freq_start_hz, freq_stop_hz, notes"
+        sql = f"SELECT {columns} FROM baselines"
+        params: Tuple[Any, ...] = ()
+        if baseline_id is not None:
+            sql += " WHERE id = ?"
+            params = (baseline_id,)
+        else:
+            sql += " ORDER BY created_at DESC, id DESC"
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"failed to open database {db_path}: {exc}")
+        try:
+            cur = conn.execute(sql, params)
+            rows = [dict(row) for row in cur.fetchall()]
+            return rows
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"failed to query baselines: {exc}")
+        finally:
+            conn.close()
+
 
 # ---------- HTTP server (optional) ----------
 
@@ -612,6 +683,26 @@ def make_app(manager: JobManager, token: Optional[str] = None):
             return (jsonify({"error": "failed_to_list_profiles", "detail": detail}), 500)
         return app.response_class(json.dumps(payload), mimetype="application/json")
 
+    @app.get("/baselines")
+    def baselines():
+        try:
+            rows = manager.list_baselines()
+            return jsonify(rows)
+        except Exception as exc:
+            detail = str(exc)
+            return (jsonify({"error": "failed_to_list_baselines", "detail": detail}), 500)
+
+    @app.get("/baselines/<int:baseline_id>")
+    def baseline_detail(baseline_id: int):
+        try:
+            row = manager.get_baseline(baseline_id)
+            return jsonify(row)
+        except KeyError as exc:
+            return (jsonify({"error": str(exc)}), 404)
+        except Exception as exc:
+            detail = str(exc)
+            return (jsonify({"error": "failed_to_fetch_baseline", "detail": detail}), 500)
+
     @app.get("/jobs")
     def jobs():
         return jsonify([asdict(j) for j in manager.list_jobs()])
@@ -622,10 +713,25 @@ def make_app(manager: JobManager, token: Optional[str] = None):
         device_key = payload.get("device_key")
         if not device_key:
             return (jsonify({"error": "device_key is required"}), 400)
+        if "baseline_id" not in payload:
+            return (
+                jsonify({"error": "baseline_id is required; create or select a baseline first."}),
+                400,
+            )
+        baseline_id = payload.get("baseline_id")
+        try:
+            baseline_id_int = int(baseline_id)
+        except (TypeError, ValueError):
+            return (jsonify({"error": "baseline_id must be an integer"}), 400)
         label = payload.get("label") or f"job-{short_uuid()}"
         params = payload.get("params") or {}
         try:
-            job = manager.start_job(device_key=device_key, label=label, sdrwatch_args=params)
+            job = manager.start_job(
+                device_key=device_key,
+                label=label,
+                baseline_id=baseline_id_int,
+                sdrwatch_args=params,
+            )
             return jsonify(asdict(job))
         except Exception as e:
             return (jsonify({"error": str(e)}), 400)
@@ -717,7 +823,12 @@ def cmd_start(args: argparse.Namespace) -> int:
     if args.extra:
         params["extra_args"] = args.extra
 
-    job = jm.start_job(device_key=args.device, label=args.label or f"job-{short_uuid()}", sdrwatch_args=params)
+    job = jm.start_job(
+        device_key=args.device,
+        label=args.label or f"job-{short_uuid()}",
+        baseline_id=args.baseline_id,
+        sdrwatch_args=params,
+    )
     print(job.id)
     return 0
 
@@ -789,6 +900,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("start", help="Start a new sdrwatch.py job")
     s.add_argument("--device", required=True, help="Device key (e.g., rtl:0, hackrf:<serial>)")
     s.add_argument("--label", default=None, help="Human-friendly label for this job")
+    s.add_argument("--baseline-id", type=int, required=True, help="Existing baseline id to associate with the scan")
 
     # Common sdrwatch args
     s.add_argument("--start", type=float, help="Start frequency (Hz)")

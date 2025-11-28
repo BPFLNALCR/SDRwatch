@@ -1,18 +1,18 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-SDRWatch — wideband scanner, baseline builder, and bandplan mapper
+SDRWatch ΓÇö wideband scanner, baseline builder, and bandplan mapper
 
 Goals
 -----
 - Sweep a frequency range with an SDR (SoapySDR backend by default; optional native RTL-SDR backend).
-- Estimate noise floor robustly and detect signals via energy thresholding (CFAR‑like).
-- Build a baseline (per‑bin occupancy over time) and flag "new" signals relative to that baseline.
-- Map detections to a bandplan (FCC/CEPT/etc.) from a CSV file or built‑in minimal defaults.
+- Estimate noise floor robustly and detect signals via energy thresholding (CFARΓÇælike).
+- Build a baseline (perΓÇæbin occupancy over time) and flag "new" signals relative to that baseline.
+- Map detections to a bandplan (FCC/CEPT/etc.) from a CSV file or builtΓÇæin minimal defaults.
 - Log everything to SQLite and optionally emit desktop notifications or webhook JSON lines.
 
 Hardware
 --------
-Any SoapySDR‑supported device (RTL‑SDR, HackRF, Airspy, SDRplay, LimeSDR, USRP...).
+Any SoapySDRΓÇæsupported device (RTLΓÇæSDR, HackRF, Airspy, SDRplay, LimeSDR, USRP...).
 Alternatively, a native RTL-SDR path via pyrtlsdr (librtlsdr) is available with --driver rtlsdr_native.
 
 Trixie notes
@@ -25,11 +25,17 @@ Trixie notes
 
 DB schema (SQLite)
 ------------------
-- scans(id INTEGER PK, t_start_utc TEXT, t_end_utc TEXT, f_start_hz INT, f_stop_hz INT, step_hz INT, samp_rate INT, fft INT, avg INT,
-        device TEXT, driver TEXT)
-- detections(scan_id INT, time_utc TEXT, f_center_hz INT, f_low_hz INT, f_high_hz INT, peak_db REAL, noise_db REAL, snr_db REAL,
-             service TEXT, region TEXT, notes TEXT)
-- baseline(bin_hz INT PK, ema_occ REAL, ema_power_db REAL, last_seen_utc TEXT, total_obs INT, hits INT)
+- baselines(id INTEGER PK AUTOINCREMENT, name TEXT, created_at TEXT, location_lat REAL, location_lon REAL,
+    sdr_serial TEXT, antenna TEXT, notes TEXT, freq_start_hz INTEGER, freq_stop_hz INTEGER,
+    bin_hz REAL, baseline_version INTEGER, total_windows INTEGER DEFAULT 0)
+- baseline_stats(baseline_id INTEGER, bin_index INTEGER, noise_floor_ema REAL, power_ema REAL,
+     occ_count INTEGER, last_seen_utc TEXT, PRIMARY KEY (baseline_id, bin_index))
+- baseline_detections(id INTEGER PK AUTOINCREMENT, baseline_id INTEGER, f_low_hz INTEGER, f_high_hz INTEGER,
+          f_center_hz INTEGER, first_seen_utc TEXT, last_seen_utc TEXT,
+          total_hits INTEGER, total_windows INTEGER, confidence REAL)
+- scan_updates(id INTEGER PK AUTOINCREMENT, baseline_id INTEGER, timestamp_utc TEXT,
+       num_hits INTEGER, num_segments INTEGER, num_new_signals INTEGER)
+- spur_map(bin_hz INTEGER PRIMARY KEY, mean_power_db REAL, hits INTEGER, last_seen_utc TEXT)
 
 License: MIT
 """
@@ -101,6 +107,17 @@ class Segment:
     peak_db: float
     noise_db: float
     snr_db: float
+
+
+@dataclass
+class BaselineContext:
+    id: int
+    name: str
+    freq_start_hz: int
+    freq_stop_hz: int
+    bin_hz: float
+    baseline_version: int
+    total_windows: int
 
 
 @dataclass
@@ -258,176 +275,295 @@ class Store:
         self.con.execute("PRAGMA busy_timeout=5000")
         self._init()
 
-    def _init(self):
-                cur = self.con.cursor()
-                cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS scans (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                t_start_utc TEXT,
-                                t_end_utc   TEXT,
-                                f_start_hz  INTEGER,
-                                f_stop_hz   INTEGER,
-                                step_hz     INTEGER,
-                                samp_rate   INTEGER,
-                                fft         INTEGER,
-                                avg         INTEGER,
-                                device      TEXT,
-                                driver      TEXT
-                        )
-                        """
-                )
-                cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS detections (
-                            scan_id     INTEGER,
-                            time_utc    TEXT,
-                            f_center_hz INTEGER,
-                            f_low_hz    INTEGER,
-                            f_high_hz   INTEGER,
-                            peak_db     REAL,
-                            noise_db    REAL,
-                            snr_db      REAL,
-                            service     TEXT,
-                            region      TEXT,
-                            notes       TEXT,
-                            confidence  REAL
-                        )
-                        """
-                )
-                cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS baseline (
-                            bin_hz      INTEGER PRIMARY KEY,
-                            ema_occ     REAL,
-                            ema_power_db REAL,
-                            last_seen_utc TEXT,
-                            total_obs   INTEGER,
-                            hits        INTEGER
-                        )
-                        """
-                )
-                cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS spur_map (
-                            bin_hz        INTEGER PRIMARY KEY,
-                            mean_power_db REAL,
-                            hits          INTEGER,
-                            last_seen_utc TEXT
-                        )
-                        """
-                )
-                self.con.commit()
-                # Backfill new nullable columns when upgrading existing deployments
-                self._ensure_column("scans", "latitude", "latitude REAL")
-                self._ensure_column("scans", "longitude", "longitude REAL")
-                self._ensure_column("detections", "confidence", "confidence REAL")
-
-    # Transaction helpers
-    def begin(self):
-        self.con.execute("BEGIN")
-
-    def commit(self):
-        self.con.commit()
-
-    def _ensure_column(self, table: str, column: str, ddl: str) -> None:
-        cur = self.con.execute(f"PRAGMA table_info({table})")
-        existing = {row[1] for row in cur.fetchall()}
-        if column not in existing:
-            self.con.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
-            self.con.commit()
-
-    def start_scan(self, meta: dict) -> int:
+    def _init(self) -> None:
         cur = self.con.cursor()
         cur.execute(
             """
-            INSERT INTO scans(t_start_utc, t_end_utc, f_start_hz, f_stop_hz, step_hz, samp_rate, fft, avg, device, driver, latitude, longitude)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                meta.get("t_start_utc"),
-                meta.get("t_end_utc"),
-                meta.get("f_start_hz"),
-                meta.get("f_stop_hz"),
-                meta.get("step_hz"),
-                meta.get("samp_rate"),
-                meta.get("fft"),
-                meta.get("avg"),
-                meta.get("device"),
-                meta.get("driver"),
-                meta.get("latitude"),
-                meta.get("longitude"),
-            ),
-        )
-        self.con.commit()
-        if cur.lastrowid is None:
-            raise RuntimeError("Failed to retrieve lastrowid from scan insert")
-        return int(cur.lastrowid)
-
-    def end_scan(self, scan_id: int, t_end_utc: str):
-        self.con.execute("UPDATE scans SET t_end_utc = ? WHERE id = ?", (t_end_utc, scan_id))
-        self.con.commit()
-
-    def add_detection(self, scan_id: int, seg: Segment, service: str, region: str, notes: str, confidence: Optional[float] = None):
-        self.con.execute(
+            CREATE TABLE IF NOT EXISTS baselines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                location_lat REAL,
+                location_lon REAL,
+                sdr_serial TEXT,
+                antenna TEXT,
+                notes TEXT,
+                freq_start_hz INTEGER NOT NULL,
+                freq_stop_hz INTEGER NOT NULL,
+                bin_hz REAL NOT NULL,
+                baseline_version INTEGER NOT NULL DEFAULT 1,
+                total_windows INTEGER NOT NULL DEFAULT 0
+            )
             """
-            INSERT INTO detections(scan_id, time_utc, f_center_hz, f_low_hz, f_high_hz, peak_db, noise_db, snr_db, service, region, notes, confidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS baseline_stats (
+                baseline_id INTEGER NOT NULL,
+                bin_index INTEGER NOT NULL,
+                noise_floor_ema REAL NOT NULL,
+                power_ema REAL NOT NULL,
+                occ_count INTEGER NOT NULL,
+                last_seen_utc TEXT NOT NULL,
+                PRIMARY KEY (baseline_id, bin_index)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS baseline_detections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                baseline_id INTEGER NOT NULL,
+                f_low_hz INTEGER NOT NULL,
+                f_high_hz INTEGER NOT NULL,
+                f_center_hz INTEGER NOT NULL,
+                first_seen_utc TEXT NOT NULL,
+                last_seen_utc TEXT NOT NULL,
+                total_hits INTEGER NOT NULL,
+                total_windows INTEGER NOT NULL,
+                confidence REAL NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scan_updates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                baseline_id INTEGER NOT NULL,
+                timestamp_utc TEXT NOT NULL,
+                num_hits INTEGER NOT NULL,
+                num_segments INTEGER NOT NULL,
+                num_new_signals INTEGER NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS spur_map (
+                bin_hz        INTEGER PRIMARY KEY,
+                mean_power_db REAL,
+                hits          INTEGER,
+                last_seen_utc TEXT
+            )
+            """
+        )
+        self.con.commit()
+
+    def begin(self) -> None:
+        self.con.execute("BEGIN")
+
+    def commit(self) -> None:
+        self.con.commit()
+
+    def get_latest_baseline_id(self) -> Optional[int]:
+        cur = self.con.execute("SELECT id FROM baselines ORDER BY id DESC LIMIT 1")
+        row = cur.fetchone()
+        return int(row[0]) if row else None
+
+    def get_baseline(self, baseline_id: int) -> Optional[BaselineContext]:
+        cur = self.con.execute(
+            """
+            SELECT id, name, freq_start_hz, freq_stop_hz, bin_hz, baseline_version, total_windows
+            FROM baselines
+            WHERE id = ?
             """,
-            (
-                scan_id,
-                utc_now_str(),
-                seg.f_center_hz,
-                seg.f_low_hz,
-                seg.f_high_hz,
-                seg.peak_db,
-                seg.noise_db,
-                seg.snr_db,
-                service,
-                region,
-                notes,
-                float(confidence) if confidence is not None else None,
-            ),
+            (int(baseline_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return BaselineContext(
+            id=int(row[0]),
+            name=str(row[1]),
+            freq_start_hz=int(row[2]),
+            freq_stop_hz=int(row[3]),
+            bin_hz=float(row[4]),
+            baseline_version=int(row[5]),
+            total_windows=int(row[6] or 0),
         )
 
-    def update_baseline(self, freqs_hz: np.ndarray, psd_db: np.ndarray, occupied_mask: np.ndarray, ema_alpha: float = 0.05):
+    def increment_baseline_windows(self, baseline_id: int, delta: int = 1) -> int:
         cur = self.con.cursor()
-        tnow = utc_now_str()
-        for f, p, occ in zip(freqs_hz.astype(int), psd_db.astype(float), occupied_mask.astype(int)):
-            cur.execute("SELECT ema_occ, ema_power_db, last_seen_utc, total_obs, hits FROM baseline WHERE bin_hz = ?", (int(f),))
-            row = cur.fetchone()
-            if row is None:
-                ema_occ = occ
-                ema_pow = p
-                tot = 1
-                hits = occ
-            else:
-                ema_occ_prev, ema_pow_prev, _, total_obs, hits_prev = row
-                ema_occ = (1 - ema_alpha) * (ema_occ_prev if ema_occ_prev is not None else 0.0) + ema_alpha * occ
-                ema_pow = (1 - ema_alpha) * (ema_pow_prev if ema_pow_prev is not None else p) + ema_alpha * p
-                tot = (total_obs or 0) + 1
-                hits = (hits_prev or 0) + occ
+        cur.execute(
+            "UPDATE baselines SET total_windows = total_windows + ? WHERE id = ?",
+            (int(delta), int(baseline_id)),
+        )
+        cur.execute("SELECT total_windows FROM baselines WHERE id = ?", (int(baseline_id),))
+        row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def update_baseline_stats(
+        self,
+        baseline_id: int,
+        bin_indices: Iterable[int],
+        noise_floor_db: Iterable[float],
+        power_db: Iterable[float],
+        occupied_mask: Iterable[bool],
+        timestamp_utc: str,
+        ema_alpha: float = 0.05,
+    ) -> None:
+        cur = self.con.cursor()
+        for idx, noise, power, occupied in zip(bin_indices, noise_floor_db, power_db, occupied_mask):
+            if idx is None:
+                continue
+            noise_val = float(noise)
+            power_val = float(power)
+            if not math.isfinite(noise_val):
+                noise_val = power_val
+            if not math.isfinite(power_val):
+                continue
             cur.execute(
                 """
-                INSERT INTO baseline(bin_hz, ema_occ, ema_power_db, last_seen_utc, total_obs, hits)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(bin_hz) DO UPDATE SET
-                    ema_occ=excluded.ema_occ,
-                    ema_power_db=excluded.ema_power_db,
-                    last_seen_utc=excluded.last_seen_utc,
-                    total_obs=excluded.total_obs,
-                    hits=excluded.hits
+                SELECT noise_floor_ema, power_ema, occ_count
+                FROM baseline_stats
+                WHERE baseline_id = ? AND bin_index = ?
                 """,
-                (int(f), float(ema_occ), float(ema_pow), tnow, int(tot), int(hits)),
+                (int(baseline_id), int(idx)),
             )
+            row = cur.fetchone()
+            if row is None:
+                occ_count = 1 if occupied else 0
+                cur.execute(
+                    """
+                    INSERT INTO baseline_stats(baseline_id, bin_index, noise_floor_ema, power_ema, occ_count, last_seen_utc)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (int(baseline_id), int(idx), float(noise_val), float(power_val), int(occ_count), timestamp_utc),
+                )
+            else:
+                prev_noise, prev_power, prev_occ = row
+                prev_noise = float(prev_noise) if prev_noise is not None else noise_val
+                prev_power = float(prev_power) if prev_power is not None else power_val
+                prev_occ = int(prev_occ or 0)
+                noise_ema = (1.0 - ema_alpha) * prev_noise + ema_alpha * noise_val
+                power_ema = (1.0 - ema_alpha) * prev_power + ema_alpha * power_val
+                occ_count = prev_occ + (1 if occupied else 0)
+                cur.execute(
+                    """
+                    UPDATE baseline_stats
+                    SET noise_floor_ema = ?, power_ema = ?, occ_count = ?, last_seen_utc = ?
+                    WHERE baseline_id = ? AND bin_index = ?
+                    """,
+                    (float(noise_ema), float(power_ema), int(occ_count), timestamp_utc, int(baseline_id), int(idx)),
+                )
 
-    def baseline_occ(self, f_center_hz: int) -> Optional[float]:
+    def load_baseline_detections(self, baseline_id: int) -> List["PersistentDetection"]:
         cur = self.con.cursor()
-        cur.execute("SELECT ema_occ FROM baseline WHERE bin_hz = ?", (int(f_center_hz),))
-        row = cur.fetchone()
-        return float(row[0]) if row and row[0] is not None else None
+        cur.execute(
+            """
+            SELECT id, baseline_id, f_low_hz, f_high_hz, f_center_hz,
+                   first_seen_utc, last_seen_utc, total_hits, total_windows, confidence
+            FROM baseline_detections
+            WHERE baseline_id = ?
+            ORDER BY f_center_hz
+            """,
+            (int(baseline_id),),
+        )
+        rows = cur.fetchall()
+        detections: List[PersistentDetection] = []
+        for row in rows:
+            detections.append(
+                PersistentDetection(
+                    id=int(row[0]),
+                    baseline_id=int(row[1]),
+                    f_low_hz=int(row[2]),
+                    f_high_hz=int(row[3]),
+                    f_center_hz=int(row[4]),
+                    first_seen_utc=str(row[5]),
+                    last_seen_utc=str(row[6]),
+                    total_hits=int(row[7]),
+                    total_windows=int(row[8]),
+                    confidence=float(row[9]),
+                )
+            )
+        return detections
 
-    def update_spur_bin(self, bin_hz: int, power_db: float, hits_increment: int = 1, ema_alpha: float = 0.2):
+    def insert_baseline_detection(
+        self,
+        baseline_id: int,
+        f_low_hz: int,
+        f_high_hz: int,
+        f_center_hz: int,
+        first_seen_utc: str,
+        last_seen_utc: str,
+        total_hits: int,
+        total_windows: int,
+        confidence: float,
+    ) -> int:
+        cur = self.con.cursor()
+        cur.execute(
+            """
+            INSERT INTO baseline_detections(
+                baseline_id, f_low_hz, f_high_hz, f_center_hz,
+                first_seen_utc, last_seen_utc, total_hits, total_windows, confidence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(baseline_id),
+                int(f_low_hz),
+                int(f_high_hz),
+                int(f_center_hz),
+                first_seen_utc,
+                last_seen_utc,
+                int(total_hits),
+                int(total_windows),
+                float(confidence),
+            ),
+        )
+        if cur.lastrowid is None:
+            raise RuntimeError("Failed to insert baseline detection")
+        return int(cur.lastrowid)
+
+    def update_baseline_detection(self, detection: "PersistentDetection") -> None:
+        self.con.execute(
+            """
+            UPDATE baseline_detections
+            SET f_low_hz = ?, f_high_hz = ?, f_center_hz = ?,
+                first_seen_utc = ?, last_seen_utc = ?,
+                total_hits = ?, total_windows = ?, confidence = ?
+            WHERE id = ? AND baseline_id = ?
+            """,
+            (
+                int(detection.f_low_hz),
+                int(detection.f_high_hz),
+                int(detection.f_center_hz),
+                detection.first_seen_utc,
+                detection.last_seen_utc,
+                int(detection.total_hits),
+                int(detection.total_windows),
+                float(detection.confidence),
+                int(detection.id),
+                int(detection.baseline_id),
+            ),
+        )
+
+    def insert_scan_update(self, baseline_id: int, timestamp_utc: str, num_hits: int, num_segments: int, num_new_signals: int) -> None:
+        self.con.execute(
+            """
+            INSERT INTO scan_updates(baseline_id, timestamp_utc, num_hits, num_segments, num_new_signals)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (int(baseline_id), timestamp_utc, int(num_hits), int(num_segments), int(num_new_signals)),
+        )
+
+    def baseline_occ_ratio(self, baseline_id: int, bin_index: int) -> Optional[float]:
+        cur = self.con.cursor()
+        cur.execute(
+            "SELECT occ_count FROM baseline_stats WHERE baseline_id = ? AND bin_index = ?",
+            (int(baseline_id), int(bin_index)),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        occ_count = int(row[0] or 0)
+        cur.execute("SELECT total_windows FROM baselines WHERE id = ?", (int(baseline_id),))
+        total_row = cur.fetchone()
+        total_windows = int(total_row[0] or 0) if total_row else 0
+        if total_windows <= 0:
+            return None
+        return float(occ_count) / float(total_windows)
+
+    def update_spur_bin(self, bin_hz: int, power_db: float, hits_increment: int = 1, ema_alpha: float = 0.2) -> None:
         cur = self.con.cursor()
         cur.execute("SELECT mean_power_db, hits FROM spur_map WHERE bin_hz = ?", (int(bin_hz),))
         row = cur.fetchone()
@@ -722,6 +858,20 @@ class DetectionCluster:
     emitted: bool = False
 
 
+@dataclass
+class PersistentDetection:
+    id: int
+    baseline_id: int
+    f_low_hz: int
+    f_high_hz: int
+    f_center_hz: int
+    first_seen_utc: str
+    last_seen_utc: str
+    total_hits: int
+    total_windows: int
+    confidence: float
+
+
 class DetectionEngine:
     def __init__(
         self,
@@ -730,6 +880,7 @@ class DetectionEngine:
         args,
         *,
         bin_hz: float,
+        baseline_ctx: BaselineContext,
         min_hits: int = 2,
         min_windows: int = 2,
         max_gap_windows: int = 3,
@@ -739,6 +890,7 @@ class DetectionEngine:
         self.bandplan = bandplan
         self.args = args
         self.bin_hz = float(bin_hz)
+        self.baseline_ctx = baseline_ctx
         self.min_hits = max(1, int(min_hits))
         self.min_windows = max(1, int(min_windows))
         self.max_gap_windows = max(1, int(max_gap_windows))
@@ -752,29 +904,33 @@ class DetectionEngine:
         self.spur_override_snr = 10.0
         self.spur_penalty_max = 0.35
         self._pending_emits = 0
+        self._pending_new_signals = 0
+        self._persisted: List[PersistentDetection] = self.store.load_baseline_detections(self.baseline_ctx.id)
 
-    def ingest(self, scan_id: int, window_idx: int, segments: List[Segment]) -> Tuple[int, int, int]:
+    def ingest(self, window_idx: int, segments: List[Segment]) -> Tuple[int, int, int, int]:
         self._last_window_idx = max(self._last_window_idx, window_idx)
         accepted = 0
         spur_ignored = 0
         if not segments:
-            self._prune_clusters(scan_id, window_idx)
-            return accepted, spur_ignored, self._drain_pending_emits()
+            self._prune_clusters(window_idx)
+            emitted, new_emitted = self._drain_pending_emits()
+            return accepted, spur_ignored, emitted, new_emitted
         timestamp = utc_now_str()
         for seg in segments:
             if self._spur_should_ignore(seg):
                 spur_ignored += 1
                 continue
-            self._record_hit(scan_id, window_idx, seg, timestamp)
+            self._record_hit(window_idx, seg, timestamp)
             accepted += 1
-        self._prune_clusters(scan_id, window_idx)
-        return accepted, spur_ignored, self._drain_pending_emits()
+        self._prune_clusters(window_idx)
+        emitted, new_emitted = self._drain_pending_emits()
+        return accepted, spur_ignored, emitted, new_emitted
 
-    def flush(self, scan_id: int) -> int:
-        self._prune_clusters(scan_id, self._last_window_idx if self._last_window_idx >= 0 else 0, force=True)
+    def flush(self) -> Tuple[int, int]:
+        self._prune_clusters(self._last_window_idx if self._last_window_idx >= 0 else 0, force=True)
         return self._drain_pending_emits()
 
-    def _record_hit(self, scan_id: int, window_idx: int, seg: Segment, timestamp: str):
+    def _record_hit(self, window_idx: int, seg: Segment, timestamp: str):
         cluster = self._find_cluster(seg)
         if cluster is None:
             cluster = DetectionCluster(
@@ -799,7 +955,7 @@ class DetectionEngine:
             if seg.snr_db >= cluster.best_seg.snr_db:
                 cluster.best_seg = seg
 
-        self._maybe_emit_cluster(scan_id, cluster)
+        self._maybe_emit_cluster(cluster)
 
     def _find_cluster(self, seg: Segment) -> Optional[DetectionCluster]:
         for cluster in self.clusters:
@@ -813,12 +969,12 @@ class DetectionEngine:
             or seg.f_low_hz > (cluster.f_high_hz + self.freq_merge_hz)
         )
 
-    def _maybe_emit_cluster(self, scan_id: int, cluster: DetectionCluster):
+    def _maybe_emit_cluster(self, cluster: DetectionCluster):
         if cluster.emitted:
             return
         if not self._cluster_qualifies(cluster):
             return
-        self._emit_detection(scan_id, cluster)
+        self._emit_detection(cluster)
 
     def _cluster_qualifies(self, cluster: DetectionCluster) -> bool:
         width_hz = float(cluster.f_high_hz - cluster.f_low_hz)
@@ -828,7 +984,7 @@ class DetectionEngine:
             and width_hz >= self.min_width_hz
         )
 
-    def _emit_detection(self, scan_id: int, cluster: DetectionCluster):
+    def _emit_detection(self, cluster: DetectionCluster):
         cluster.emitted = True
         best_seg = cluster.best_seg
         confidence = self._compute_confidence(cluster)
@@ -842,15 +998,16 @@ class DetectionEngine:
         )
         svc, reg, note = self.bandplan.lookup(combined_seg.f_center_hz)
 
-        self.store.begin()
-        self.store.add_detection(scan_id, combined_seg, svc, reg, note, confidence)
-        self.store.commit()
+        is_new_detection = self._persist_detection(cluster, combined_seg, confidence)
         self._pending_emits += 1
+        if is_new_detection:
+            self._pending_new_signals += 1
 
-        occ = self.store.baseline_occ(combined_seg.f_center_hz)
-        is_new = occ is not None and occ < self.args.new_ema_occ
+        occ_ratio = self._lookup_occ_ratio(combined_seg.f_center_hz)
+        is_new_flag = bool(is_new_detection or (occ_ratio is not None and occ_ratio < self.args.new_ema_occ))
 
         record = {
+            "baseline_id": self.baseline_ctx.id,
             "time_utc": utc_now_str(),
             "f_center_hz": combined_seg.f_center_hz,
             "f_low_hz": combined_seg.f_low_hz,
@@ -861,21 +1018,87 @@ class DetectionEngine:
             "service": svc,
             "region": reg,
             "notes": note,
-            "is_new": bool(is_new),
+            "is_new": is_new_flag,
             "confidence": confidence,
         }
         maybe_emit_jsonl(self.args.jsonl, record)
-        if is_new:
+        if is_new_flag:
             body = f"{combined_seg.f_center_hz/1e6:.6f} MHz; SNR {combined_seg.snr_db:.1f} dB; {svc or 'Unknown'} {reg or ''}"
             maybe_notify("SDRWatch: New signal", body, self.args.notify)
 
-    def _prune_clusters(self, scan_id: int, window_idx: int, force: bool = False):
+    def _persist_detection(self, cluster: DetectionCluster, seg: Segment, confidence: float) -> bool:
+        timestamp = utc_now_str()
+        match = self._match_persistent(seg)
+        self.store.begin()
+        try:
+            if match:
+                match.f_low_hz = min(match.f_low_hz, cluster.f_low_hz)
+                match.f_high_hz = max(match.f_high_hz, cluster.f_high_hz)
+                match.f_center_hz = int((match.f_low_hz + match.f_high_hz) / 2)
+                match.last_seen_utc = timestamp
+                match.total_hits += cluster.hits
+                match.total_windows += len(cluster.windows)
+                match.confidence = confidence
+                self.store.update_baseline_detection(match)
+                is_new = False
+            else:
+                detection_id = self.store.insert_baseline_detection(
+                    self.baseline_ctx.id,
+                    cluster.f_low_hz,
+                    cluster.f_high_hz,
+                    int((cluster.f_low_hz + cluster.f_high_hz) / 2),
+                    cluster.first_seen_ts,
+                    cluster.last_seen_ts,
+                    cluster.hits,
+                    len(cluster.windows),
+                    confidence,
+                )
+                new_det = PersistentDetection(
+                    id=detection_id,
+                    baseline_id=self.baseline_ctx.id,
+                    f_low_hz=cluster.f_low_hz,
+                    f_high_hz=cluster.f_high_hz,
+                    f_center_hz=int((cluster.f_low_hz + cluster.f_high_hz) / 2),
+                    first_seen_utc=cluster.first_seen_ts,
+                    last_seen_utc=cluster.last_seen_ts,
+                    total_hits=cluster.hits,
+                    total_windows=len(cluster.windows),
+                    confidence=confidence,
+                )
+                self._persisted.append(new_det)
+                is_new = True
+        finally:
+            self.store.commit()
+        return is_new
+
+    def _match_persistent(self, seg: Segment) -> Optional[PersistentDetection]:
+        for det in self._persisted:
+            if not (
+                seg.f_high_hz < (det.f_low_hz - self.freq_merge_hz)
+                or seg.f_low_hz > (det.f_high_hz + self.freq_merge_hz)
+            ):
+                return det
+        return None
+
+    def _lookup_occ_ratio(self, freq_hz: int) -> Optional[float]:
+        bin_index = self._bin_index_for_freq(freq_hz)
+        if bin_index is None:
+            return None
+        return self.store.baseline_occ_ratio(self.baseline_ctx.id, bin_index)
+
+    def _bin_index_for_freq(self, freq_hz: int) -> Optional[int]:
+        if freq_hz < self.baseline_ctx.freq_start_hz or freq_hz > self.baseline_ctx.freq_stop_hz:
+            return None
+        offset = (freq_hz - self.baseline_ctx.freq_start_hz) / max(self.baseline_ctx.bin_hz, 1.0)
+        return int(round(offset))
+
+    def _prune_clusters(self, window_idx: int, force: bool = False):
         to_remove: List[DetectionCluster] = []
         for cluster in self.clusters:
             gap = window_idx - cluster.last_window
             if force or gap > self.max_gap_windows:
                 if not cluster.emitted and self._cluster_qualifies(cluster):
-                    self._emit_detection(scan_id, cluster)
+                    self._emit_detection(cluster)
                 to_remove.append(cluster)
         for cluster in to_remove:
             self.clusters.remove(cluster)
@@ -928,10 +1151,12 @@ class DetectionEngine:
             return min(0.15, self.spur_penalty_max)
         return self.spur_penalty_max
 
-    def _drain_pending_emits(self) -> int:
+    def _drain_pending_emits(self) -> Tuple[int, int]:
         emitted = self._pending_emits
+        new_emitted = self._pending_new_signals
         self._pending_emits = 0
-        return emitted
+        self._pending_new_signals = 0
+        return emitted, new_emitted
 
 
 class WindowPowerMonitor:
@@ -1119,24 +1344,34 @@ def _apply_scan_profile(args, parser: argparse.ArgumentParser):
     print(f"[profile] Applied profile '{prof.name}'", flush=True)
 
 
-def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
-    """Perform a single full sweep across [start, stop] inclusive, returning the scan_id."""
-    meta = dict(
-        t_start_utc=utc_now_str(),
-        f_start_hz=int(args.start),
-        f_stop_hz=int(args.stop),
-        step_hz=int(args.step),
-        samp_rate=int(args.samp_rate),
-        fft=int(args.fft),
-        avg=int(args.avg),
-        device=str(getattr(src, 'dev', getattr(src, 'device', '')) if HAVE_SOAPY else getattr(src, 'device', '')),
-        driver=args.driver,
-        latitude=args.latitude,
-        longitude=args.longitude,
-    )
-    scan_id = store.start_scan(meta)
+def _resolve_baseline_context(store: "Store", baseline_arg) -> BaselineContext:
+    if baseline_arg is None:
+        raise SystemExit("--baseline-id must be provided")
+    if isinstance(baseline_arg, str) and baseline_arg.lower() == "latest":
+        baseline_id = store.get_latest_baseline_id()
+        if baseline_id is None:
+            raise SystemExit("No baselines exist yet; create one before running scans")
+    else:
+        try:
+            baseline_id = int(baseline_arg)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise SystemExit(f"Invalid --baseline-id '{baseline_arg}': {exc}")
+    ctx = store.get_baseline(baseline_id)
+    if ctx is None:
+        raise SystemExit(f"Baseline id {baseline_id} not found in database")
+    return ctx
 
+
+def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: BaselineContext) -> None:
+    """Perform a single full sweep across [start, stop] inclusive, updating baseline stats/detections."""
     bin_hz = float(args.samp_rate) / float(args.fft) if args.fft else float(args.samp_rate)
+    if baseline_ctx.bin_hz > 0:
+        diff = abs(bin_hz - baseline_ctx.bin_hz)
+        if diff > max(1.0, baseline_ctx.bin_hz * 0.05):
+            print(
+                f"[baseline] WARNING: sweep bin {bin_hz:.2f} Hz differs from baseline bin {baseline_ctx.bin_hz:.2f} Hz",
+                file=sys.stderr,
+            )
     detection_engine: Optional[DetectionEngine]
     if args.spur_calibration:
         detection_engine = None
@@ -1146,14 +1381,24 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
             bandplan,
             args,
             bin_hz=bin_hz,
+            baseline_ctx=baseline_ctx,
         )
     power_monitor = WindowPowerMonitor()
     spur_tracker: Dict[int, Dict[str, float]] = {}
 
+    total_segments = 0
+    total_hits = 0
+    total_new_signals = 0
+    total_promoted = 0
+
     try:
         center = args.start
         window_idx = 0
-        print(f"[scan] begin sweep id={scan_id} range={args.start/1e6:.3f}-{args.stop/1e6:.3f} MHz step={args.step/1e6:.3f} samp_rate={args.samp_rate/1e6:.3f} fft={args.fft} avg={args.avg}", flush=True)
+        print(
+            f"[scan] begin sweep baseline={baseline_ctx.id} range={args.start/1e6:.3f}-{args.stop/1e6:.3f} MHz step={args.step/1e6:.3f} samp_rate={args.samp_rate/1e6:.3f} fft={args.fft} avg={args.avg}",
+            flush=True,
+        )
+        warned_bin_mismatch = False
         while center <= args.stop:
             src.tune(center)
             nsamps = int(args.fft * args.avg)
@@ -1165,7 +1410,7 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
             rf_freqs = baseband_f + center
 
             # Detect segments
-            segs, occ_mask_cfar, _noise_local_db = detect_segments(
+            segs, occ_mask_cfar, noise_per_bin_db = detect_segments(
                 rf_freqs,
                 psd_db,
                 thresh_db=args.threshold_db,
@@ -1185,28 +1430,59 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
             accepted_hits = 0
             spur_ignored = 0
             promoted = 0
+            new_signals = 0
 
             if is_anom:
                 if detection_engine:
-                    accepted_hits, spur_ignored, promoted = detection_engine.ingest(scan_id, window_idx, [])
+                    accepted_hits, spur_ignored, promoted, new_signals = detection_engine.ingest(window_idx, [])
             else:
                 # Occupancy mask per bin for baseline update
                 noise_db = robust_noise_floor_db(psd_db)
                 dynamic = noise_db + args.threshold_db
                 occupied_mask = occ_mask_cfar if (args.cfar and args.cfar != 'off') else (psd_db > dynamic)
 
-                # --- begin per-window batched DB writes ---
-                store.begin()
+                # Baseline stats update
+                if baseline_ctx.bin_hz > 0:
+                    bin_pos = (rf_freqs - baseline_ctx.freq_start_hz) / baseline_ctx.bin_hz
+                    valid_mask = (rf_freqs >= baseline_ctx.freq_start_hz) & (rf_freqs <= baseline_ctx.freq_stop_hz)
+                else:
+                    if not warned_bin_mismatch:
+                        print("[baseline] bin_hz invalid; skipping stats update", file=sys.stderr)
+                        warned_bin_mismatch = True
+                    valid_mask = np.zeros_like(rf_freqs, dtype=bool)
 
-                store.update_baseline(rf_freqs, psd_db, occupied_mask)
-
-                # commit batched writes for this window
-                store.commit()
+                if valid_mask.any():
+                    bin_indices = np.rint(bin_pos[valid_mask]).astype(int)
+                    noise_vec = noise_per_bin_db[valid_mask].astype(float)
+                    window_ts = utc_now_str()
+                    store.begin()
+                    store.update_baseline_stats(
+                        baseline_ctx.id,
+                        bin_indices,
+                        noise_floor_db=noise_vec,
+                        power_db=psd_db[valid_mask].astype(float),
+                        occupied_mask=occupied_mask[valid_mask],
+                        timestamp_utc=window_ts,
+                    )
+                    total_windows = store.increment_baseline_windows(baseline_ctx.id, 1)
+                    baseline_ctx.total_windows = total_windows
+                    store.commit()
+                elif not warned_bin_mismatch:
+                    # Warn once if sweep is outside baseline range
+                    print(
+                        f"[baseline] sweep window {center/1e6:.3f} MHz outside baseline span {baseline_ctx.freq_start_hz/1e6:.3f}-{baseline_ctx.freq_stop_hz/1e6:.3f} MHz",
+                        file=sys.stderr,
+                    )
+                    warned_bin_mismatch = True
 
                 if args.spur_calibration:
                     _track_spur_hits(spur_tracker, segs)
                 if detection_engine:
-                    accepted_hits, spur_ignored, promoted = detection_engine.ingest(scan_id, window_idx, segs)
+                    accepted_hits, spur_ignored, promoted, new_signals = detection_engine.ingest(window_idx, segs)
+            total_segments += len(segs)
+            total_hits += accepted_hits
+            total_promoted += promoted
+            total_new_signals += new_signals
             window_idx += 1
 
             # Progress log every window
@@ -1222,6 +1498,7 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
                     [
                         f"accepted={accepted_hits}",
                         f"promoted={promoted}",
+                        f"new_sig={new_signals}",
                         f"spur_masked={spur_ignored}",
                     ]
                 )
@@ -1231,16 +1508,26 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src) -> int:
 
     finally:
         if detection_engine:
-            flushed = detection_engine.flush(scan_id)
+            flushed, new_flush = detection_engine.flush()
             if flushed:
-                print(f"[scan] sweep id={scan_id} flushed pending detections={flushed}", flush=True)
+                total_promoted += flushed
+                total_new_signals += new_flush
+                print(f"[scan] sweep baseline={baseline_ctx.id} flushed pending detections={flushed}", flush=True)
         if args.spur_calibration:
             _persist_spur_calibration(store, spur_tracker, window_idx)
-        # End scan (always set end time)
-        store.end_scan(scan_id, utc_now_str())
-        print(f"[scan] end sweep id={scan_id}", flush=True)
-
-    return scan_id
+        store.begin()
+        store.insert_scan_update(
+            baseline_ctx.id,
+            utc_now_str(),
+            num_hits=total_hits,
+            num_segments=total_segments,
+            num_new_signals=total_new_signals,
+        )
+        store.commit()
+        print(
+            f"[scan] end sweep baseline={baseline_ctx.id} hits={total_hits} promoted={total_promoted} new={total_new_signals}",
+            flush=True,
+        )
 
 
 def run(args):
@@ -1251,12 +1538,13 @@ def run(args):
     _do_one_sweep() walks center frequency from --start to --stop in --step increments,
     tuning the SDR, collecting samples, and invoking compute_psd_db() to turn each
     capture into a baseband PSD. detect_segments() (with CFAR via cfar_os_mask) turns
-    each PSD into contiguous hits, while Store.update_baseline() ingests every bin's
-    PSD/noise occupancy EMA. DetectionEngine accumulates those hits over multiple
-    windows, consults spur_map to suppress known hardware artifacts, and only invokes
-    Store.add_detection() (plus JSONL/notifies) once a frequency region shows
-    repeat/persistent energy. In --spur-calibration mode the same sweep populates
-    spur_map instead of emitting detections.
+    each PSD into contiguous hits, while Store.update_baseline_stats() ingests every
+    bin's PSD/noise occupancy EMA tied to the active baseline. DetectionEngine
+    accumulates those hits over multiple windows, consults spur_map to suppress known
+    hardware artifacts, and only promotes baseline_detections (plus JSONL/notifies)
+    once a frequency region shows persistent energy. In --spur-calibration mode the
+    same sweep populates spur_map instead of emitting detections. After each sweep,
+    scan_updates rows summarize hits/segments/new-signal counts for the baseline.
     """
     if getattr(args, "list_profiles", False):
         _emit_profiles_json()
@@ -1268,6 +1556,18 @@ def run(args):
 
     bandplan = Bandplan(args.bandplan)
     store = Store(args.db)
+
+    baseline_ctx = _resolve_baseline_context(store, getattr(args, "baseline_id", None))
+    args.baseline_id = baseline_ctx.id
+    print(
+        f"[baseline] using id={baseline_ctx.id} name='{baseline_ctx.name}' span={baseline_ctx.freq_start_hz/1e6:.3f}-{baseline_ctx.freq_stop_hz/1e6:.3f} MHz bin={baseline_ctx.bin_hz:.1f} Hz",
+        flush=True,
+    )
+    if args.start < baseline_ctx.freq_start_hz or args.stop > baseline_ctx.freq_stop_hz:
+        print(
+            f"[baseline] WARNING: sweep span exceeds baseline span {baseline_ctx.freq_start_hz/1e6:.3f}-{baseline_ctx.freq_stop_hz/1e6:.3f} MHz",
+            file=sys.stderr,
+        )
 
     # Parse --soapy-args into a dict if present
     soapy_args_dict: Optional[Dict[str, str]] = None
@@ -1345,7 +1645,7 @@ def run(args):
             if duration_s is not None and (time.time() - start_time) >= duration_s:
                 break
 
-            _do_one_sweep(args, store, bandplan, src)
+            _do_one_sweep(args, store, bandplan, src, baseline_ctx)
 
             # After each sweep, respect duration again
             if duration_s is not None and (time.time() - start_time) >= duration_s:
@@ -1406,6 +1706,7 @@ def parse_args(argv: Optional[List[str]] = None):
 
     p.add_argument("--bandplan", type=str, help="Optional bandplan CSV to map detections")
     p.add_argument("--db", type=str, help="SQLite DB path (default sdrwatch.db)")
+    p.add_argument("--baseline-id", dest="baseline_id", type=str, help="Baseline id to attach scans to (or 'latest')")
     p.add_argument("--jsonl", type=str, help="Emit detections as line-delimited JSON to this path")
     p.add_argument("--notify", action="store_true", help="Desktop notifications for new signals")
     p.add_argument("--new-ema-occ", dest="new_ema_occ", type=float, help="EMA occupancy threshold to flag a bin as NEW (default 0.02)")
@@ -1467,6 +1768,22 @@ def parse_args(argv: Optional[List[str]] = None):
 
     if has_span:
         _apply_scan_profile(args, p)
+
+    if not args.list_profiles:
+        baseline_raw = getattr(args, "baseline_id", None)
+        if baseline_raw is None:
+            p.error("--baseline-id is required for scanning runs")
+        baseline_text = str(baseline_raw).strip()
+        if not baseline_text:
+            p.error("--baseline-id is required for scanning runs")
+        if baseline_text.lower() == "latest":
+            setattr(args, "baseline_id", "latest")
+        else:
+            try:
+                baseline_val = int(baseline_text)
+            except ValueError:
+                p.error("--baseline-id must be an integer or 'latest'")
+            setattr(args, "baseline_id", baseline_val)
 
     if hasattr(args, "_cli_overrides"):
         delattr(args, "_cli_overrides")

@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% set profile_list = profiles or [] %}
 {% set has_profiles = profile_list|length > 0 %}
+{% set baseline_list = baselines or [] %}
+{% set has_baselines = baseline_list|length > 0 %}
+{% set baseline_summary_map = baseline_summaries or {} %}
 {% block content %}
 <section class="grid grid-cols-1 lg:grid-cols-3 gap-4">
   <div class="card lg:col-span-2">
@@ -10,6 +13,41 @@
     </div>
 
     <form id="ctl" class="grid gap-4">
+      <div>
+        <div class="section-title">Baseline</div>
+        <div class="subgrid">
+          <div class="field">
+            <label for="baseline_select">Active baseline</label>
+            <select id="baseline_select" class="input" {% if not has_baselines %}disabled{% endif %}>
+              <option value="">{% if has_baselines %}(select baseline){% else %}(no baselines yet){% endif %}</option>
+              {% for b in baseline_list %}
+              {% set start_mhz = (b.freq_start_hz or 0) / 1e6 %}
+              {% set stop_mhz = (b.freq_stop_hz or 0) / 1e6 %}
+              <option value="{{ b.id }}">#{{ b.id }} · {{ b.name }} ({{ '%.1f' % start_mhz }}–{{ '%.1f' % stop_mhz }} MHz)</option>
+              {% endfor %}
+            </select>
+            <div class="hint mt-1 text-xs" id="baselineHint">
+              {% if has_baselines %}
+                Select a baseline to tie each scan to persistent history.
+              {% else %}
+                Create a baseline before starting scans.
+              {% endif %}
+            </div>
+          </div>
+          <div class="field">
+            <label>Baseline info</label>
+            <div class="text-sm border border-slate-700/60 rounded-lg p-3 bg-slate-900/40" id="baselineSummary">
+              {% if has_baselines %}
+                Select a baseline to view metadata and recent activity.
+              {% else %}
+                No baselines yet. Use the create form to add one.
+              {% endif %}
+            </div>
+          </div>
+        </div>
+        <input type="hidden" id="activeBaselineId" value="" />
+      </div>
+
       <!-- Device -->
       <div>
         <div class="section-title">Device</div>
@@ -141,6 +179,32 @@
   </div>
 
   <div class="card">
+    <h3 class="text-lg font-semibold mb-2">Create baseline</h3>
+    <p class="text-sm muted mb-3">Define the antenna/location pair and frequency span your scans will maintain.</p>
+    <form id="baselineForm" class="grid gap-3">
+      <div class="field"><label for="baseline_name">Name</label><input id="baseline_name" class="input" name="name" placeholder="Roof VHF" required /></div>
+      <div class="subgrid">
+        <div class="field"><label for="baseline_freq_start_hz">Start (Hz)</label><input id="baseline_freq_start_hz" class="input" name="freq_start_hz" inputmode="numeric" placeholder="88e6" required /></div>
+        <div class="field"><label for="baseline_freq_stop_hz">Stop (Hz)</label><input id="baseline_freq_stop_hz" class="input" name="freq_stop_hz" inputmode="numeric" placeholder="108e6" required /></div>
+      </div>
+      <div class="subgrid">
+        <div class="field"><label for="baseline_location_lat">Latitude</label><input id="baseline_location_lat" class="input" name="location_lat" inputmode="decimal" placeholder="41.878" /></div>
+        <div class="field"><label for="baseline_location_lon">Longitude</label><input id="baseline_location_lon" class="input" name="location_lon" inputmode="decimal" placeholder="-87.629" /></div>
+      </div>
+      <div class="subgrid">
+        <div class="field"><label for="baseline_sdr_serial">SDR serial</label><input id="baseline_sdr_serial" class="input" name="sdr_serial" placeholder="rtl0001" /></div>
+        <div class="field"><label for="baseline_antenna">Antenna</label><input id="baseline_antenna" class="input" name="antenna" placeholder="Discone" /></div>
+      </div>
+      <div class="field"><label for="baseline_notes">Notes</label><textarea id="baseline_notes" class="input" name="notes" rows="2" placeholder="Roof mount, 50ft LMR-400."></textarea></div>
+      <div class="flex flex-wrap gap-2">
+        <button class="btn" type="submit">＋ Create baseline</button>
+        <button class="btn" type="button" id="baselineCopyRange">↔ Copy sweep range</button>
+      </div>
+      <div class="text-xs muted" id="baselineFormStatus">Baselines tie scans to one hardware/site. Re-run scans on the same baseline to build persistence.</div>
+    </form>
+  </div>
+
+  <div class="card">
     <h3 class="text-lg font-semibold mb-2">Quick presets</h3>
     <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
       <button class="btn" onclick="preset('FULL')">Full sweep (24–1766 MHz)</button>
@@ -173,6 +237,8 @@
 {% block scripts %}
 <script>
 const PROFILE_DATA = {{ profile_list|tojson }};
+let BASELINE_DATA = {{ baseline_list|default([], true)|tojson }};
+let BASELINE_SUMMARIES = {{ baseline_summary_map|default({}, true)|tojson }};
 const TOKEN = localStorage.getItem("SDRWATCH_TOKEN") || "";
 function authHeaders(isJson=true){
   const headers = {};
@@ -217,6 +283,182 @@ const f = document.getElementById('ctl');
 const profileSelect = document.getElementById('profile');
 const profileMeta = document.getElementById('profileMeta');
 const scanModeSelect = document.getElementById('scan_mode');
+const baselineSelect = document.getElementById('baseline_select');
+const baselineSummaryBox = document.getElementById('baselineSummary');
+const baselineHiddenInput = document.getElementById('activeBaselineId');
+const baselineHint = document.getElementById('baselineHint');
+const baselineForm = document.getElementById('baselineForm');
+const baselineFormStatus = document.getElementById('baselineFormStatus');
+const baselineCopyRangeBtn = document.getElementById('baselineCopyRange');
+const BASELINE_STORAGE_KEY = 'SDRWATCH_ACTIVE_BASELINE_ID';
+let activeBaselineId = null;
+const startBtn = f?.querySelector('button[type="submit"]');
+
+function escapeHtml(str){
+  if(str === undefined || str === null){ return ''; }
+  return String(str).replace(/[&<>"']/g, (ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
+}
+function hzToMHz(val){
+  const num = Number(val);
+  if(!Number.isFinite(num)){ return '—'; }
+  return (num/1e6).toFixed(3);
+}
+function formatBaselineRange(record){
+  if(!record) return '—';
+  return `${hzToMHz(record.freq_start_hz)}–${hzToMHz(record.freq_stop_hz)} MHz`;
+}
+function getBaselineSummaryEntry(id){
+  if(!id){ return null; }
+  return BASELINE_SUMMARIES?.[id] || BASELINE_SUMMARIES?.[String(id)] || null;
+}
+function renderBaselineSummary(record){
+  if(!baselineSummaryBox){ return; }
+  if(!record){
+    baselineSummaryBox.textContent = 'Create or select a baseline to enable scans.';
+    return;
+  }
+  const summary = getBaselineSummaryEntry(record.id) || {};
+  const detCount = summary.persistent_detections || 0;
+  const totalWindows = summary.total_windows || 0;
+  const detectionLine = `${detCount} persistent detections · ${totalWindows} windows`;
+  const lastUpdate = summary.last_update_utc || summary.last_detection_utc || 'No scans yet';
+  const notes = record.notes ? `<div class="mt-2 text-xs text-slate-200">${escapeHtml(record.notes)}</div>` : '';
+  baselineSummaryBox.innerHTML = `
+    <div class="font-semibold text-base">${escapeHtml(record.name)} <span class="text-xs text-slate-400">#${record.id}</span></div>
+    <div class="text-xs text-slate-300">${formatBaselineRange(record)}</div>
+    <div class="text-xs text-slate-400">Created ${escapeHtml(record.created_at || '—')}</div>
+    <div class="text-xs text-cyan-300 mt-2">${escapeHtml(detectionLine)}</div>
+    <div class="text-xs text-lime-300">Last update: ${escapeHtml(lastUpdate)}</div>
+    ${notes}
+  `;
+}
+function renderBaselineOptions(){
+  if(!baselineSelect){ return; }
+  const current = String(baselineSelect.value || '');
+  baselineSelect.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = BASELINE_DATA.length ? '(select baseline)' : '(no baselines yet)';
+  baselineSelect.appendChild(placeholder);
+  for(const b of BASELINE_DATA){
+    const opt = document.createElement('option');
+    opt.value = b.id;
+    opt.textContent = `#${b.id} · ${b.name} (${hzToMHz(b.freq_start_hz)}–${hzToMHz(b.freq_stop_hz)} MHz)`;
+    baselineSelect.appendChild(opt);
+  }
+  baselineSelect.disabled = BASELINE_DATA.length === 0;
+  if(current && BASELINE_DATA.some(b => String(b.id) === current)){
+    baselineSelect.value = current;
+  }
+}
+function updateStartButtonState(){
+  if(startBtn){
+    const enabled = Boolean(activeBaselineId);
+    startBtn.disabled = !enabled;
+    startBtn.classList.toggle('opacity-50', !enabled);
+  }
+  if(baselineHint){
+    baselineHint.textContent = activeBaselineId ? 'Baseline selected. Jobs will include this baseline_id.' : 'Create or select a baseline before starting scans.';
+  }
+}
+function setActiveBaseline(value, opts = {}){
+  const persist = opts.persist !== false;
+  const strVal = value === undefined || value === null ? '' : String(value);
+  const record = BASELINE_DATA.find(b => String(b.id) === strVal);
+  if(!record){
+    activeBaselineId = null;
+    if(baselineHiddenInput){ baselineHiddenInput.value = ''; }
+    if(baselineSelect && baselineSelect.value !== ''){ baselineSelect.value = ''; }
+    if(persist){ localStorage.removeItem(BASELINE_STORAGE_KEY); }
+    renderBaselineSummary(null);
+    updateStartButtonState();
+    return;
+  }
+  activeBaselineId = record.id;
+  if(baselineHiddenInput){ baselineHiddenInput.value = String(record.id); }
+  if(baselineSelect && baselineSelect.value !== String(record.id)){
+    baselineSelect.value = String(record.id);
+  }
+  if(persist){ localStorage.setItem(BASELINE_STORAGE_KEY, String(record.id)); }
+  renderBaselineSummary(record);
+  updateStartButtonState();
+}
+async function fetchBaselines(){
+  try{
+    const resp = await fetch('/api/baselines', { headers: authHeaders(false) });
+    if(!resp.ok){ throw new Error('failed to fetch baselines'); }
+    const data = await resp.json();
+    if(Array.isArray(data.baselines)){ BASELINE_DATA = data.baselines; }
+    if(data.summaries){ BASELINE_SUMMARIES = data.summaries; }
+    renderBaselineOptions();
+    if(activeBaselineId && !BASELINE_DATA.some(b => Number(b.id) === Number(activeBaselineId))){
+      setActiveBaseline(null, {persist:false});
+    }else if(activeBaselineId){
+      setActiveBaseline(String(activeBaselineId), {persist:false});
+    }
+  }catch(err){ console.error(err); }
+}
+renderBaselineOptions();
+const savedBaselineId = localStorage.getItem(BASELINE_STORAGE_KEY);
+if(savedBaselineId && BASELINE_DATA.some(b => String(b.id) === savedBaselineId)){
+  setActiveBaseline(savedBaselineId, {persist:false});
+}else if(BASELINE_DATA.length){
+  setActiveBaseline(String(BASELINE_DATA[0].id), {persist:false});
+}else{
+  setActiveBaseline(null, {persist:false});
+}
+baselineSelect?.addEventListener('change', (ev)=>{
+  setActiveBaseline(ev.target.value || '', {persist:true});
+});
+baselineCopyRangeBtn?.addEventListener('click', ()=>{
+  if(!baselineForm || !f) return;
+  baselineForm.freq_start_hz.value = f.start?.value || '';
+  baselineForm.freq_stop_hz.value = f.stop?.value || '';
+  if(baselineFormStatus){ baselineFormStatus.textContent = 'Copied sweep range into the baseline form.'; }
+});
+baselineForm?.addEventListener('submit', async (ev)=>{
+  ev.preventDefault();
+  if(!baselineForm){ return; }
+  if(baselineFormStatus){ baselineFormStatus.textContent = 'Creating baseline...'; }
+  const fd = new FormData(baselineForm);
+  const payload = Object.fromEntries(fd.entries());
+  const numericFields = ['freq_start_hz','freq_stop_hz','location_lat','location_lon','bin_hz'];
+  numericFields.forEach((field)=>{
+    if(payload[field] !== undefined && payload[field] !== ''){
+      payload[field] = Number(payload[field]);
+    } else {
+      delete payload[field];
+    }
+  });
+  try{
+    const resp = await fetch('/api/baselines', { method:'POST', headers: authHeaders(), body: JSON.stringify(payload) });
+    const data = await resp.json().catch(()=>({}));
+    if(!resp.ok){
+      const errMsg = data?.error || data?.detail || 'baseline create failed';
+      throw new Error(errMsg);
+    }
+    if(data.summaries){ BASELINE_SUMMARIES = data.summaries; }
+    const created = data.baseline;
+    if(created){
+      const existingIdx = BASELINE_DATA.findIndex(b => Number(b.id) === Number(created.id));
+      if(existingIdx >= 0){
+        BASELINE_DATA[existingIdx] = created;
+      } else {
+        BASELINE_DATA = [created, ...BASELINE_DATA];
+      }
+      renderBaselineOptions();
+      setActiveBaseline(String(created.id));
+    }else{
+      await fetchBaselines();
+    }
+    baselineForm.reset();
+    if(baselineFormStatus){ baselineFormStatus.textContent = 'Baseline created. It is now active.'; }
+  }catch(err){
+    console.error(err);
+    if(baselineFormStatus){ baselineFormStatus.textContent = `Failed to create baseline: ${err.message}`; }
+  }
+});
+fetchBaselines();
 
 function saveForm(){
   const fd = new FormData(f);
@@ -329,6 +571,10 @@ function scanPreset(p) {
 // Start/Stop via webapp proxy -> controller
 f.addEventListener('submit', async (e)=>{
   e.preventDefault();
+  if(!activeBaselineId){
+    alert('Create or select a baseline before starting a scan.');
+    return;
+  }
   const fd = new FormData(e.target);
   const body = Object.fromEntries(fd.entries());
   const maybeNum = (k)=>{ if(body[k]!==undefined && body[k]!=='' && !isNaN(Number(body[k]))) body[k] = Number(body[k]); };
@@ -348,7 +594,7 @@ f.addEventListener('submit', async (e)=>{
   delete body.scan_mode;
 
   const device_key = body.device_key; delete body.device_key;
-  const payload = { device_key, label: body.label || 'web', params: body };
+  const payload = { device_key, label: body.label || 'web', baseline_id: Number(activeBaselineId), params: body };
 
   try{
     const r = await fetch('/api/jobs', { method:'POST', headers: authHeaders(), body: JSON.stringify(payload) });
