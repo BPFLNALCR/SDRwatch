@@ -923,6 +923,72 @@ def create_app(db_path: str) -> Flask:
 
         return summaries
 
+    def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
+        stmts = [
+            """
+            CREATE TABLE IF NOT EXISTS baselines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                location_lat REAL,
+                location_lon REAL,
+                sdr_serial TEXT,
+                antenna TEXT,
+                notes TEXT,
+                freq_start_hz INTEGER NOT NULL,
+                freq_stop_hz INTEGER NOT NULL,
+                bin_hz REAL NOT NULL,
+                baseline_version INTEGER NOT NULL DEFAULT 1,
+                total_windows INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS baseline_stats (
+                baseline_id INTEGER NOT NULL,
+                bin_index INTEGER NOT NULL,
+                noise_floor_ema REAL NOT NULL,
+                power_ema REAL NOT NULL,
+                occ_count INTEGER NOT NULL,
+                last_seen_utc TEXT NOT NULL,
+                PRIMARY KEY (baseline_id, bin_index)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS baseline_detections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                baseline_id INTEGER NOT NULL,
+                f_low_hz INTEGER NOT NULL,
+                f_high_hz INTEGER NOT NULL,
+                f_center_hz INTEGER NOT NULL,
+                first_seen_utc TEXT NOT NULL,
+                last_seen_utc TEXT NOT NULL,
+                total_hits INTEGER NOT NULL,
+                total_windows INTEGER NOT NULL,
+                confidence REAL NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS scan_updates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                baseline_id INTEGER NOT NULL,
+                timestamp_utc TEXT NOT NULL,
+                num_hits INTEGER NOT NULL,
+                num_segments INTEGER NOT NULL,
+                num_new_signals INTEGER NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS spur_map (
+                bin_hz        INTEGER PRIMARY KEY,
+                mean_power_db REAL,
+                hits          INTEGER,
+                last_seen_utc TEXT
+            )
+            """,
+        ]
+        for stmt in stmts:
+            conn.execute(stmt)
+
     def create_baseline_entry(data: Dict[str, Any]) -> Dict[str, Any]:
         name = str(data.get("name", "")).strip()
         if not name:
@@ -975,6 +1041,7 @@ def create_app(db_path: str) -> Flask:
         except sqlite3.Error as exc:
             raise RuntimeError(f"failed to open database for baseline creation: {exc}")
         try:
+            ensure_baseline_schema(conn)
             cur = conn.execute(
                 """
                 INSERT INTO baselines(
@@ -997,7 +1064,10 @@ def create_app(db_path: str) -> Flask:
                     payload["baseline_version"],
                 ),
             )
-            baseline_id = int(cur.lastrowid)
+            lastrow = cur.lastrowid
+            if lastrow is None:
+                raise RuntimeError("baseline insert did not return a row id")
+            baseline_id = int(lastrow)
             conn.commit()
             row = conn.execute(
                 """
@@ -1131,11 +1201,18 @@ def create_app(db_path: str) -> Flask:
             abort(400, description='device_key is required')
         label = payload.get('label') or 'web'
         params = payload.get('params') or {}
-        baseline_id = payload.get('baseline_id')
-        if baseline_id in (None, ""):
+        baseline_id_raw = payload.get('baseline_id')
+        if baseline_id_raw is None:
             abort(400, description='baseline_id is required; create or select a baseline first.')
+        if isinstance(baseline_id_raw, str):
+            candidate = baseline_id_raw.strip()
+            if not candidate:
+                abort(400, description='baseline_id is required; create or select a baseline first.')
+            baseline_id_token: Any = candidate
+        else:
+            baseline_id_token = baseline_id_raw
         try:
-            baseline_id_int = int(baseline_id)
+            baseline_id_int = int(baseline_id_token)
         except Exception as exc:
             abort(400, description=f'invalid baseline_id: {exc}')
         try:
