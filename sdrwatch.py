@@ -334,7 +334,10 @@ class Store:
                 timestamp_utc TEXT NOT NULL,
                 num_hits INTEGER NOT NULL,
                 num_segments INTEGER NOT NULL,
-                num_new_signals INTEGER NOT NULL
+                num_new_signals INTEGER NOT NULL,
+                num_revisits INTEGER NOT NULL DEFAULT 0,
+                num_confirmed INTEGER NOT NULL DEFAULT 0,
+                num_false_positive INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -349,6 +352,28 @@ class Store:
             """
         )
         self.con.commit()
+
+        # Schema migrations (idempotent)
+        self._ensure_column(
+            "baseline_detections",
+            "missing_since_utc",
+            "TEXT",
+        )
+        self._ensure_column("scan_updates", "num_revisits", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("scan_updates", "num_confirmed", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("scan_updates", "num_false_positive", "INTEGER NOT NULL DEFAULT 0")
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        cur = self.con.execute(f"PRAGMA table_info({table})")
+        cols = {row[1] for row in cur.fetchall()}
+        if column in cols:
+            return
+        try:
+            self.con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            self.con.commit()
+        except sqlite3.OperationalError:
+            # Column may already exist under races; ignore.
+            pass
 
     def begin(self) -> None:
         self.con.execute("BEGIN")
@@ -484,7 +509,8 @@ class Store:
         cur.execute(
             """
             SELECT id, baseline_id, f_low_hz, f_high_hz, f_center_hz,
-                   first_seen_utc, last_seen_utc, total_hits, total_windows, confidence
+                 first_seen_utc, last_seen_utc, total_hits, total_windows, confidence,
+                 missing_since_utc
             FROM baseline_detections
             WHERE baseline_id = ?
             ORDER BY f_center_hz
@@ -506,6 +532,7 @@ class Store:
                     total_hits=int(row[7]),
                     total_windows=int(row[8]),
                     confidence=float(row[9]),
+                    missing_since_utc=str(row[10]) if row[10] else None,
                 )
             )
         return detections
@@ -521,14 +548,15 @@ class Store:
         total_hits: int,
         total_windows: int,
         confidence: float,
+        missing_since_utc: Optional[str] = None,
     ) -> int:
         cur = self.con.cursor()
         cur.execute(
             """
             INSERT INTO baseline_detections(
                 baseline_id, f_low_hz, f_high_hz, f_center_hz,
-                first_seen_utc, last_seen_utc, total_hits, total_windows, confidence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                first_seen_utc, last_seen_utc, total_hits, total_windows, confidence, missing_since_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(baseline_id),
@@ -540,6 +568,7 @@ class Store:
                 int(total_hits),
                 int(total_windows),
                 float(confidence),
+                missing_since_utc,
             ),
         )
         if cur.lastrowid is None:
@@ -552,7 +581,8 @@ class Store:
             UPDATE baseline_detections
             SET f_low_hz = ?, f_high_hz = ?, f_center_hz = ?,
                 first_seen_utc = ?, last_seen_utc = ?,
-                total_hits = ?, total_windows = ?, confidence = ?
+                total_hits = ?, total_windows = ?, confidence = ?,
+                missing_since_utc = ?
             WHERE id = ? AND baseline_id = ?
             """,
             (
@@ -564,18 +594,69 @@ class Store:
                 int(detection.total_hits),
                 int(detection.total_windows),
                 float(detection.confidence),
+                detection.missing_since_utc,
                 int(detection.id),
                 int(detection.baseline_id),
             ),
         )
 
-    def insert_scan_update(self, baseline_id: int, timestamp_utc: str, num_hits: int, num_segments: int, num_new_signals: int) -> None:
+    def insert_scan_update(
+        self,
+        baseline_id: int,
+        timestamp_utc: str,
+        num_hits: int,
+        num_segments: int,
+        num_new_signals: int,
+        *,
+        num_revisits: int = 0,
+        num_confirmed: int = 0,
+        num_false_positive: int = 0,
+    ) -> None:
         self.con.execute(
             """
-            INSERT INTO scan_updates(baseline_id, timestamp_utc, num_hits, num_segments, num_new_signals)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO scan_updates(
+                baseline_id, timestamp_utc,
+                num_hits, num_segments, num_new_signals,
+                num_revisits, num_confirmed, num_false_positive
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (int(baseline_id), timestamp_utc, int(num_hits), int(num_segments), int(num_new_signals)),
+            (
+                int(baseline_id),
+                timestamp_utc,
+                int(num_hits),
+                int(num_segments),
+                int(num_new_signals),
+                int(num_revisits),
+                int(num_confirmed),
+                int(num_false_positive),
+            ),
+        )
+
+    def mark_detection_missing(self, detection_id: int, baseline_id: int, missing_ts: str) -> None:
+        self.con.execute(
+            """
+            UPDATE baseline_detections
+            SET missing_since_utc = COALESCE(missing_since_utc, ?)
+            WHERE id = ? AND baseline_id = ?
+            """,
+            (missing_ts, int(detection_id), int(baseline_id)),
+        )
+
+    def clear_detection_missing(self, detection_id: int, baseline_id: int) -> None:
+        self.con.execute(
+            """
+            UPDATE baseline_detections
+            SET missing_since_utc = NULL
+            WHERE id = ? AND baseline_id = ?
+            """,
+            (int(detection_id), int(baseline_id)),
+        )
+
+    def delete_baseline_detection(self, detection_id: int, baseline_id: int) -> None:
+        self.con.execute(
+            "DELETE FROM baseline_detections WHERE id = ? AND baseline_id = ?",
+            (int(detection_id), int(baseline_id)),
         )
 
     def baseline_occ_ratio(self, baseline_id: int, bin_index: int) -> Optional[float]:
@@ -968,6 +1049,18 @@ class PersistentDetection:
     total_hits: int
     total_windows: int
     confidence: float
+    missing_since_utc: Optional[str] = None
+
+
+@dataclass
+class RevisitTag:
+    tag_id: str
+    detection_id: Optional[int]
+    f_center_hz: int
+    f_low_hz: int
+    f_high_hz: int
+    reason: str  # "new", "missing"
+    created_utc: str
 
 
 class DetectionEngine:
@@ -1012,6 +1105,13 @@ class DetectionEngine:
         self._pending_emits = 0
         self._pending_new_signals = 0
         self._persisted: List[PersistentDetection] = self.store.load_baseline_detections(self.baseline_ctx.id)
+        self._seen_persistent: Set[int] = set()
+        self.two_pass_enabled = bool(getattr(args, "two_pass", False))
+        self.revisit_margin_hz = float(
+            getattr(args, "revisit_margin_hz", max(self.freq_merge_hz, 25_000.0)) or max(self.freq_merge_hz, 25_000.0)
+        )
+        self._revisit_tags: List[RevisitTag] = []
+        self._tag_counter = 0
 
     def ingest(self, window_idx: int, segments: List[Segment]) -> Tuple[int, int, int, int]:
         self._last_window_idx = max(self._last_window_idx, window_idx)
@@ -1234,6 +1334,8 @@ class DetectionEngine:
                 )
                 self._persisted.append(new_det)
                 is_new = True
+                if self.two_pass_enabled:
+                    self._schedule_revisit(detection_id=detection_id, seg=seg, reason="new")
         finally:
             self.store.commit()
         return is_new
@@ -1246,6 +1348,16 @@ class DetectionEngine:
             )
             center_close = abs(seg.f_center_hz - det.f_center_hz) <= self.center_match_hz
             if spans_overlap or center_close:
+                self._seen_persistent.add(det.id)
+                if det.missing_since_utc:
+                    det.missing_since_utc = None
+                    self.store.clear_detection_missing(det.id, det.baseline_id)
+                return det
+        return None
+
+    def _find_persistent_by_id(self, detection_id: int) -> Optional[PersistentDetection]:
+        for det in self._persisted:
+            if det.id == detection_id:
                 return det
         return None
 
@@ -1260,6 +1372,115 @@ class DetectionEngine:
             return None
         offset = (freq_hz - self.baseline_ctx.freq_start_hz) / max(self.baseline_ctx.bin_hz, 1.0)
         return int(round(offset))
+
+    def _schedule_revisit(self, *, detection_id: Optional[int], seg: Segment, reason: str) -> None:
+        if not self.two_pass_enabled:
+            return
+        margin = max(self.revisit_margin_hz, float(seg.bandwidth_hz or self.bin_hz))
+        low = int(max(seg.f_low_hz - margin, 0))
+        high = int(seg.f_high_hz + margin)
+        tag_id = f"rv{self.baseline_ctx.id}_{self._tag_counter}"
+        self._tag_counter += 1
+        tag = RevisitTag(
+            tag_id=tag_id,
+            detection_id=detection_id,
+            f_center_hz=int(seg.f_center_hz),
+            f_low_hz=low,
+            f_high_hz=high,
+            reason=reason,
+            created_utc=utc_now_str(),
+        )
+        if reason != "missing" and self._tag_overlaps_known(tag):
+            return
+        self._revisit_tags.append(tag)
+
+    def _tag_overlaps_known(self, tag: RevisitTag) -> bool:
+        for det in self._persisted:
+            if det.id == tag.detection_id:
+                continue
+            if det.missing_since_utc:
+                continue
+            if not (tag.f_high_hz < det.f_low_hz or tag.f_low_hz > det.f_high_hz):
+                return True
+        return False
+
+    def _filter_tags(self, tags: List[RevisitTag]) -> List[RevisitTag]:
+        seen: Set[str] = set()
+        filtered: List[RevisitTag] = []
+        for tag in tags:
+            key = f"{tag.detection_id}:{tag.f_center_hz}:{tag.reason}"
+            if key in seen:
+                continue
+            if tag.reason != "missing" and self._tag_overlaps_known(tag):
+                continue
+            seen.add(key)
+            filtered.append(tag)
+        return filtered
+
+    def finalize_coarse_pass(self) -> List[RevisitTag]:
+        missing_ts = utc_now_str()
+        to_mark: List[PersistentDetection] = []
+        for det in self._persisted:
+            if det.id in self._seen_persistent:
+                continue
+            to_mark.append(det)
+            det.missing_since_utc = det.missing_since_utc or missing_ts
+            if self.two_pass_enabled:
+                self._schedule_revisit(
+                    detection_id=det.id,
+                    seg=Segment(
+                        f_low_hz=det.f_low_hz,
+                        f_high_hz=det.f_high_hz,
+                        f_center_hz=det.f_center_hz,
+                        peak_db=0.0,
+                        noise_db=0.0,
+                        snr_db=0.0,
+                        bandwidth_hz=float(det.f_high_hz - det.f_low_hz),
+                    ),
+                    reason="missing",
+                )
+        if to_mark:
+            self.store.begin()
+            for det in to_mark:
+                self.store.mark_detection_missing(det.id, det.baseline_id, missing_ts)
+            self.store.commit()
+        tags = self._filter_tags(self._revisit_tags) if self.two_pass_enabled else []
+        self._revisit_tags = []
+        self._seen_persistent.clear()
+        return tags
+
+    def apply_revisit_confirmation(self, tag: RevisitTag, seg: Segment) -> None:
+        if not tag.detection_id:
+            return
+        det = self._find_persistent_by_id(tag.detection_id)
+        if det is None:
+            return
+        det.f_low_hz = min(det.f_low_hz, seg.f_low_hz)
+        det.f_high_hz = max(det.f_high_hz, seg.f_high_hz)
+        det.f_center_hz = int(seg.f_center_hz)
+        det.last_seen_utc = utc_now_str()
+        det.missing_since_utc = None
+        self.store.begin()
+        self.store.update_baseline_detection(det)
+        self.store.commit()
+
+    def apply_revisit_miss(self, tag: RevisitTag) -> None:
+        if tag.detection_id is None:
+            return
+        det = self._find_persistent_by_id(tag.detection_id)
+        if det is None:
+            return
+        timestamp = utc_now_str()
+        if tag.reason == "new":
+            self.store.begin()
+            self.store.delete_baseline_detection(det.id, det.baseline_id)
+            self.store.commit()
+            self._persisted = [d for d in self._persisted if d.id != det.id]
+            return
+        det.missing_since_utc = det.missing_since_utc or timestamp
+        self.store.begin()
+        self.store.mark_detection_missing(det.id, det.baseline_id, timestamp)
+        self.store.commit()
 
     def _prune_clusters(self, window_idx: int, force: bool = False):
         to_remove: List[DetectionCluster] = []
@@ -1562,6 +1783,9 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
     total_hits = 0
     total_new_signals = 0
     total_promoted = 0
+    total_revisits = 0
+    total_revisit_confirmed = 0
+    total_revisit_false = 0
 
     try:
         center = args.start
@@ -1677,6 +1901,23 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
             # Advance center frequency
             center += args.step
 
+        revisit_tags: List[RevisitTag] = []
+        if detection_engine:
+            revisit_tags = detection_engine.finalize_coarse_pass()
+        if detection_engine and getattr(args, "two_pass", False) and revisit_tags:
+            max_bands = int(getattr(args, "revisit_max_bands", 0) or 0)
+            if max_bands > 0:
+                revisit_tags = revisit_tags[:max_bands]
+            revisit_stats = _run_revisit_pass(
+                args,
+                src,
+                detection_engine,
+                revisit_tags,
+            )
+            total_revisits += revisit_stats.get("total", 0)
+            total_revisit_confirmed += revisit_stats.get("confirmed", 0)
+            total_revisit_false += revisit_stats.get("false_positive", 0)
+
     finally:
         if detection_engine:
             flushed, new_flush = detection_engine.flush()
@@ -1693,6 +1934,9 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
             num_hits=total_hits,
             num_segments=total_segments,
             num_new_signals=total_new_signals,
+            num_revisits=total_revisits,
+            num_confirmed=total_revisit_confirmed,
+            num_false_positive=total_revisit_false,
         )
         store.commit()
         updated_start, updated_stop = store.update_baseline_span(
@@ -1708,6 +1952,70 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
             f"[scan] end sweep baseline={baseline_ctx.id} hits={total_hits} promoted={total_promoted} new={total_new_signals}",
             flush=True,
         )
+
+
+def _select_revisit_segment(tag: RevisitTag, segments: List[Segment]) -> Optional[Segment]:
+    for seg in segments:
+        if seg.f_low_hz <= tag.f_center_hz <= seg.f_high_hz:
+            return seg
+        if tag.f_low_hz <= seg.f_center_hz <= tag.f_high_hz:
+            return seg
+    return None
+
+
+def _run_revisit_pass(
+    args,
+    src,
+    detection_engine: DetectionEngine,
+    tags: List[RevisitTag],
+) -> Dict[str, int]:
+    stats = {"total": len(tags), "confirmed": 0, "false_positive": 0}
+    if not tags:
+        return stats
+
+    revisit_fft = int(getattr(args, "revisit_fft", 0) or max(int(args.fft), int(args.fft * 2)))
+    revisit_avg = int(getattr(args, "revisit_avg", 0) or max(int(args.avg), 4))
+    revisit_threshold = float(getattr(args, "revisit_floor_threshold_db", args.threshold_db))
+    revisit_guard = int(getattr(args, "guard_bins", 1))
+    revisit_min_width_bins = int(max(1, getattr(args, "min_width_bins", 2)))
+
+    for idx, tag in enumerate(tags, start=1):
+        print(f"[revisit] tag={tag.tag_id} reason={tag.reason} center={tag.f_center_hz/1e6:.6f}MHz", flush=True)
+        try:
+            src.tune(tag.f_center_hz)
+            _ = src.read(int(revisit_fft))
+            samples = src.read(int(revisit_fft * revisit_avg))
+        except Exception as exc:
+            print(f"[revisit] tag={tag.tag_id} tune_error={exc}", file=sys.stderr)
+            detection_engine.apply_revisit_miss(tag)
+            if tag.reason == "new":
+                stats["false_positive"] += 1
+            continue
+
+        baseband_f, psd_db = compute_psd_db(samples, args.samp_rate, revisit_fft, revisit_avg)
+        rf_freqs = baseband_f + tag.f_center_hz
+        segs, _, _ = detect_segments(
+            rf_freqs,
+            psd_db,
+            thresh_db=revisit_threshold,
+            guard_bins=revisit_guard,
+            min_width_bins=revisit_min_width_bins,
+            cfar_mode=args.cfar,
+            cfar_train=args.cfar_train,
+            cfar_guard=args.cfar_guard,
+            cfar_quantile=args.cfar_quantile,
+            cfar_alpha_db=args.cfar_alpha_db,
+            abs_power_floor_db=getattr(args, "abs_power_floor_db", None),
+        )
+        match = _select_revisit_segment(tag, segs)
+        if match:
+            detection_engine.apply_revisit_confirmation(tag, match)
+            stats["confirmed"] += 1
+        else:
+            detection_engine.apply_revisit_miss(tag)
+            if tag.reason == "new":
+                stats["false_positive"] += 1
+    return stats
 
 
 def run(args):
@@ -1929,6 +2237,27 @@ def parse_args(argv: Optional[List[str]] = None):
     p.add_argument("--profile", type=str, help="Scan profile name to pre-load sane defaults (see documentation)")
     p.add_argument("--spur-calibration", dest="spur_calibration", action="store_true", help="Learn persistent internal spurs instead of emitting detections")
     p.add_argument("--list-profiles", dest="list_profiles", action="store_true", help="Print built-in scan profiles as JSON and exit")
+    p.add_argument("--two-pass", dest="two_pass", action="store_true", help="Enable coarse + targeted revisit confirmation sweep")
+    p.add_argument("--revisit-fft", dest="revisit_fft", type=int, help="FFT size for revisit windows (defaults to 2x --fft)")
+    p.add_argument("--revisit-avg", dest="revisit_avg", type=int, help="Averaging factor for revisit windows (defaults to max(--avg,4))")
+    p.add_argument(
+        "--revisit-margin-hz",
+        dest="revisit_margin_hz",
+        type=float,
+        help="Additional Hz margin added to revisit windows around each tagged center",
+    )
+    p.add_argument(
+        "--revisit-max-bands",
+        dest="revisit_max_bands",
+        type=int,
+        help="Maximum revisit targets per sweep (0 = unlimited)",
+    )
+    p.add_argument(
+        "--revisit-floor-threshold-db",
+        dest="revisit_floor_threshold_db",
+        type=float,
+        help="Detection threshold (dB) used during revisit windows (defaults to --threshold-db)",
+    )
 
     # Sweep control modes (mutually exclusive)
     group = p.add_mutually_exclusive_group()
@@ -1974,6 +2303,12 @@ def parse_args(argv: Optional[List[str]] = None):
     _set_default(args, args._cli_overrides, "profile", None)
     _set_default(args, args._cli_overrides, "spur_calibration", False)
     _set_default(args, args._cli_overrides, "list_profiles", False)
+    _set_default(args, args._cli_overrides, "two_pass", False)
+    _set_default(args, args._cli_overrides, "revisit_fft", None)
+    _set_default(args, args._cli_overrides, "revisit_avg", None)
+    _set_default(args, args._cli_overrides, "revisit_margin_hz", None)
+    _set_default(args, args._cli_overrides, "revisit_max_bands", 0)
+    _set_default(args, args._cli_overrides, "revisit_floor_threshold_db", None)
     _set_default(args, args._cli_overrides, "loop", False)
     _set_default(args, args._cli_overrides, "repeat", None)
     _set_default(args, args._cli_overrides, "duration", None)

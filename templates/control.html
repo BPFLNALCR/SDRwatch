@@ -124,6 +124,22 @@
         </div>
       </div>
 
+      <!-- Verification / Two-pass -->
+      <div>
+        <div class="section-title">Verification</div>
+        <div class="subgrid">
+          <label class="field">
+            <span class="flex items-center gap-2"><input type="checkbox" id="two_pass" name="two_pass" /> Enable two-pass revisit</span>
+            <div class="hint mt-1 text-xs">Run a second targeted pass on tagged signals to refine bandwidths and reject false positives.</div>
+          </label>
+          <div class="field"><label for="revisit_fft">Revisit FFT (bins)</label><input id="revisit_fft" class="input" name="revisit_fft" value="" inputmode="numeric" placeholder="(auto)" /></div>
+          <div class="field"><label for="revisit_avg">Revisit averaging</label><input id="revisit_avg" class="input" name="revisit_avg" value="" inputmode="numeric" placeholder="(auto)" /></div>
+          <div class="field"><label for="revisit_margin_hz">Revisit margin (Hz)</label><input id="revisit_margin_hz" class="input" name="revisit_margin_hz" value="150000" inputmode="numeric" /></div>
+          <div class="field"><label for="revisit_max_bands">Max revisit targets</label><input id="revisit_max_bands" class="input" name="revisit_max_bands" value="40" inputmode="numeric" /></div>
+          <div class="field"><label for="revisit_floor_threshold_db">Revisit threshold (dB)</label><input id="revisit_floor_threshold_db" class="input" name="revisit_floor_threshold_db" value="" inputmode="decimal" placeholder="(inherit)" /></div>
+        </div>
+      </div>
+
       <!-- Persistence -->
       <div>
         <div class="section-title">Persistence</div>
@@ -615,7 +631,7 @@ f.addEventListener('submit', async (e)=>{
   const fd = new FormData(e.target);
   const body = Object.fromEntries(fd.entries());
   const maybeNum = (k)=>{ if(body[k]!==undefined && body[k]!=='' && !isNaN(Number(body[k]))) body[k] = Number(body[k]); };
-  ['start','stop','step','samp_rate','fft','avg','threshold_db','guard_bins','min_width_bins','cfar_train','cfar_guard','cfar_quantile','cfar_alpha_db','new_ema_occ','sleep_between_sweeps','repeat','persistence_hit_ratio','persistence_min_seconds','persistence_min_hits','persistence_min_windows'].forEach(maybeNum);
+  ['start','stop','step','samp_rate','fft','avg','threshold_db','guard_bins','min_width_bins','cfar_train','cfar_guard','cfar_quantile','cfar_alpha_db','new_ema_occ','sleep_between_sweeps','repeat','persistence_hit_ratio','persistence_min_seconds','persistence_min_hits','persistence_min_windows','revisit_fft','revisit_avg','revisit_margin_hz','revisit_max_bands','revisit_floor_threshold_db'].forEach(maybeNum);
   if(body.mode==='loop'){ body.loop = true; }
   if(body.mode==='repeat'){ body.repeat = body.repeat||1; }
   delete body.mode;
@@ -629,6 +645,11 @@ f.addEventListener('submit', async (e)=>{
     delete body.spur_calibration;
   }
   delete body.scan_mode;
+  if(body.two_pass === 'on'){
+    body.two_pass = true;
+  } else {
+    delete body.two_pass;
+  }
 
   const device_key = body.device_key; delete body.device_key;
   const payload = { device_key, label: body.label || 'web', baseline_id: Number(activeBaselineId), params: body };

@@ -105,6 +105,16 @@ python3 sdrwatch.py --start 30e6 --stop 1700e6 --step 2.4e6 \
   --gain auto --loop --notify --db sdrwatch.db --jsonl events.jsonl
 ```
 
+Enable the **two-pass verification** workflow to refine bandwidths and suppress false positives automatically:
+
+```bash
+python3 sdrwatch.py --baseline-id 3 --start 88e6 --stop 108e6 --step 2.4e6 \
+  --samp-rate 2.4e6 --fft 4096 --avg 8 --two-pass \
+  --revisit-margin-hz 150e3 --revisit-max-bands 40
+```
+
+The first pass runs today’s coarse sweep, tagging suspicious hits. The revisit pass then re-tunes each tag, expanding outward until both sides reach the noise floor so FM broadcast carriers, for example, are reported at their true 200 kHz width. Previously cataloged signals are only confirmed (no duplicate detections), while missing signals are timestamped and re-queued for future revisits.
+
 ### Configurable persistence gates
 
 Use `--persistence-mode` to choose how detections are promoted to persistent records:

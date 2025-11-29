@@ -547,6 +547,11 @@ class JobManager:
             "persistence_min_seconds": "--persistence-min-seconds",
             "persistence_min_hits": "--persistence-min-hits",
             "persistence_min_windows": "--persistence-min-windows",
+            "revisit_fft": "--revisit-fft",
+            "revisit_avg": "--revisit-avg",
+            "revisit_margin_hz": "--revisit-margin-hz",
+            "revisit_max_bands": "--revisit-max-bands",
+            "revisit_floor_threshold_db": "--revisit-floor-threshold-db",
         }
         for k, flag in mapping_num.items():
             v = args.get(k)
@@ -584,6 +589,8 @@ class JobManager:
         # Spur calibration toggle
         if args.get("spur_calibration"):
             cmd.append("--spur-calibration")
+        if args.get("two_pass"):
+            cmd.append("--two-pass")
 
         # Booleans
         if args.get("use_baseline"):
