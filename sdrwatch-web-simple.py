@@ -22,7 +22,7 @@ Auth notes:
 from __future__ import annotations
 import argparse, os, io, sqlite3, math, json
 from bisect import bisect_left
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from flask import Flask, request, Response, render_template, render_template_string, jsonify, abort, url_for  # type: ignore
 from urllib import request as urlreq, parse as urlparse, error as urlerr
@@ -42,6 +42,15 @@ def _int_env(name: str, default: int) -> int:
     except Exception:
         return default
 
+def _float_env(name: str, default: float) -> float:
+    val = os.getenv(name)
+    if not val:
+        return default
+    try:
+        return float(val)
+    except Exception:
+        return default
+
 
 API_TOKEN = os.getenv("SDRWATCH_TOKEN", "")  # page auth (optional)
 CONTROL_URL = os.getenv("SDRWATCH_CONTROL_URL", "http://127.0.0.1:8765")
@@ -50,6 +59,12 @@ BASELINE_NEW_THRESHOLD = 0.2
 TACTICAL_RECENT_MINUTES = _int_env("SDRWATCH_TACTICAL_RECENT_MINUTES", 30)
 ACTIVE_SIGNAL_WINDOW_MINUTES = _int_env("SDRWATCH_ACTIVE_SIGNAL_MINUTES", 15)
 HOTSPOT_BUCKET_COUNT = _int_env("SDRWATCH_HOTSPOT_BUCKETS", 60)
+CHANGE_WINDOW_MINUTES = _int_env("SDRWATCH_CHANGE_WINDOW_MINUTES", 60)
+NEW_SIGNAL_WINDOW_MINUTES = _int_env("SDRWATCH_NEW_SIGNAL_MINUTES", CHANGE_WINDOW_MINUTES)
+POWER_SHIFT_THRESHOLD_DB = _float_env("SDRWATCH_POWER_SHIFT_THRESHOLD_DB", 6.0)
+QUIETED_TIMEOUT_MINUTES = _int_env("SDRWATCH_QUIETED_TIMEOUT_MINUTES", 15)
+QUIETED_MIN_WINDOWS = _int_env("SDRWATCH_QUIETED_MIN_WINDOWS", 20)
+CHANGE_EVENT_LIMIT = _int_env("SDRWATCH_CHANGE_EVENT_LIMIT", 120)
 
 # ================================
 # DB helpers
@@ -1362,6 +1377,336 @@ def create_app(db_path: str) -> Flask:
             "has_samples": samples_present,
         }
 
+    def _now_utc() -> datetime:
+        return datetime.utcnow().replace(microsecond=0)
+
+    def _isoformat_utc(dt_val: datetime) -> str:
+        return dt_val.replace(microsecond=0).isoformat() + "Z"
+
+    def parse_ts_utc(text: Optional[str]) -> Optional[datetime]:
+        if text is None:
+            return None
+        candidate = text.strip()
+        if not candidate:
+            return None
+        if candidate.endswith("Z"):
+            candidate = candidate[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            return None
+        if parsed.tzinfo:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+
+    def format_change_time_label(ts: Optional[str]) -> str:
+        dt_val = parse_ts_utc(ts)
+        if not dt_val:
+            return ts or "—"
+        now = _now_utc()
+        if dt_val.date() == now.date():
+            return dt_val.strftime("%H:%M:%SZ")
+        return dt_val.strftime("%b %d %H:%MZ")
+
+    def format_freq_label(value: Any) -> str:
+        if value in (None, ""):
+            return "—"
+        try:
+            return f"{float(value) / 1e6:.3f}"
+        except Exception:
+            return "—"
+
+    def format_bandwidth_khz(value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        try:
+            width = float(value)
+        except Exception:
+            return None
+        if width <= 0:
+            return None
+        return width / 1e3
+
+    def format_confidence_value(value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        try:
+            val = float(value)
+        except Exception:
+            return None
+        if val < 0:
+            return None
+        return val
+
+    def format_change_summary(event: Dict[str, Any]) -> str:
+        etype = str(event.get("type") or "").upper()
+        freq_label = format_freq_label(event.get("f_center_hz"))
+        freq_display = f"{freq_label} MHz" if freq_label != "—" else "—"
+        time_label = format_change_time_label(event.get("time_utc"))
+        if etype == "NEW_SIGNAL":
+            bw = format_bandwidth_khz(event.get("bandwidth_hz"))
+            bw_label = f" (+{bw:.0f} kHz)" if bw is not None else ""
+            conf = format_confidence_value(event.get("confidence"))
+            conf_label = f"{conf:.2f}" if conf is not None else "—"
+            return f"NEW_SIGNAL @ {freq_display}{bw_label} – confidence {conf_label} – first seen {time_label}"
+        if etype == "POWER_SHIFT":
+            bw = format_bandwidth_khz(event.get("bandwidth_hz"))
+            bin_label = f" ({bw:.0f} kHz bin)" if bw is not None else ""
+            try:
+                delta_label = f"{float(event.get('delta_db', 0.0)):+.1f} dB"
+            except Exception:
+                delta_label = "shift"
+            return f"POWER_SHIFT @ {freq_display}{bin_label} – {delta_label} vs baseline – observed {time_label}"
+        if etype == "QUIETED":
+            service = event.get("service")
+            service_label = f" ({service})" if service else ""
+            return f"QUIETED @ {freq_display}{service_label} – last seen {time_label} – was persistent"
+        return f"{etype or 'EVENT'} @ {freq_display} – observed {time_label}"
+
+    def change_events_payload(
+        baseline_id: int,
+        *,
+        window_minutes: Optional[int] = None,
+        event_types: Optional[Iterable[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        baseline_row = fetch_baseline_record(baseline_id)
+        if not baseline_row:
+            return None
+        connection = _ensure_con()
+        if connection is None:
+            return None
+
+        window_value = int(window_minutes or CHANGE_WINDOW_MINUTES)
+        window_value = max(5, min(window_value, 24 * 60))
+        now_ts = _now_utc()
+        base_cutoff_dt = now_ts - timedelta(minutes=window_value)
+        base_cutoff_iso = _isoformat_utc(base_cutoff_dt)
+
+        new_window_value = max(1, min(window_value, NEW_SIGNAL_WINDOW_MINUTES))
+        new_cutoff_iso = _isoformat_utc(now_ts - timedelta(minutes=new_window_value))
+        quiet_timeout_value = max(1, QUIETED_TIMEOUT_MINUTES)
+        quiet_cutoff_dt = now_ts - timedelta(minutes=quiet_timeout_value)
+        quiet_cutoff_iso = _isoformat_utc(quiet_cutoff_dt)
+
+        def normalize_types(tokens: Optional[Iterable[str]]) -> Optional[Set[str]]:
+            if not tokens:
+                return None
+            mapped: Set[str] = set()
+            for token in tokens:
+                if not token:
+                    continue
+                text = str(token).strip().upper()
+                if text in {"", "ALL"}:
+                    continue
+                if text in {"NEW", "NEW_SIGNAL"}:
+                    mapped.add("NEW_SIGNAL")
+                elif text in {"POWER", "POWER_SHIFT"}:
+                    mapped.add("POWER_SHIFT")
+                elif text in {"QUIET", "QUIETED"}:
+                    mapped.add("QUIETED")
+            return mapped or None
+
+        requested_types = normalize_types(event_types)
+
+        def include_type(name: str) -> bool:
+            return requested_types is None or name in requested_types
+
+        events: List[Dict[str, Any]] = []
+
+        def append_event(event: Dict[str, Any]) -> None:
+            stamp = parse_ts_utc(event.get("time_utc"))
+            event["_sort_ts"] = stamp or base_cutoff_dt
+            event["summary"] = format_change_summary(event)
+            event["time_label"] = format_change_time_label(event.get("time_utc"))
+            events.append(event)
+
+        if include_type("NEW_SIGNAL") and table_exists("baseline_detections"):
+            try:
+                rows = qa(
+                    con(),
+                    """
+                    SELECT id, f_center_hz, f_low_hz, f_high_hz,
+                           first_seen_utc, last_seen_utc, confidence,
+                           total_hits, total_windows
+                    FROM baseline_detections
+                    WHERE baseline_id = ?
+                      AND first_seen_utc >= ?
+                    ORDER BY first_seen_utc DESC
+                    LIMIT ?
+                    """,
+                    (baseline_id, new_cutoff_iso, CHANGE_EVENT_LIMIT * 2),
+                )
+            except sqlite3.OperationalError:
+                rows = []
+            for row in rows:
+                f_low = row.get("f_low_hz")
+                f_high = row.get("f_high_hz")
+                bandwidth = None
+                if f_low is not None and f_high is not None:
+                    try:
+                        bandwidth = max(0.0, float(f_high) - float(f_low))
+                    except Exception:
+                        bandwidth = None
+                event = {
+                    "type": "NEW_SIGNAL",
+                    "time_utc": row.get("first_seen_utc"),
+                    "f_center_hz": row.get("f_center_hz"),
+                    "bandwidth_hz": bandwidth,
+                    "confidence": row.get("confidence"),
+                    "details": "First seen relative to baseline.",
+                    "detection_id": row.get("id"),
+                    "total_hits": row.get("total_hits"),
+                }
+                append_event(event)
+
+        quiet_window_active = quiet_cutoff_dt > base_cutoff_dt
+        if include_type("QUIETED") and quiet_window_active and table_exists("baseline_detections"):
+            try:
+                rows = qa(
+                    con(),
+                    """
+                    SELECT id, f_center_hz, f_low_hz, f_high_hz,
+                           first_seen_utc, last_seen_utc, total_hits,
+                           total_windows, confidence
+                    FROM baseline_detections
+                    WHERE baseline_id = ?
+                      AND total_windows >= ?
+                      AND last_seen_utc >= ?
+                      AND last_seen_utc <= ?
+                    ORDER BY last_seen_utc DESC
+                    LIMIT ?
+                    """,
+                    (
+                        baseline_id,
+                        QUIETED_MIN_WINDOWS,
+                        base_cutoff_iso,
+                        quiet_cutoff_iso,
+                        CHANGE_EVENT_LIMIT * 2,
+                    ),
+                )
+            except sqlite3.OperationalError:
+                rows = []
+            for row in rows:
+                f_low = row.get("f_low_hz")
+                f_high = row.get("f_high_hz")
+                bandwidth = None
+                if f_low is not None and f_high is not None:
+                    try:
+                        bandwidth = max(0.0, float(f_high) - float(f_low))
+                    except Exception:
+                        bandwidth = None
+                last_seen = row.get("last_seen_utc")
+                downtime_minutes = None
+                last_seen_dt = parse_ts_utc(last_seen)
+                if last_seen_dt:
+                    downtime_minutes = max(0.0, (now_ts - last_seen_dt).total_seconds() / 60.0)
+                details = "Previously persistent, now not seen recently."
+                if downtime_minutes is not None:
+                    details = f"Previously persistent, quiet for ~{downtime_minutes:.0f} min."
+                event = {
+                    "type": "QUIETED",
+                    "time_utc": last_seen,
+                    "f_center_hz": row.get("f_center_hz"),
+                    "bandwidth_hz": bandwidth,
+                    "confidence": row.get("confidence"),
+                    "details": details,
+                    "detection_id": row.get("id"),
+                    "total_windows": row.get("total_windows"),
+                    "downtime_minutes": downtime_minutes,
+                }
+                append_event(event)
+
+        if include_type("POWER_SHIFT") and table_exists("baseline_stats"):
+            try:
+                rows = qa(
+                    con(),
+                    """
+                    SELECT bin_index, freq_hz, power_ema, noise_floor_ema,
+                           last_seen_utc
+                    FROM baseline_stats
+                    WHERE baseline_id = ?
+                      AND last_seen_utc >= ?
+                    ORDER BY last_seen_utc DESC
+                    LIMIT ?
+                    """,
+                    (baseline_id, base_cutoff_iso, CHANGE_EVENT_LIMIT * 2),
+                )
+            except sqlite3.OperationalError:
+                rows = []
+            freq_start = float(baseline_row.get("freq_start_hz") or 0.0)
+            bin_hz = float(baseline_row.get("bin_hz") or 0.0)
+            for row in rows:
+                freq_val = row.get("freq_hz")
+                freq_hz = None
+                if freq_val is not None:
+                    try:
+                        freq_hz = float(freq_val)
+                    except Exception:
+                        freq_hz = None
+                elif row.get("bin_index") is not None and bin_hz > 0:
+                    try:
+                        freq_hz = freq_start + float(row.get("bin_index")) * bin_hz
+                    except Exception:
+                        freq_hz = None
+                if freq_hz is None:
+                    continue
+                power = row.get("power_ema")
+                noise = row.get("noise_floor_ema")
+                if power is None or noise is None:
+                    continue
+                try:
+                    power_val = float(power)
+                    noise_val = float(noise)
+                except Exception:
+                    continue
+                delta_db = power_val - noise_val
+                if delta_db < POWER_SHIFT_THRESHOLD_DB:
+                    continue
+                last_seen = row.get("last_seen_utc")
+                ts_dt = parse_ts_utc(last_seen)
+                if ts_dt is None or ts_dt < base_cutoff_dt:
+                    continue
+                event = {
+                    "type": "POWER_SHIFT",
+                    "time_utc": last_seen,
+                    "f_center_hz": freq_hz,
+                    "bandwidth_hz": bin_hz if bin_hz > 0 else None,
+                    "delta_db": delta_db,
+                    "power_db": power_val,
+                    "noise_floor_db": noise_val,
+                    "details": f"Power EMA {power_val:.1f} dB vs noise {noise_val:.1f} dB.",
+                }
+                append_event(event)
+
+        events.sort(key=lambda ev: ev.get("_sort_ts", base_cutoff_dt), reverse=True)
+        events = events[:CHANGE_EVENT_LIMIT]
+        counts: Dict[str, int] = {"NEW_SIGNAL": 0, "POWER_SHIFT": 0, "QUIETED": 0}
+        for ev in events:
+            ev_type = str(ev.get("type") or "").upper()
+            counts[ev_type] = counts.get(ev_type, 0) + 1
+            ev.pop("_sort_ts", None)
+
+        active_filter = "ALL"
+        if requested_types and len(requested_types) == 1:
+            active_filter = next(iter(requested_types))
+
+        payload = {
+            "baseline": baseline_row,
+            "baseline_id": baseline_id,
+            "events": events,
+            "counts": counts,
+            "total_events": len(events),
+            "window_minutes": window_value,
+            "new_signal_window_minutes": new_window_value,
+            "quiet_timeout_minutes": quiet_timeout_value,
+            "power_shift_threshold_db": POWER_SHIFT_THRESHOLD_DB,
+            "event_limit": CHANGE_EVENT_LIMIT,
+            "generated_at": _isoformat_utc(_now_utc()),
+            "active_filter": active_filter,
+            "requested_types": sorted(requested_types) if requested_types else [],
+        }
+        return payload
+
     def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
         stmts = [
             """
@@ -1892,6 +2237,92 @@ def create_app(db_path: str) -> Flask:
 
         return render_template("dashboard.html", **context)
 
+    @app.route('/changes')
+    def changes():
+        state, state_message = db_state()
+        change_config = {
+            "window_minutes": CHANGE_WINDOW_MINUTES,
+            "new_signal_window_minutes": NEW_SIGNAL_WINDOW_MINUTES,
+            "quiet_timeout_minutes": QUIETED_TIMEOUT_MINUTES,
+            "power_shift_threshold_db": POWER_SHIFT_THRESHOLD_DB,
+            "event_limit": CHANGE_EVENT_LIMIT,
+        }
+        if state != "ready":
+            context = db_waiting_context(state, state_message)
+            context.update(
+                {
+                    "change_config": change_config,
+                    "baselines": [],
+                    "selected_baseline": None,
+                    "selected_baseline_id": "",
+                    "change_payload": None,
+                    "active_filter": "ALL",
+                }
+            )
+            return render_template("changes.html", **context)
+        baselines = qa(
+            con(),
+            """
+            SELECT id, name, freq_start_hz, freq_stop_hz, bin_hz, total_windows
+            FROM baselines
+            ORDER BY id DESC
+            """,
+        )
+        if not baselines:
+            return render_template(
+                "changes.html",
+                baselines=[],
+                selected_baseline=None,
+                selected_baseline_id="",
+                change_payload=None,
+                change_config=change_config,
+                active_filter="ALL",
+            )
+        baseline_id_param = (request.args.get('baseline_id') or "").strip()
+        selected_baseline = None
+        if baseline_id_param:
+            for row in baselines:
+                if str(row.get('id')) == baseline_id_param:
+                    selected_baseline = row
+                    break
+        if selected_baseline is None:
+            selected_baseline = baselines[0]
+        raw_id = selected_baseline.get('id')
+        try:
+            baseline_id = int(raw_id)
+        except Exception:
+            baseline_id = None
+        filter_param_raw = (request.args.get('type') or "ALL").strip().upper()
+        if filter_param_raw in {"NEW", "NEW_SIGNAL"}:
+            active_filter = "NEW_SIGNAL"
+            filter_values: Optional[List[str]] = ["NEW_SIGNAL"]
+        elif filter_param_raw in {"POWER", "POWER_SHIFT"}:
+            active_filter = "POWER_SHIFT"
+            filter_values = ["POWER_SHIFT"]
+        elif filter_param_raw in {"QUIET", "QUIETED"}:
+            active_filter = "QUIETED"
+            filter_values = ["QUIETED"]
+        else:
+            active_filter = "ALL"
+            filter_values = None
+        payload = None
+        if baseline_id is not None:
+            payload = change_events_payload(
+                baseline_id,
+                window_minutes=CHANGE_WINDOW_MINUTES,
+                event_types=filter_values,
+            )
+        selected_baseline_id = str(raw_id or "")
+        return render_template(
+            "changes.html",
+            baselines=baselines,
+            selected_baseline=selected_baseline,
+            selected_baseline_id=selected_baseline_id,
+            change_payload=payload,
+            change_config=change_config,
+            active_filter=active_filter,
+        )
+
     @app.route('/baseline')
     def baseline():
         state, state_message = db_state()
@@ -2155,6 +2586,20 @@ def create_app(db_path: str) -> Flask:
     def api_baseline_hotspots(baseline_id: int):
         require_auth()
         payload = hotspots_payload(baseline_id)
+        if not payload:
+            abort(404, description="Baseline not found")
+        return jsonify(payload)
+
+    @app.get('/api/baseline/<int:baseline_id>/changes')
+    def api_baseline_changes(baseline_id: int):
+        require_auth()
+        minute_override = request.args.get('minutes', type=int)
+        type_tokens = request.args.getlist('type')
+        payload = change_events_payload(
+            baseline_id,
+            window_minutes=minute_override or CHANGE_WINDOW_MINUTES,
+            event_types=type_tokens if type_tokens else None,
+        )
         if not payload:
             abort(404, description="Baseline not found")
         return jsonify(payload)

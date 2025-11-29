@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% macro freq_range(baseline) -%}
+  {%- if baseline and baseline.freq_start_hz and baseline.freq_stop_hz and baseline.freq_stop_hz > baseline.freq_start_hz -%}
+    {{ '%.3f'|format(baseline.freq_start_hz / 1e6) }}–{{ '%.3f'|format(baseline.freq_stop_hz / 1e6) }} MHz
+  {%- elif baseline and baseline.freq_stop_hz and baseline.freq_stop_hz > 0 -%}
+    ≤ {{ '%.3f'|format(baseline.freq_stop_hz / 1e6) }} MHz
+  {%- else -%}
+    Auto range (pending scans)
+  {%- endif -%}
+{%- endmacro %}
+{% macro change_event_card(event) -%}
+  <div class="border border-white/10 rounded-xl p-4 bg-white/5" data-event-type="{{ event.type }}">
+    <div class="flex items-center justify-between gap-3 text-xs text-slate-400">
+      <div class="chip text-xs uppercase tracking-wide {{ 'chip-active' if event.type == 'NEW_SIGNAL' else '' }}">{{ event.type }}</div>
+      <div>{{ event.time_label or event.time_utc or '—' }}</div>
+    </div>
+    <div class="text-sm font-semibold mt-2">{{ event.summary }}</div>
+    <div class="text-xs text-slate-300 mt-1">{{ event.details }}</div>
+    <div class="flex flex-wrap gap-3 text-[11px] text-slate-400 mt-3">
+      {% if event.f_center_hz is not none %}
+        <span>Center {{ '%.3f'|format(event.f_center_hz / 1e6) }} MHz</span>
+      {% endif %}
+      {% if event.bandwidth_hz %}
+        <span>BW {{ '%.0f'|format(event.bandwidth_hz / 1e3) }} kHz</span>
+      {% endif %}
+      {% if event.confidence is not none %}
+        <span>Confidence {{ '%.2f'|format(event.confidence) }}</span>
+      {% endif %}
+      {% if event.delta_db is not none %}
+        <span>Δ {{ '%.1f'|format(event.delta_db) }} dB</span>
+      {% endif %}
+      {% if event.total_windows %}
+        <span>Total windows {{ event.total_windows }}</span>
+      {% endif %}
+      {% if event.downtime_minutes is not none %}
+        <span>Quiet {{ '%.0f'|format(event.downtime_minutes) }} min</span>
+      {% endif %}
+    </div>
+  </div>
+{%- endmacro %}
+
+{% block content %}
+<div class="space-y-4" id="changes-shell">
+  {% set has_baseline = baselines|length > 0 and selected_baseline_id %}
+  {% if not has_baseline %}
+    <div class="card">
+      <div class="text-lg font-semibold mb-2">Change feed</div>
+      <p class="text-sm text-slate-300">{% if db_status != 'ready' %}Waiting for the database to initialize. Run a scan to populate baseline data.{% else %}Create a baseline on the Control page and run a scan to start tracking changes.{% endif %}</p>
+    </div>
+  {% else %}
+    <div class="card flex flex-col gap-4">
+      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div class="flex flex-col gap-2">
+          <label class="text-xs uppercase tracking-wide text-slate-400" for="changes-baseline">Active baseline</label>
+          <select id="changes-baseline" name="baseline_id" class="input w-64">
+            {% for b in baselines %}
+              <option value="{{ b.id }}" {% if selected_baseline_id == b.id|string %}selected{% endif %}>#{{ b.id }} · {{ b.name }} ({{ freq_range(b) }})</option>
+            {% endfor %}
+          </select>
+          <div class="text-xs text-slate-400">#{{ selected_baseline.id }} · {{ selected_baseline.name }} — {{ freq_range(selected_baseline) }}</div>
+        </div>
+        <div class="text-xs text-slate-400">
+          Window last {{ change_config.window_minutes }} min · New signal threshold {{ change_config.new_signal_window_minutes }} min · Quiet timeout {{ change_config.quiet_timeout_minutes }} min · Power shift Δ≥{{ '%.1f'|format(change_config.power_shift_threshold_db) }} dB
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="flex flex-col gap-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex flex-wrap gap-2" id="change-filter-bar">
+            {% set filter_links = [
+              ('ALL', 'All'),
+              ('NEW_SIGNAL', 'New'),
+              ('POWER_SHIFT', 'Power shifts'),
+              ('QUIETED', 'Quieted'),
+            ] %}
+            {% for key, label in filter_links %}
+              {% set link_params = {'baseline_id': selected_baseline_id} %}
+              {% if key != 'ALL' %}
+                {% set _ = link_params.update({'type': key}) %}
+              {% endif %}
+              <a href="{{ url_for('changes', **link_params) }}" class="chip {{ 'chip-active' if active_filter == key else '' }}" data-filter="{{ key }}">{{ label }}</a>
+            {% endfor %}
+          </div>
+          <div class="text-xs text-slate-400" id="changes-meta">
+            {% if change_payload %}
+              {{ change_payload.total_events }} events · Window {{ change_payload.window_minutes }} min · Refreshed {{ change_payload.generated_at or '—' }}
+            {% else %}
+              Select a baseline to see recent changes.
+            {% endif %}
+          </div>
+        </div>
+        <div id="change-feed" class="space-y-3" data-baseline-id="{{ selected_baseline_id }}" data-active-filter="{{ active_filter }}">
+          {% if change_payload and change_payload.events %}
+            {% for event in change_payload.events %}
+              {{ change_event_card(event) }}
+            {% endfor %}
+          {% else %}
+            <div class="text-sm text-slate-300 border border-dashed border-white/15 rounded-xl p-4">No change events in the selected window.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  <script id="changes-state" type="application/json">
+    {{ {
+      "payload": change_payload or {},
+      "config": change_config or {},
+      "selected_baseline_id": selected_baseline_id or "",
+      "active_filter": active_filter or "ALL",
+      "db_status": db_status|default('ready')
+    } | tojson }}
+  </script>
+  <script src="{{ url_for('static', filename='js/changes.js') }}" defer></script>
+{% endblock %}
