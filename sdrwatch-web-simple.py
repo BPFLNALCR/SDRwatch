@@ -31,10 +31,25 @@ from urllib import request as urlreq, parse as urlparse, error as urlerr
 # Config
 # ================================
 CHART_HEIGHT_PX = 160
+
+
+def _int_env(name: str, default: int) -> int:
+    val = os.getenv(name)
+    if not val:
+        return default
+    try:
+        return max(1, int(float(val)))
+    except Exception:
+        return default
+
+
 API_TOKEN = os.getenv("SDRWATCH_TOKEN", "")  # page auth (optional)
 CONTROL_URL = os.getenv("SDRWATCH_CONTROL_URL", "http://127.0.0.1:8765")
 CONTROL_TOKEN = os.getenv("SDRWATCH_CONTROL_TOKEN", "") or os.getenv("SDRWATCH_TOKEN", "")
 BASELINE_NEW_THRESHOLD = 0.2
+TACTICAL_RECENT_MINUTES = _int_env("SDRWATCH_TACTICAL_RECENT_MINUTES", 30)
+ACTIVE_SIGNAL_WINDOW_MINUTES = _int_env("SDRWATCH_ACTIVE_SIGNAL_MINUTES", 15)
+HOTSPOT_BUCKET_COUNT = _int_env("SDRWATCH_HOTSPOT_BUCKETS", 60)
 
 # ================================
 # DB helpers
@@ -923,6 +938,266 @@ def create_app(db_path: str) -> Flask:
 
         return summaries
 
+    def fetch_baseline_record(baseline_id: int) -> Optional[Dict[str, Any]]:
+        connection = _ensure_con()
+        if connection is None:
+            return None
+        try:
+            return q1(
+                connection,
+                """
+                SELECT id, name, created_at, location_lat, location_lon,
+                       sdr_serial, antenna, notes, freq_start_hz, freq_stop_hz,
+                       bin_hz, total_windows
+                FROM baselines
+                WHERE id = ?
+                """,
+                (int(baseline_id),),
+            )
+        except sqlite3.OperationalError:
+            return None
+
+    def tactical_snapshot_payload(baseline_id: int) -> Optional[Dict[str, Any]]:
+        baseline_row = fetch_baseline_record(baseline_id)
+        if not baseline_row:
+            return None
+
+        def _safe_count(sql: str, params: Tuple[Any, ...], default: int = 0) -> int:
+            try:
+                row = q1(con(), sql, params)
+            except sqlite3.OperationalError:
+                return default
+            if not row:
+                return default
+            try:
+                return int(row.get("c") or row.get("count") or row.get("sum") or default)
+            except Exception:
+                return default
+
+        persistent_signals = _safe_count(
+            "SELECT COUNT(*) AS c FROM baseline_detections WHERE baseline_id = ?",
+            (baseline_id,),
+        )
+
+        try:
+            last_update_row = q1(
+                con(),
+                "SELECT MAX(timestamp_utc) AS last_ts FROM scan_updates WHERE baseline_id = ?",
+                (baseline_id,),
+            )
+            last_update = last_update_row.get("last_ts") if last_update_row else None
+        except sqlite3.OperationalError:
+            last_update = None
+
+        recent_window_clause = f"-{TACTICAL_RECENT_MINUTES} minutes"
+        try:
+            recent_row = q1(
+                con(),
+                "SELECT COALESCE(SUM(num_new_signals), 0) AS total FROM scan_updates WHERE baseline_id = ? AND timestamp_utc >= datetime('now', ?)",
+                (baseline_id, recent_window_clause),
+            )
+            recent_new = int(recent_row.get("total") or 0) if recent_row else 0
+        except sqlite3.OperationalError:
+            recent_new = 0
+
+        try:
+            latest_update_row = q1(
+                con(),
+                "SELECT id, timestamp_utc, num_hits, num_new_signals FROM scan_updates WHERE baseline_id = ? ORDER BY timestamp_utc DESC LIMIT 1",
+                (baseline_id,),
+            )
+        except sqlite3.OperationalError:
+            latest_update_row = None
+
+        try:
+            active_rows = qa(
+                con(),
+                """
+                SELECT id, f_center_hz, f_low_hz, f_high_hz, confidence,
+                       last_seen_utc, first_seen_utc, total_hits, total_windows
+                FROM baseline_detections
+                WHERE baseline_id = ?
+                  AND last_seen_utc >= datetime('now', ?)
+                ORDER BY last_seen_utc DESC
+                LIMIT 50
+                """,
+                (baseline_id, f"-{ACTIVE_SIGNAL_WINDOW_MINUTES} minutes"),
+            )
+        except sqlite3.OperationalError:
+            active_rows = []
+
+        active_payload: List[Dict[str, Any]] = []
+        for row in active_rows:
+            try:
+                center = float(row.get("f_center_hz"))
+            except Exception:
+                center = None
+            try:
+                f_low = float(row.get("f_low_hz"))
+            except Exception:
+                f_low = None
+            try:
+                f_high = float(row.get("f_high_hz"))
+            except Exception:
+                f_high = None
+            bandwidth = None
+            if f_low is not None and f_high is not None:
+                bandwidth = max(0.0, f_high - f_low)
+            active_payload.append(
+                {
+                    "id": row.get("id"),
+                    "f_center_hz": center,
+                    "bandwidth_hz": bandwidth,
+                    "confidence": row.get("confidence"),
+                    "last_seen_utc": row.get("last_seen_utc"),
+                    "first_seen_utc": row.get("first_seen_utc"),
+                    "total_hits": row.get("total_hits"),
+                    "total_windows": row.get("total_windows"),
+                }
+            )
+
+        snapshot = {
+            "persistent_signals": persistent_signals,
+            "last_update": last_update,
+            "recent_new": recent_new,
+            "recent_window_minutes": TACTICAL_RECENT_MINUTES,
+            "active_window_minutes": ACTIVE_SIGNAL_WINDOW_MINUTES,
+            "latest_update": latest_update_row,
+        }
+
+        return {
+            "baseline": baseline_row,
+            "snapshot": snapshot,
+            "active_signals": active_payload,
+        }
+
+    def hotspots_payload(baseline_id: int) -> Optional[Dict[str, Any]]:
+        baseline_row = fetch_baseline_record(baseline_id)
+        if not baseline_row:
+            return None
+        try:
+            freq_start = float(baseline_row.get("freq_start_hz") or 0.0)
+            freq_stop = float(baseline_row.get("freq_stop_hz") or 0.0)
+        except Exception:
+            return None
+        if not (freq_stop > freq_start):
+            return {
+                "baseline_id": baseline_id,
+                "freq_start_hz": freq_start,
+                "freq_stop_hz": freq_stop,
+                "bucket_width_hz": 0,
+                "buckets": [],
+                "max_occ": 0,
+                "max_power": 0,
+                "has_samples": False,
+            }
+
+        bucket_count = max(10, HOTSPOT_BUCKET_COUNT)
+        bucket_width = (freq_stop - freq_start) / float(bucket_count)
+        total_windows = int(baseline_row.get("total_windows") or 0)
+        bin_hz = None
+        try:
+            raw_bin = baseline_row.get("bin_hz")
+            if raw_bin is not None:
+                bin_hz = float(raw_bin)
+        except Exception:
+            bin_hz = None
+
+        try:
+            stats_rows = qa(
+                con(),
+                """
+                SELECT bin_index, freq_hz, noise_floor_ema, power_ema, occ_count
+                FROM baseline_stats
+                WHERE baseline_id = ?
+                """,
+                (baseline_id,),
+            )
+        except sqlite3.OperationalError:
+            stats_rows = []
+
+        buckets: List[Dict[str, Any]] = []
+        for idx in range(bucket_count):
+            start_hz = freq_start + idx * bucket_width
+            buckets.append(
+                {
+                    "f_low_hz": start_hz,
+                    "f_high_hz": start_hz + bucket_width,
+                    "occ_sum": 0.0,
+                    "occ_samples": 0,
+                    "power_sum": 0.0,
+                    "power_samples": 0,
+                }
+            )
+
+        def _row_freq(row: Dict[str, Any]) -> Optional[float]:
+            val = row.get("freq_hz")
+            if val is not None:
+                try:
+                    return float(val)
+                except Exception:
+                    return None
+            idx_val = row.get("bin_index")
+            if idx_val is None or bin_hz in (None, 0):
+                return None
+            try:
+                idx_numeric = float(idx_val)
+            except Exception:
+                return None
+            return freq_start + idx_numeric * float(bin_hz)
+
+        for row in stats_rows:
+            freq_val = _row_freq(row)
+            if freq_val is None or freq_val < freq_start or freq_val >= freq_stop:
+                continue
+            bucket_idx = int(min(bucket_count - 1, max(0, math.floor((freq_val - freq_start) / bucket_width))))
+            bucket = buckets[bucket_idx]
+            occ_count = row.get("occ_count")
+            if occ_count is not None:
+                try:
+                    occ_val = float(occ_count)
+                except Exception:
+                    occ_val = 0.0
+                occupancy = occ_val / total_windows if total_windows > 0 else occ_val
+                bucket["occ_sum"] += occupancy
+                bucket["occ_samples"] += 1
+            power = row.get("power_ema")
+            if power is not None:
+                try:
+                    bucket["power_sum"] += float(power)
+                    bucket["power_samples"] += 1
+                except Exception:
+                    pass
+
+        max_occ = 0.0
+        max_power = None
+        samples_present = False
+        for bucket in buckets:
+            occ_avg = bucket["occ_sum"] / bucket["occ_samples"] if bucket["occ_samples"] else 0.0
+            power_avg = bucket["power_sum"] / bucket["power_samples"] if bucket["power_samples"] else None
+            if bucket["occ_samples"] or bucket["power_samples"]:
+                samples_present = True
+            bucket["avg_occ"] = occ_avg
+            bucket["avg_power_ema"] = power_avg
+            bucket.pop("occ_sum", None)
+            bucket.pop("occ_samples", None)
+            bucket.pop("power_sum", None)
+            bucket.pop("power_samples", None)
+            max_occ = max(max_occ, occ_avg or 0.0)
+            if power_avg is not None:
+                max_power = power_avg if max_power is None else max(max_power, power_avg)
+
+        return {
+            "baseline_id": baseline_id,
+            "freq_start_hz": freq_start,
+            "freq_stop_hz": freq_stop,
+            "bucket_width_hz": bucket_width,
+            "buckets": buckets,
+            "max_occ": max_occ,
+            "max_power": max_power or 0.0,
+            "has_samples": samples_present,
+        }
+
     def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
         stmts = [
             """
@@ -1261,8 +1536,14 @@ def create_app(db_path: str) -> Flask:
     @app.route('/')
     def dashboard():
         state, state_message = db_state()
+        tactical_config = {
+            "active_window_minutes": ACTIVE_SIGNAL_WINDOW_MINUTES,
+            "recent_new_minutes": TACTICAL_RECENT_MINUTES,
+            "hotspot_bucket_count": HOTSPOT_BUCKET_COUNT,
+        }
         if state != "ready":
             context = db_waiting_context(state, state_message)
+            context["tactical_config"] = tactical_config
             if request.headers.get("HX-Request"):
                 return render_template("partials/dashboard_empty.html", **context)
             return render_template("dashboard.html", **context)
@@ -1370,294 +1651,13 @@ def create_app(db_path: str) -> Flask:
             db_status="ready",
             db_status_message="",
             db_path=app._db_path,
+            tactical_config=tactical_config,
         )
 
         if request.headers.get("HX-Request"):
             return render_template("partials/dashboard_content.html", **context)
 
         return render_template("dashboard.html", **context)
-
-    @app.route('/timeline')
-    def timeline_view():
-        state, state_message = db_state()
-        if state != "ready":
-            abort(409, description=state_message or "Database not initialized yet")
-        filters, form_defaults = parse_detection_filters(request.args, default_since_hours=168)
-        confidence_available = detections_have_confidence()
-        filters["__confidence_available"] = confidence_available
-        hist, snr_stats = snr_histogram(con(), filters, bucket_db=3)
-        timeline_data = timeline_metrics(con(), filters, max_buckets=120)
-        conds, params = detection_predicates(filters, alias="d")
-        where_sql = " WHERE " + " AND ".join(conds) if conds else ""
-        params_tuple = tuple(params)
-        total_row = q1(con(), f"SELECT COUNT(*) AS c FROM detections d{where_sql}", params_tuple)
-        filtered_detections = int((total_row or {}).get("c") or 0)
-        buckets = timeline_data.get("buckets", [])
-        bucket_sum = sum(int(b.get("detections") or 0) for b in buckets)
-        bucket_count = len(buckets)
-        time_span = ""
-        if bucket_count:
-            newest = buckets[0].get("label", "")
-            oldest = buckets[-1].get("label", "")
-            if newest and oldest:
-                time_span = f"{oldest} → {newest}"
-        services = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
-        return render_template(
-            "timeline.html",
-            filters=filters,
-            form_defaults=form_defaults,
-            hist=hist,
-            snr_stats=snr_stats,
-            timeline=timeline_data,
-            services=services,
-            detection_total=filtered_detections,
-            bucket_sum=bucket_sum,
-            bucket_count=bucket_count,
-            time_span=time_span,
-            confidence_available=confidence_available,
-        )
-
-    @app.route('/coverage')
-    def coverage_view():
-        state, state_message = db_state()
-        if state != "ready":
-            abort(409, description=state_message or "Database not initialized yet")
-        filters, form_defaults = parse_detection_filters(request.args)
-        confidence_available = detections_have_confidence()
-        filters["__confidence_available"] = confidence_available
-        latest_bins, latest_meta, latest_max = frequency_bins_latest_scan(con(), filters, num_bins=60)
-        avg_bins, avg_start_mhz, avg_stop_mhz, avg_max = frequency_bins_all_scans_avg(con(), filters, num_bins=60)
-        services = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
-        return render_template(
-            "coverage.html",
-            filters=filters,
-            form_defaults=form_defaults,
-            latest_bins=latest_bins,
-            latest_meta=latest_meta,
-            latest_max=latest_max,
-            avg_bins=avg_bins,
-            avg_start_mhz=avg_start_mhz,
-            avg_stop_mhz=avg_stop_mhz,
-            avg_max=avg_max,
-            services=services,
-            confidence_available=confidence_available,
-        )
-
-    @app.route('/detections')
-    def detections():
-        state, state_message = db_state()
-        if state != "ready":
-            return render_template("db_waiting.html", **db_waiting_context(state, state_message))
-        args = request.args
-        filters, form_defaults = parse_detection_filters(args)
-        confidence_available = detections_have_confidence()
-        filters["__confidence_available"] = confidence_available
-        confidence_sql = "d.confidence" if confidence_available else "NULL"
-        conds, params = detection_predicates(filters, alias="d")
-        where_sql = " WHERE " + " AND ".join(conds) if conds else ""
-        params_tuple = tuple(params)
-        page = max(1, int(float(args.get('page', 1))))
-        page_size = min(200, max(10, int(float(args.get('page_size', 50)))))
-        offset = (page - 1) * page_size
-
-        detections_total = q1(con(), "SELECT COUNT(*) AS c FROM detections")['c']
-        filtered_row = q1(con(), f"SELECT COUNT(*) AS c FROM detections d{where_sql}", params_tuple) or {"c": 0}
-        filtered_total = int(filtered_row.get('c') or 0)
-
-        rows = qa(
-            con(),
-            f"""
-            SELECT d.time_utc, d.scan_id, d.f_center_hz, d.f_low_hz, d.f_high_hz,
-                   d.peak_db, d.noise_db, d.snr_db, d.service, d.region, d.notes,
-                   {confidence_sql} AS confidence
-            FROM detections d
-            {where_sql}
-            ORDER BY d.time_utc DESC
-            LIMIT ? OFFSET ?
-        """,
-            params_tuple + (page_size, offset),
-        )
-
-        freq_values = [r.get('f_center_hz') for r in rows if r.get('f_center_hz') is not None]
-        freq_min = int(min(freq_values)) if freq_values else None
-        freq_max = int(max(freq_values)) if freq_values else None
-        baseline_bins = load_baseline_bins(freq_min, freq_max)
-        annotate_baseline_status(rows, baseline_bins, BASELINE_NEW_THRESHOLD)
-
-        spur_bins = load_spur_bins()
-        annotate_near_spur(rows, spur_bins)
-
-        services = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
-        snr_hist, snr_stats = snr_histogram(con(), filters, bucket_db=3)
-        timeline = timeline_metrics(con(), filters)
-        top_services_data = top_services(con(), filters, limit=8)
-
-        freq_bounds = q1(con(), f"SELECT MIN(d.f_center_hz) AS fmin, MAX(d.f_center_hz) AS fmax FROM detections d{where_sql}", params_tuple)
-        unique_services_row = q1(con(), f"SELECT COUNT(DISTINCT COALESCE(d.service,'Unknown')) AS c FROM detections d{where_sql}", params_tuple) if filtered_total else {"c": 0}
-        avg_snr_row = q1(con(), f"SELECT AVG(d.snr_db) AS avg_snr FROM detections d{where_sql}", params_tuple) if filtered_total else {"avg_snr": None}
-        newest = q1(con(), f"SELECT d.time_utc FROM detections d{where_sql} ORDER BY d.time_utc DESC LIMIT 1", params_tuple)
-        oldest = q1(con(), f"SELECT d.time_utc FROM detections d{where_sql} ORDER BY d.time_utc ASC LIMIT 1", params_tuple)
-
-        summary_cards: List[Dict[str, Any]] = []
-        summary_cards.append({
-            "label": "Filtered detections",
-            "value": f"{filtered_total:,}",
-            "subtext": (f"{((filtered_total / detections_total) * 100):.1f}% of database" if detections_total else ""),
-        })
-        unique_services = int(unique_services_row.get('c') or 0)
-        summary_cards.append({
-            "label": "Unique services",
-            "value": f"{unique_services:,}" if unique_services else "0",
-            "subtext": "Based on current filters",
-        })
-        avg_snr_val = avg_snr_row.get('avg_snr') if avg_snr_row else None
-        snr_text = "—"
-        if snr_stats and snr_stats.get('p50') is not None:
-            snr_text = f"{snr_stats['p50']:.1f} dB"
-        elif avg_snr_val is not None:
-            snr_text = f"{float(avg_snr_val):.1f} dB"
-        summary_cards.append({
-            "label": "Median SNR",
-            "value": snr_text,
-            "subtext": (f"p90 {snr_stats['p90']:.1f} dB" if snr_stats and snr_stats.get('p90') is not None else ""),
-        })
-        freq_span_text = "No detections"
-        if freq_bounds and freq_bounds.get('fmin') is not None and freq_bounds.get('fmax') is not None and freq_bounds['fmax'] > freq_bounds['fmin']:
-            fmin_mhz = freq_bounds['fmin'] / 1e6
-            fmax_mhz = freq_bounds['fmax'] / 1e6
-            freq_span_text = f"{fmin_mhz:.3f}–{fmax_mhz:.3f} MHz"
-        summary_cards.append({
-            "label": "Frequency span",
-            "value": freq_span_text,
-            "subtext": "From selected detections",
-        })
-        window_text = "No time range"
-        if newest and newest.get('time_utc') and oldest and oldest.get('time_utc'):
-            window_text = f"{format_ts_label(oldest['time_utc'])} → {format_ts_label(newest['time_utc'])}"
-        summary_cards.append({
-            "label": "Time window",
-            "value": window_text,
-            "subtext": "UTC",
-        })
-
-        active_filters: List[Dict[str, str]] = []
-        if filters.get('service'):
-            active_filters.append({"label": "Service", "value": str(filters['service'])})
-        if filters.get('min_snr') is not None:
-            active_filters.append({"label": "Min SNR", "value": f"{filters['min_snr']:.1f} dB"})
-        if confidence_available and filters.get('min_conf') is not None:
-            active_filters.append({"label": "Confidence", "value": f"≥ {filters['min_conf']:.2f}"})
-        if filters.get('f_min_hz') is not None or filters.get('f_max_hz') is not None:
-            lo = filters.get('f_min_hz')
-            hi = filters.get('f_max_hz')
-            if lo is not None and hi is not None:
-                active_filters.append({"label": "Freq", "value": f"{lo/1e6:.3f}–{hi/1e6:.3f} MHz"})
-            elif lo is not None:
-                active_filters.append({"label": "Freq ≥", "value": f"{lo/1e6:.3f} MHz"})
-            elif hi is not None:
-                active_filters.append({"label": "Freq ≤", "value": f"{hi/1e6:.3f} MHz"})
-        if filters.get('since_hours'):
-            active_filters.append({"label": "Lookback", "value": f"{int(filters['since_hours'])} h"})
-
-        base_args = {k: v for k, v in args.to_dict(flat=True).items() if v not in (None, '')}
-
-        def build_filter_url(overrides: Dict[str, Any], *, reset: bool = False) -> str:
-            query = {} if reset else dict(base_args)
-            for key, value in overrides.items():
-                if value in (None, ''):
-                    query.pop(key, None)
-                else:
-                    query[key] = str(value)
-            query.pop('page', None)
-            encoded = urlparse.urlencode(query)
-            return url_for('detections') + (f"?{encoded}" if encoded else "")
-
-        quick_range_options = []
-        for hours, label in [(1, "1h"), (6, "6h"), (24, "24h"), (168, "7d"), (720, "30d")]:
-            quick_range_options.append({
-                "label": label,
-                "href": build_filter_url({"since_hours": hours}),
-                "active": filters.get('since_hours') == hours,
-            })
-
-        min_snr_filter = filters.get('min_snr')
-        def _snr_active(target: float) -> bool:
-            return min_snr_filter is not None and abs(float(min_snr_filter) - float(target)) < 1e-6
-
-        quick_snr_options = []
-        for snr_val, label in [(3, "≥3 dB"), (6, "≥6 dB"), (10, "≥10 dB"), (15, "≥15 dB")]:
-            quick_snr_options.append({
-                "label": label,
-                "href": build_filter_url({"min_snr": snr_val}),
-                "active": _snr_active(snr_val),
-            })
-
-        freq_presets = [
-            {"label": "FM 88–108 MHz", "min": 88.0, "max": 108.0},
-            {"label": "Airband 118–137 MHz", "min": 118.0, "max": 137.0},
-            {"label": "UHF Satcom 240–270 MHz", "min": 240.0, "max": 270.0},
-            {"label": "ADS-B 1085–1095 MHz", "min": 1085.0, "max": 1095.0},
-        ]
-        quick_band_options = []
-        for preset in freq_presets:
-            min_hz = int(preset['min'] * 1e6)
-            max_hz = int(preset['max'] * 1e6)
-            quick_band_options.append({
-                "label": preset['label'],
-                "href": build_filter_url({"f_min_mhz": preset['min'], "f_max_mhz": preset['max']}),
-                "active": (filters.get('f_min_hz') == min_hz and filters.get('f_max_hz') == max_hz),
-            })
-
-        export_params = {k: v for k, v in base_args.items() if k in {"service", "min_snr", "min_conf", "f_min_mhz", "f_max_mhz", "since_hours"}}
-        qs = urlparse.urlencode(export_params)
-
-        return render_template(
-            "detections.html",
-            rows=rows,
-            page_num=page,
-            page_size=page_size,
-            total=filtered_total,
-            detections_total=detections_total,
-            services=services,
-            qs=qs,
-            form_defaults=form_defaults,
-            active_filters=active_filters,
-            summary_cards=summary_cards,
-            snr_hist=snr_hist,
-            snr_stats=snr_stats,
-            timeline=timeline,
-            top_services=top_services_data,
-            quick_ranges=quick_range_options,
-            quick_snrs=quick_snr_options,
-            quick_bands=quick_band_options,
-            chart_style_attr=f'style="height:{CHART_HEIGHT_PX}px;"',
-            clear_filters_url=build_filter_url({}, reset=True),
-            confidence_available=confidence_available,
-            spur_hint_available=bool(spur_bins),
-            baseline_threshold=BASELINE_NEW_THRESHOLD,
-            baseline_hint_available=bool(baseline_bins),
-        )
-
-    @app.route('/scans')
-    def scans():
-        state, state_message = db_state()
-        if state != "ready":
-            return render_template("db_waiting.html", **db_waiting_context(state, state_message))
-        args = request.args
-        page = max(1, int(float(args.get('page',1))))
-        page_size = min(200, max(10, int(float(args.get('page_size',25)))))
-        total = q1(con(), "SELECT COUNT(*) AS c FROM scans")['c']
-        offset = (page-1)*page_size
-        rows = qa(con(), """
-            SELECT id, t_start_utc, t_end_utc, f_start_hz, f_stop_hz, step_hz, samp_rate, fft, avg, device, driver, latitude, longitude
-            FROM scans
-            ORDER BY COALESCE(t_end_utc,t_start_utc) DESC
-            LIMIT ? OFFSET ?
-        """, (page_size, offset))
-        return render_template(
-            "scans.html",
-            rows=rows, page_num=page, page_size=page_size, total=total, req_args=args
-        )
 
     @app.route('/baseline')
     def baseline():
@@ -1773,6 +1773,22 @@ def create_app(db_path: str) -> Flask:
             abort(500, description=str(exc))
         summaries = baseline_summary_map()
         return (jsonify({"baseline": row, "summaries": summaries}), 201)
+
+    @app.get('/api/baseline/<int:baseline_id>/tactical')
+    def api_baseline_tactical(baseline_id: int):
+        require_auth()
+        payload = tactical_snapshot_payload(baseline_id)
+        if not payload:
+            abort(404, description="Baseline not found")
+        return jsonify(payload)
+
+    @app.get('/api/baseline/<int:baseline_id>/hotspots')
+    def api_baseline_hotspots(baseline_id: int):
+        require_auth()
+        payload = hotspots_payload(baseline_id)
+        if not payload:
+            abort(404, description="Baseline not found")
+        return jsonify(payload)
 
     def active_state_payload() -> Dict[str, Any]:
         job = controller_active_job()

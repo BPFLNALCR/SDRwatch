@@ -60,6 +60,11 @@
     .hint{ font-size:.7rem; color:#94a3b8 }
     .heat-cell { border-radius:.25rem; transition:opacity .2s ease-in-out; }
     .heat-cell:hover { outline:1px solid rgba(255,255,255,.35); }
+    .hotspot-strip { display:flex; gap:2px; min-height:48px; align-items:flex-end; }
+    .hotspot-cell { flex:1; min-width:4px; height:48px; border-radius:.3rem; background:rgba(14,165,233,.15); position:relative; transition:opacity .2s ease; }
+    .hotspot-cell::after { content:""; position:absolute; inset:0; border-radius:.3rem; background:rgba(14,165,233,.65); opacity:var(--intensity,0); }
+    .hotspot-cell[data-hot="true"]::after { background:linear-gradient(180deg, rgba(248,113,113,.85), rgba(234,88,12,.85)); }
+    .hotspot-cell:hover { outline:1px solid rgba(255,255,255,.35); }
     .htmx-indicator { display:none; align-items:center; gap:.35rem; font-size:.75rem; color:#bae6fd; }
     .htmx-request .htmx-indicator { display:inline-flex; }
   </style>
@@ -72,10 +77,6 @@
     <nav class="flex items-center gap-4 text-sm">
       <a href="/control" class="underline">Control</a>
       <a href="/" class="underline">Dashboard</a>
-      <a href="/detections" class="underline">Detections</a>
-      <a href="/timeline" class="underline">Timeline</a>
-      <a href="/coverage" class="underline">Coverage</a>
-      <a href="/scans" class="underline">Scans</a>
       <a href="/baseline" class="underline">Baseline</a>
       <a href="/spur-map" class="underline">Spur Map</a>
       <a href="/live" class="underline">Live</a>
