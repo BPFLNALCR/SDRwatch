@@ -21,10 +21,12 @@
             <select id="baseline_select" class="input" {% if not has_baselines %}disabled{% endif %}>
               <option value="">{% if has_baselines %}(select baseline){% else %}(no baselines yet){% endif %}</option>
               {% for b in baseline_list %}
-              {% if b.freq_start_hz and b.freq_stop_hz and b.freq_stop_hz > b.freq_start_hz %}
-                {% set range_label = '%.1f–%.1f MHz' % ((b.freq_start_hz / 1e6), (b.freq_stop_hz / 1e6)) %}
-              {% elif b.freq_stop_hz %}
-                {% set range_label = '≤ %.1f MHz' % (b.freq_stop_hz / 1e6) %}
+              {% set span_start = b.stats_min_hz or b.freq_start_hz %}
+              {% set span_stop = b.stats_max_hz or b.freq_stop_hz %}
+              {% if span_start and span_stop and span_stop > span_start %}
+                {% set range_label = '%.1f–%.1f MHz' % ((span_start / 1e6), (span_stop / 1e6)) %}
+              {% elif span_stop %}
+                {% set range_label = '≤ %.1f MHz' % (span_stop / 1e6) %}
               {% else %}
                 {% set range_label = 'auto span' %}
               {% endif %}
@@ -304,8 +306,8 @@ function hzToMHz(val){
 }
 function formatBaselineRange(record){
   if(!record) return '—';
-  const start = Number(record.freq_start_hz || 0);
-  const stop = Number(record.freq_stop_hz || 0);
+  const start = Number(record.stats_min_hz ?? record.freq_start_hz ?? 0);
+  const stop = Number(record.stats_max_hz ?? record.freq_stop_hz ?? 0);
   if(start > 0 && stop > start){
     return `${hzToMHz(start)}–${hzToMHz(stop)} MHz`;
   }

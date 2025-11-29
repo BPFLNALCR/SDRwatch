@@ -5,8 +5,8 @@
     <div>
       <h2 class="text-lg font-semibold">Baseline bins</h2>
       {% if selected_baseline %}
-        {% set start = selected_baseline.freq_start_hz or 0 %}
-        {% set stop = selected_baseline.freq_stop_hz or 0 %}
+        {% set start = selected_baseline.stats_min_hz or selected_baseline.freq_start_hz or 0 %}
+        {% set stop = selected_baseline.stats_max_hz or selected_baseline.freq_stop_hz or 0 %}
         {% if start and stop and stop > start %}
           <div class="text-xs muted">#{{ selected_baseline.id }} · {{ selected_baseline.name }} · {{ '%.3f' % (start/1e6) }}–{{ '%.3f' % (stop/1e6) }} MHz</div>
         {% elif stop %}

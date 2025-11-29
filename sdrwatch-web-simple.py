@@ -23,7 +23,7 @@ from __future__ import annotations
 import argparse, os, io, sqlite3, math, json
 from bisect import bisect_left
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from flask import Flask, request, Response, render_template, render_template_string, jsonify, abort, url_for  # type: ignore
 from urllib import request as urlreq, parse as urlparse, error as urlerr
 
@@ -901,6 +901,117 @@ def create_app(db_path: str) -> Flask:
         app.logger.warning("controller /profiles unexpected payload type: %r", type(data))
         return []
 
+    def baseline_stats_span_map() -> Dict[int, Dict[str, Optional[float]]]:
+        spans: Dict[int, Dict[str, Optional[float]]] = {}
+        if not table_exists("baseline_stats"):
+            return spans
+        connection = _ensure_con()
+        if connection is None:
+            return spans
+        stats_columns = table_columns("baseline_stats")
+        if not stats_columns:
+            return spans
+        try:
+            if "freq_hz" in stats_columns:
+                rows = qa(
+                    connection,
+                    """
+                    SELECT baseline_id,
+                           MIN(freq_hz) AS min_hz,
+                           MAX(freq_hz) AS max_hz
+                    FROM baseline_stats
+                    WHERE freq_hz IS NOT NULL
+                    GROUP BY baseline_id
+                    """,
+                )
+                for row in rows:
+                    try:
+                        bid = int(row.get("baseline_id"))
+                    except Exception:
+                        continue
+                    spans[bid] = {
+                        "min_hz": float(row.get("min_hz")) if row.get("min_hz") is not None else None,
+                        "max_hz": float(row.get("max_hz")) if row.get("max_hz") is not None else None,
+                    }
+            elif "bin_index" in stats_columns:
+                idx_rows = qa(
+                    connection,
+                    """
+                    SELECT baseline_id,
+                           MIN(bin_index) AS min_idx,
+                           MAX(bin_index) AS max_idx
+                    FROM baseline_stats
+                    WHERE bin_index IS NOT NULL
+                    GROUP BY baseline_id
+                    """,
+                )
+                if idx_rows:
+                    meta_rows = qa(
+                        connection,
+                        "SELECT id, freq_start_hz, bin_hz FROM baselines",
+                    )
+                    meta: Dict[int, Tuple[float, float]] = {}
+                    for meta_row in meta_rows:
+                        raw_id = meta_row.get("id") if isinstance(meta_row, dict) else None
+                        if raw_id is None:
+                            continue
+                        try:
+                            bid = int(raw_id)
+                        except Exception:
+                            continue
+                        freq_start = float(meta_row.get("freq_start_hz") or 0.0)
+                        bin_hz = float(meta_row.get("bin_hz") or 0.0)
+                        meta[bid] = (freq_start, bin_hz)
+                    for row in idx_rows:
+                        try:
+                            bid = int(row.get("baseline_id"))
+                        except Exception:
+                            continue
+                        info = meta.get(bid)
+                        if not info:
+                            continue
+                        freq_start, bin_hz = info
+                        if bin_hz <= 0 or freq_start <= 0:
+                            continue
+                        min_idx = row.get("min_idx")
+                        max_idx = row.get("max_idx")
+                        if min_idx is None or max_idx is None:
+                            continue
+                        try:
+                            min_freq = freq_start + int(min_idx) * bin_hz
+                            max_freq = freq_start + int(max_idx) * bin_hz
+                        except Exception:
+                            continue
+                        spans[bid] = {
+                            "min_hz": float(min_freq),
+                            "max_hz": float(max_freq),
+                        }
+        except sqlite3.OperationalError:
+            return spans
+        return spans
+
+    def apply_span_metadata(records: Iterable[Dict[str, Any]], span_map: Dict[int, Dict[str, Optional[float]]]) -> None:
+        if not records or not span_map:
+            return
+        for record in records:
+            raw_bid = record.get("id")
+            if raw_bid is None:
+                raw_bid = record.get("baseline_id")
+            if raw_bid is None:
+                continue
+            try:
+                bid_int = int(raw_bid)
+            except Exception:
+                try:
+                    bid_int = int(float(raw_bid))
+                except Exception:
+                    continue
+            span = span_map.get(bid_int)
+            if not span:
+                continue
+            record["stats_min_hz"] = span.get("min_hz")
+            record["stats_max_hz"] = span.get("max_hz")
+
     def controller_baselines() -> List[Dict[str, Any]]:
         try:
             data = app._ctl.baselines()
@@ -908,6 +1019,8 @@ def create_app(db_path: str) -> Flask:
             app.logger.warning("controller /baselines fetch failed: %s", exc)
             return []
         if isinstance(data, list):
+            span_map = baseline_stats_span_map()
+            apply_span_metadata(data, span_map)
             return data
         app.logger.warning("controller /baselines unexpected payload: %r", data)
         return []
@@ -939,7 +1052,10 @@ def create_app(db_path: str) -> Flask:
                 raw_id = row.get("baseline_id")
                 if raw_id is None:
                     continue
-                bid = int(raw_id)
+                try:
+                    bid = int(raw_id)
+                except Exception:
+                    continue
                 entry = ensure_entry(bid)
                 entry["total_windows"] = int(row.get("total_windows") or 0)
         except sqlite3.OperationalError:
@@ -1790,6 +1906,8 @@ def create_app(db_path: str) -> Flask:
             ORDER BY id DESC
             """,
         )
+        span_map = baseline_stats_span_map()
+        apply_span_metadata(baselines, span_map)
         baseline_id_param = args.get('baseline_id')
         selected_baseline = None
         if baselines:
