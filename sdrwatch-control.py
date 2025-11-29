@@ -543,6 +543,10 @@ class JobManager:
             "sleep_between_sweeps": "--sleep-between-sweeps",
             "latitude": "--latitude",
             "longitude": "--longitude",
+            "persistence_hit_ratio": "--persistence-hit-ratio",
+            "persistence_min_seconds": "--persistence-min-seconds",
+            "persistence_min_hits": "--persistence-min-hits",
+            "persistence_min_windows": "--persistence-min-windows",
         }
         for k, flag in mapping_num.items():
             v = args.get(k)
@@ -562,6 +566,8 @@ class JobManager:
             cmd += ["--duration", str(args["duration"])]
         if args.get("jsonl"):
             cmd += ["--jsonl", str(args["jsonl"])]
+        if args.get("persistence_mode"):
+            cmd += ["--persistence-mode", str(args["persistence_mode"])]
 
         # Loop/repeat flags
         if args.get("loop"):
@@ -823,6 +829,11 @@ def cmd_start(args: argparse.Namespace) -> int:
         "use_baseline": args.use_baseline,
         "latitude": args.latitude,
         "longitude": args.longitude,
+        "persistence_mode": args.persistence_mode,
+        "persistence_hit_ratio": args.persistence_hit_ratio,
+        "persistence_min_seconds": args.persistence_min_seconds,
+        "persistence_min_hits": args.persistence_min_hits,
+        "persistence_min_windows": args.persistence_min_windows,
     }
     params.update(parse_kv_pairs(args.param))
     if args.extra:
@@ -923,6 +934,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     s.add_argument("--use-baseline", action="store_true", help="Enable baseline subtraction if supported")
     s.add_argument("--latitude", type=float, help="Latitude in decimal degrees to tag scans")
     s.add_argument("--longitude", type=float, help="Longitude in decimal degrees to tag scans")
+    s.add_argument("--persistence-mode", choices=["hits", "duration", "both"], help="Persistence gate mode for detections")
+    s.add_argument("--persistence-hit-ratio", type=float, help="Minimum hit/window ratio (0-1)")
+    s.add_argument("--persistence-min-seconds", type=float, help="Minimum wall-clock seconds for persistence")
+    s.add_argument("--persistence-min-hits", type=int, help="Minimum hits before persistence evaluation")
+    s.add_argument("--persistence-min-windows", type=int, help="Minimum windows before persistence evaluation")
 
     s.add_argument("--param", action="append", default=[], help="Extra k=v args to pass through (coerces numbers/bools)")
     s.add_argument("--extra", nargs=argparse.REMAINDER, help="Raw extra args appended after '--' to sdrwatch.py")

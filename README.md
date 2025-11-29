@@ -48,7 +48,7 @@ At its current stage of development, SDR-Watch is:
   - Exposes a RESTful job API (`/jobs`, `/jobs/<id>`, `/jobs/<id>/logs`) that the web layer simply proxies.
 - **🔔 Alerts & Outputs**:
   - Desktop notifications (`notify-send`) for new detections.
-  - JSONL stream for integration with Grafana, Loki, ELK.
+  - JSONL stream for integration with Grafana, Loki, ELK (each record now includes the window coverage ratio, observed duration, and persistence mode used for gating).
 - **⚙️ Services Integration**: Systemd units for `sdrwatch-control` (API manager) and `sdrwatch-web` (dashboard).
   - Web UI now uses REST endpoints (`/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`) so multiple browser sessions stay in sync and the architecture can scale horizontally.
 
@@ -104,6 +104,24 @@ python3 sdrwatch.py --start 30e6 --stop 1700e6 --step 2.4e6 \
   --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr \
   --gain auto --loop --notify --db sdrwatch.db --jsonl events.jsonl
 ```
+
+### Configurable persistence gates
+
+Use `--persistence-mode` to choose how detections are promoted to persistent records:
+
+| Mode | Description |
+| --- | --- |
+| `hits` (default) | Requires a minimum number of hits/windows **and** the specified `--persistence-hit-ratio` coverage within the cluster span. |
+| `duration` | Requires the cluster to remain active for at least `--persistence-min-seconds` while still meeting the minimum hit/window counts. |
+| `both` | Requires both coverage and duration thresholds to pass.
+
+Additional knobs:
+
+- `--persistence-hit-ratio` (default `0.6`)
+- `--persistence-min-seconds` (default `10`)
+- `--persistence-min-hits` / `--persistence-min-windows` (defaults `2` / `2`)
+
+The **Control** page exposes the same options so you can switch between hit-ratio, duration, or combined persistence gating directly from the dashboard.
 
 ### Web Dashboard 🌐
 

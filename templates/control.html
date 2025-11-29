@@ -124,6 +124,40 @@
         </div>
       </div>
 
+      <!-- Persistence -->
+      <div>
+        <div class="section-title">Persistence</div>
+        <div class="subgrid">
+          <div class="field">
+            <label for="persistence_mode">Persistence mode</label>
+            <select id="persistence_mode" class="input" name="persistence_mode">
+              <option value="hits" selected>Hits / window ratio</option>
+              <option value="duration">Wall-clock duration</option>
+              <option value="both">Require both</option>
+            </select>
+            <div class="hint mt-1 text-xs">Select how clusters become persistent: coverage-based, duration-based, or both.</div>
+          </div>
+          <div class="field">
+            <label for="persistence_hit_ratio">Hit ratio (0–1)</label>
+            <input id="persistence_hit_ratio" class="input" name="persistence_hit_ratio" value="0.6" inputmode="decimal" step="0.05" />
+            <div class="hint mt-1 text-xs">Minimum coverage of occupied windows across the cluster span.</div>
+          </div>
+          <div class="field">
+            <label for="persistence_min_seconds">Min duration (s)</label>
+            <input id="persistence_min_seconds" class="input" name="persistence_min_seconds" value="10" inputmode="decimal" />
+            <div class="hint mt-1 text-xs">Used when duration-based modes are selected.</div>
+          </div>
+          <div class="field">
+            <label for="persistence_min_hits">Min hits</label>
+            <input id="persistence_min_hits" class="input" name="persistence_min_hits" value="2" inputmode="numeric" />
+          </div>
+          <div class="field">
+            <label for="persistence_min_windows">Min windows</label>
+            <input id="persistence_min_windows" class="input" name="persistence_min_windows" value="2" inputmode="numeric" />
+          </div>
+        </div>
+      </div>
+
       <!-- CFAR -->
       <div>
         <div class="section-title">CFAR</div>
@@ -581,7 +615,7 @@ f.addEventListener('submit', async (e)=>{
   const fd = new FormData(e.target);
   const body = Object.fromEntries(fd.entries());
   const maybeNum = (k)=>{ if(body[k]!==undefined && body[k]!=='' && !isNaN(Number(body[k]))) body[k] = Number(body[k]); };
-  ['start','stop','step','samp_rate','fft','avg','threshold_db','guard_bins','min_width_bins','cfar_train','cfar_guard','cfar_quantile','cfar_alpha_db','new_ema_occ','sleep_between_sweeps','repeat'].forEach(maybeNum);
+  ['start','stop','step','samp_rate','fft','avg','threshold_db','guard_bins','min_width_bins','cfar_train','cfar_guard','cfar_quantile','cfar_alpha_db','new_ema_occ','sleep_between_sweeps','repeat','persistence_hit_ratio','persistence_min_seconds','persistence_min_hits','persistence_min_windows'].forEach(maybeNum);
   if(body.mode==='loop'){ body.loop = true; }
   if(body.mode==='repeat'){ body.repeat = body.repeat||1; }
   delete body.mode;

@@ -887,6 +887,8 @@ class DetectionCluster:
     windows: Set[int] = field(default_factory=set)
     best_seg: Segment = field(default_factory=lambda: Segment(0, 0, 0, -999.0, -999.0, -999.0))
     emitted: bool = False
+    center_weight_sum: float = 0.0
+    center_weight_total: float = 0.0
 
 
 @dataclass
@@ -926,6 +928,14 @@ class DetectionEngine:
         self.min_windows = max(1, int(min_windows))
         self.max_gap_windows = max(1, int(max_gap_windows))
         self.freq_merge_hz = float(freq_merge_hz if freq_merge_hz is not None else max(self.bin_hz * 2, 25_000.0))
+        self.center_match_hz = max(self.bin_hz * 2.0, self.freq_merge_hz / 2.0)
+        raw_mode = str(getattr(args, "persistence_mode", "hits") or "hits").lower()
+        self.persistence_mode = raw_mode if raw_mode in {"hits", "duration", "both"} else "hits"
+        raw_ratio = getattr(args, "persistence_hit_ratio", 0.0)
+        ratio_val = 0.0 if raw_ratio is None else float(raw_ratio)
+        self.persistence_hit_ratio = float(np.clip(ratio_val, 0.0, 1.0))
+        raw_duration = getattr(args, "persistence_min_seconds", 0.0)
+        self.persistence_min_seconds = float(max(0.0, float(raw_duration if raw_duration is not None else 0.0)))
         self.min_width_hz = max(self.bin_hz * float(args.min_width_bins), self.bin_hz)
         self.clusters: List[DetectionCluster] = []
         self._last_window_idx = -1
@@ -986,7 +996,49 @@ class DetectionEngine:
             if seg.snr_db >= cluster.best_seg.snr_db:
                 cluster.best_seg = seg
 
+        self._update_cluster_center(cluster, seg)
         self._maybe_emit_cluster(cluster)
+
+    def _segment_weight(self, seg: Segment) -> float:
+        try:
+            return float(max(1e-3, 10.0 ** (seg.snr_db / 10.0)))
+        except Exception:
+            return 1.0
+
+    def _update_cluster_center(self, cluster: DetectionCluster, seg: Segment) -> None:
+        weight = self._segment_weight(seg)
+        cluster.center_weight_sum += weight * float(seg.f_center_hz)
+        cluster.center_weight_total += weight
+
+    def _cluster_center_hz(self, cluster: DetectionCluster) -> int:
+        if cluster.center_weight_total <= 0.0:
+            return int((cluster.f_low_hz + cluster.f_high_hz) / 2)
+        return int(round(cluster.center_weight_sum / cluster.center_weight_total))
+
+    def _blend_centers(self, center_a: int, weight_a: int, center_b: int, weight_b: int) -> int:
+        wa = max(1, int(weight_a))
+        wb = max(1, int(weight_b))
+        return int(round((center_a * wa + center_b * wb) / float(wa + wb)))
+
+    def _cluster_window_ratio(self, cluster: DetectionCluster) -> float:
+        span_windows = max(cluster.last_window - cluster.first_window + 1, 1)
+        return float(len(cluster.windows)) / float(span_windows)
+
+    def _cluster_duration_seconds(self, cluster: DetectionCluster) -> float:
+        try:
+            t0 = self._parse_timestamp(cluster.first_seen_ts)
+            t1 = self._parse_timestamp(cluster.last_seen_ts)
+        except Exception:
+            return 0.0
+        return max(0.0, (t1 - t0).total_seconds())
+
+    def _parse_timestamp(self, text: str) -> datetime:
+        if not text:
+            raise ValueError("empty timestamp")
+        cleaned = text.strip()
+        if cleaned.endswith("Z"):
+            cleaned = cleaned[:-1] + "+00:00"
+        return datetime.fromisoformat(cleaned)
 
     def _find_cluster(self, seg: Segment) -> Optional[DetectionCluster]:
         for cluster in self.clusters:
@@ -1009,20 +1061,32 @@ class DetectionEngine:
 
     def _cluster_qualifies(self, cluster: DetectionCluster) -> bool:
         width_hz = float(cluster.f_high_hz - cluster.f_low_hz)
-        return (
-            cluster.hits >= self.min_hits
-            and len(cluster.windows) >= self.min_windows
-            and width_hz >= self.min_width_hz
-        )
+        if width_hz < self.min_width_hz:
+            return False
+        if cluster.hits < self.min_hits or len(cluster.windows) < self.min_windows:
+            return False
+        ratio_threshold = float(self.persistence_hit_ratio)
+        ratio_ok = True if ratio_threshold <= 0.0 else (self._cluster_window_ratio(cluster) >= ratio_threshold)
+        duration_threshold = float(self.persistence_min_seconds)
+        duration_ok = True if duration_threshold <= 0.0 else (self._cluster_duration_seconds(cluster) >= duration_threshold)
+        mode = self.persistence_mode
+        if mode == "duration":
+            return duration_ok
+        if mode == "both":
+            return ratio_ok and duration_ok
+        return ratio_ok
 
     def _emit_detection(self, cluster: DetectionCluster):
         cluster.emitted = True
         best_seg = cluster.best_seg
         confidence = self._compute_confidence(cluster)
+        cluster_center_hz = self._cluster_center_hz(cluster)
+        window_ratio = self._cluster_window_ratio(cluster)
+        duration_seconds = self._cluster_duration_seconds(cluster)
         combined_seg = Segment(
             f_low_hz=cluster.f_low_hz,
             f_high_hz=cluster.f_high_hz,
-            f_center_hz=int((cluster.f_low_hz + cluster.f_high_hz) / 2),
+            f_center_hz=cluster_center_hz,
             peak_db=best_seg.peak_db,
             noise_db=best_seg.noise_db,
             snr_db=best_seg.snr_db,
@@ -1051,6 +1115,9 @@ class DetectionEngine:
             "notes": note,
             "is_new": is_new_flag,
             "confidence": confidence,
+            "window_ratio": window_ratio,
+            "duration_s": duration_seconds,
+            "persistence_mode": self.persistence_mode,
         }
         maybe_emit_jsonl(self.args.jsonl, record)
         if is_new_flag:
@@ -1060,12 +1127,13 @@ class DetectionEngine:
     def _persist_detection(self, cluster: DetectionCluster, seg: Segment, confidence: float) -> bool:
         timestamp = utc_now_str()
         match = self._match_persistent(seg)
+        cluster_center_hz = seg.f_center_hz
         self.store.begin()
         try:
             if match:
                 match.f_low_hz = min(match.f_low_hz, cluster.f_low_hz)
                 match.f_high_hz = max(match.f_high_hz, cluster.f_high_hz)
-                match.f_center_hz = int((match.f_low_hz + match.f_high_hz) / 2)
+                match.f_center_hz = self._blend_centers(match.f_center_hz, match.total_hits, cluster_center_hz, cluster.hits)
                 match.last_seen_utc = timestamp
                 match.total_hits += cluster.hits
                 match.total_windows += len(cluster.windows)
@@ -1077,7 +1145,7 @@ class DetectionEngine:
                     self.baseline_ctx.id,
                     cluster.f_low_hz,
                     cluster.f_high_hz,
-                    int((cluster.f_low_hz + cluster.f_high_hz) / 2),
+                    cluster_center_hz,
                     cluster.first_seen_ts,
                     cluster.last_seen_ts,
                     cluster.hits,
@@ -1089,7 +1157,7 @@ class DetectionEngine:
                     baseline_id=self.baseline_ctx.id,
                     f_low_hz=cluster.f_low_hz,
                     f_high_hz=cluster.f_high_hz,
-                    f_center_hz=int((cluster.f_low_hz + cluster.f_high_hz) / 2),
+                    f_center_hz=cluster_center_hz,
                     first_seen_utc=cluster.first_seen_ts,
                     last_seen_utc=cluster.last_seen_ts,
                     total_hits=cluster.hits,
@@ -1104,10 +1172,12 @@ class DetectionEngine:
 
     def _match_persistent(self, seg: Segment) -> Optional[PersistentDetection]:
         for det in self._persisted:
-            if not (
+            spans_overlap = not (
                 seg.f_high_hz < (det.f_low_hz - self.freq_merge_hz)
                 or seg.f_low_hz > (det.f_high_hz + self.freq_merge_hz)
-            ):
+            )
+            center_close = abs(seg.f_center_hz - det.f_center_hz) <= self.center_match_hz
+            if spans_overlap or center_close:
                 return det
         return None
 
@@ -1413,6 +1483,8 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
             args,
             bin_hz=bin_hz,
             baseline_ctx=baseline_ctx,
+            min_hits=int(getattr(args, "persistence_min_hits", 2)),
+            min_windows=int(getattr(args, "persistence_min_windows", 2)),
         )
     power_monitor = WindowPowerMonitor()
     spur_tracker: Dict[int, Dict[str, float]] = {}
@@ -1741,6 +1813,35 @@ def parse_args(argv: Optional[List[str]] = None):
     p.add_argument("--threshold-db", dest="threshold_db", type=float, help="Detection threshold above noise floor [dB] (default 8.0)")
     p.add_argument("--guard-bins", dest="guard_bins", type=int, help="Allow this many below-threshold bins inside a detection (default 1)")
     p.add_argument("--min-width-bins", dest="min_width_bins", type=int, help="Minimum contiguous bins for a detection (default 2)")
+    p.add_argument(
+        "--persistence-mode",
+        choices=["hits", "duration", "both"],
+        help="Persistence gate: hit/window ratio, wall-clock duration, or both (default hits)",
+    )
+    p.add_argument(
+        "--persistence-hit-ratio",
+        dest="persistence_hit_ratio",
+        type=float,
+        help="Minimum occupied-window ratio (0-1) within a cluster span to mark persistent (default 0.6)",
+    )
+    p.add_argument(
+        "--persistence-min-seconds",
+        dest="persistence_min_seconds",
+        type=float,
+        help="Minimum wall-clock duration in seconds for duration-based persistence (default 10)",
+    )
+    p.add_argument(
+        "--persistence-min-hits",
+        dest="persistence_min_hits",
+        type=int,
+        help="Minimum hits required before persistence evaluation (default 2)",
+    )
+    p.add_argument(
+        "--persistence-min-windows",
+        dest="persistence_min_windows",
+        type=int,
+        help="Minimum distinct windows required before persistence evaluation (default 2)",
+    )
     # CFAR options
     p.add_argument("--cfar", choices=["off", "os", "ca"], help="CFAR mode (default: os)")
     p.add_argument("--cfar-train", dest="cfar_train", type=int, help="Training cells per side for CFAR (default 24)")
@@ -1784,6 +1885,11 @@ def parse_args(argv: Optional[List[str]] = None):
     _set_default(args, args._cli_overrides, "threshold_db", 8.0)
     _set_default(args, args._cli_overrides, "guard_bins", 1)
     _set_default(args, args._cli_overrides, "min_width_bins", 2)
+    _set_default(args, args._cli_overrides, "persistence_mode", "hits")
+    _set_default(args, args._cli_overrides, "persistence_hit_ratio", 0.6)
+    _set_default(args, args._cli_overrides, "persistence_min_seconds", 10.0)
+    _set_default(args, args._cli_overrides, "persistence_min_hits", 2)
+    _set_default(args, args._cli_overrides, "persistence_min_windows", 2)
     _set_default(args, args._cli_overrides, "cfar", "os")
     _set_default(args, args._cli_overrides, "cfar_train", 24)
     _set_default(args, args._cli_overrides, "cfar_guard", 4)
