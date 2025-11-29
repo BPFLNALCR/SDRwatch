@@ -376,10 +376,12 @@ class Store:
             pass
 
     def begin(self) -> None:
-        self.con.execute("BEGIN")
+        if not self.con.in_transaction:
+            self.con.execute("BEGIN")
 
     def commit(self) -> None:
-        self.con.commit()
+        if self.con.in_transaction:
+            self.con.commit()
 
     def get_latest_baseline_id(self) -> Optional[int]:
         cur = self.con.execute("SELECT id FROM baselines ORDER BY id DESC LIMIT 1")
@@ -1333,6 +1335,7 @@ class DetectionEngine:
                     confidence=confidence,
                 )
                 self._persisted.append(new_det)
+                self._seen_persistent.add(detection_id)
                 is_new = True
                 if self.two_pass_enabled:
                     self._schedule_revisit(detection_id=detection_id, seg=seg, reason="new")

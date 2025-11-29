@@ -630,7 +630,21 @@ f.addEventListener('submit', async (e)=>{
   }
   const fd = new FormData(e.target);
   const body = Object.fromEntries(fd.entries());
-  const maybeNum = (k)=>{ if(body[k]!==undefined && body[k]!=='' && !isNaN(Number(body[k]))) body[k] = Number(body[k]); };
+  const maybeNum = (k)=>{
+    if(!(k in body) || body[k] === undefined || body[k] === null){
+      return;
+    }
+    if(typeof body[k] === 'string' && body[k].trim() === ''){
+      delete body[k];
+      return;
+    }
+    const num = Number(body[k]);
+    if(Number.isFinite(num)){
+      body[k] = num;
+    } else {
+      delete body[k];
+    }
+  };
   ['start','stop','step','samp_rate','fft','avg','threshold_db','guard_bins','min_width_bins','cfar_train','cfar_guard','cfar_quantile','cfar_alpha_db','new_ema_occ','sleep_between_sweeps','repeat','persistence_hit_ratio','persistence_min_seconds','persistence_min_hits','persistence_min_windows','revisit_fft','revisit_avg','revisit_margin_hz','revisit_max_bands','revisit_floor_threshold_db'].forEach(maybeNum);
   if(body.mode==='loop'){ body.loop = true; }
   if(body.mode==='repeat'){ body.repeat = body.repeat||1; }
