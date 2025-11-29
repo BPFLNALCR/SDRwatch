@@ -22,6 +22,129 @@ Auth notes:
 from __future__ import annotations
 import argparse, os, io, sqlite3, math, json
 from bisect import bisect_left
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from flask import Flask, request, Response, render_template, render_template_string, jsonify, abort, url_for  # type: ignore
+from urllib import request as urlreq, parse as urlparse, error as urlerr
+
+# ================================
+# Config
+# ================================
+CHART_HEIGHT_PX = 160
+
+
+def _int_env(name: str, default: int) -> int:
+    val = os.getenv(name)
+    if not val:
+        return default
+    try:
+        return max(1, int(float(val)))
+    except Exception:
+        return default
+
+def _float_env(name: str, default: float) -> float:
+    val = os.getenv(name)
+    if not val:
+        return default
+    try:
+        return float(val)
+    except Exception:
+        return default
+
+
+API_TOKEN = os.getenv("SDRWATCH_TOKEN", "")  # page auth (optional)
+CONTROL_URL = os.getenv("SDRWATCH_CONTROL_URL", "http://127.0.0.1:8765")
+CONTROL_TOKEN = os.getenv("SDRWATCH_CONTROL_TOKEN", "") or os.getenv("SDRWATCH_TOKEN", "")
+BASELINE_NEW_THRESHOLD = 0.2
+TACTICAL_RECENT_MINUTES = _int_env("SDRWATCH_TACTICAL_RECENT_MINUTES", 30)
+ACTIVE_SIGNAL_WINDOW_MINUTES = _int_env("SDRWATCH_ACTIVE_SIGNAL_MINUTES", 15)
+HOTSPOT_BUCKET_COUNT = _int_env("SDRWATCH_HOTSPOT_BUCKETS", 60)
+CHANGE_WINDOW_MINUTES = _int_env("SDRWATCH_CHANGE_WINDOW_MINUTES", 60)
+NEW_SIGNAL_WINDOW_MINUTES = _int_env("SDRWATCH_NEW_SIGNAL_MINUTES", CHANGE_WINDOW_MINUTES)
+POWER_SHIFT_THRESHOLD_DB = _float_env("SDRWATCH_POWER_SHIFT_THRESHOLD_DB", 6.0)
+QUIETED_TIMEOUT_MINUTES = _int_env("SDRWATCH_QUIETED_TIMEOUT_MINUTES", 15)
+QUIETED_MIN_WINDOWS = _int_env("SDRWATCH_QUIETED_MIN_WINDOWS", 20)
+CHANGE_EVENT_LIMIT = _int_env("SDRWATCH_CHANGE_EVENT_LIMIT", 120)
+BAND_SUMMARY_MAX_BANDS = _int_env("SDRWATCH_BAND_SUMMARY_MAX_BANDS", 6)
+BAND_SUMMARY_TARGET_WIDTH_HZ = _float_env("SDRWATCH_BAND_SUMMARY_TARGET_WIDTH_HZ", 10_000_000.0)
+BAND_SUMMARY_RECENT_MINUTES = _int_env("SDRWATCH_BAND_SUMMARY_RECENT_MINUTES", 30)
+BAND_SUMMARY_OCC_THRESHOLD = _float_env("SDRWATCH_BAND_SUMMARY_OCC_THRESHOLD", BASELINE_NEW_THRESHOLD)
+
+# ================================
+# DB helpers
+# ================================
+
+def open_db_ro(path: str) -> sqlite3.Connection:
+    abspath = os.path.abspath(path)
+    con = sqlite3.connect(f"file:{abspath}?mode=ro", uri=True, check_same_thread=False)
+    con.execute("PRAGMA busy_timeout=2000;")
+    con.row_factory = lambda cur, row: {d[0]: row[i] for i, d in enumerate(cur.description)}
+    return con
+
+def q1(con: sqlite3.Connection, sql: str, params: Any = ()):  # one row
+    cur = con.execute(sql, params)
+    return cur.fetchone()
+
+def qa(con: sqlite3.Connection, sql: str, params: Any = ()):  # all rows
+    cur = con.execute(sql, params)
+    return cur.fetchall()
+
+# ================================
+# Graph helpers
+# ================================
+
+def _percentile(xs: List[float], p: float) -> Optional[float]:
+    if not xs: return None
+    xs = sorted(xs); k = (len(xs) - 1) * p; f = int(math.floor(k)); c = int(math.ceil(k))
+    if f == c: return float(xs[f])
+    return float(xs[f] + (xs[c] - xs[f]) * (k - f))
+
+def _scale_counts_to_px(series: List[Dict[str, Any]], count_key: str = "count") -> float:
+    values: List[float] = []
+    for x in series:
+        try: v = float(x.get(count_key, 0) or 0)
+        except Exception: v = 0.0
+        values.append(v)
+    maxc = max(values) if values else 0.0
+    for i, x in enumerate(series):
+        c = values[i]
+        if maxc <= 0 or c <= 0: x["height_px"] = 0
+        else:
+            h = int(round((c / maxc) * CHART_HEIGHT_PX))
+            x["height_px"] = max(2, h)
+    return maxc
+
+
+def parse_detection_filters(args, *, default_since_hours: Optional[int] = None) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """Parse query params into normalized detection filters and form defaults."""
+    def _clean_str(key: str) -> str:
+        val = args.get(key) if hasattr(args, "get") else args.get(key)
+        if val is None:
+            return ""
+        if isinstance(val, str):
+            return val.strip()
+        return str(val).strip()
+
+    def _coerce_float(text: str) -> Optional[float]:
+        if text == "":
+            return None
+        try:
+            return float(text)
+        except Exception:
+            return None
+
+    filters: Dict[str, Any] = {
+        "service": None,
+        "min_snr": None,
+        "f_min_hz": None,
+        "f_max_hz": None,
+        "since_hours": default_since_hours,
+        "min_conf": None,
+    }
+    form_defaults: Dict[str, str] = {
+        "service": "",
+        "min_snr": "",
+        "f_min_mhz": "",
         "f_max_mhz": "",
         "since_hours": "" if default_since_hours is None else str(default_since_hours),
         "min_conf": "",
@@ -1305,8 +1428,10 @@ def create_app(db_path: str) -> Flask:
         freq_start = float(baseline_row.get("freq_start_hz") or 0.0)
         freq_stop = float(baseline_row.get("freq_stop_hz") or 0.0)
         raw_id = baseline_row.get("id") or baseline_row.get("baseline_id")
+        baseline_id = None
         try:
-            baseline_id = int(raw_id)
+            if raw_id is not None:
+                baseline_id = int(float(str(raw_id)))
         except Exception:
             baseline_id = None
         meta: Dict[str, Any] = {
@@ -2383,8 +2508,11 @@ def create_app(db_path: str) -> Flask:
         if selected_baseline is None:
             selected_baseline = baselines[0]
         raw_id = selected_baseline.get('id')
+        baseline_id = None
         try:
-            baseline_id = int(raw_id)
+            if raw_id is not None:
+                # Normalize to string/float first so mypy/typers accept the argument to int()
+                baseline_id = int(float(str(raw_id)))
         except Exception:
             baseline_id = None
         filter_param_raw = (request.args.get('type') or "ALL").strip().upper()
@@ -2416,162 +2544,6 @@ def create_app(db_path: str) -> Flask:
             change_payload=payload,
             change_config=change_config,
             active_filter=active_filter,
-        )
-
-    @app.route('/baseline')
-    def baseline():
-        state, state_message = db_state()
-        if state != "ready":
-            return render_template("db_waiting.html", **db_waiting_context(state, state_message))
-        args = request.args
-        baselines = qa(
-            con(),
-            """
-            SELECT id, name, freq_start_hz, freq_stop_hz, bin_hz, total_windows
-            FROM baselines
-            ORDER BY id DESC
-            """,
-        )
-        span_map = baseline_stats_span_map()
-        apply_span_metadata(baselines, span_map)
-        baseline_id_param = args.get('baseline_id')
-        selected_baseline = None
-        if baselines:
-            if baseline_id_param:
-                for row in baselines:
-                    if str(row.get('id')) == str(baseline_id_param):
-                        selected_baseline = row
-                        break
-            if selected_baseline is None:
-                selected_baseline = baselines[0]
-
-        status_message = ""
-        status_level = "info"
-        rows: List[Dict[str, Any]] = []
-        freq_span_label = None
-        stats_columns = table_columns("baseline_stats")
-        stats_available = bool(stats_columns)
-        freq_value = args.get('f_mhz', '').strip()
-        window_value = args.get('window_khz', '50')
-
-        if not baselines:
-            status_message = "No baselines found. Create one from the Control page first."
-            status_level = "warning"
-        elif not stats_available:
-            status_message = "baseline_stats table is missing; run a sweep to populate baseline data."
-            status_level = "warning"
-        elif not freq_value:
-            status_message = "Enter a center frequency to inspect baseline bins."
-        else:
-            try:
-                center_mhz = float(freq_value)
-                window_khz = max(1, int(float(window_value or "50")))
-            except ValueError:
-                status_message = "Invalid frequency or window values."
-                status_level = "error"
-            else:
-                if not selected_baseline:
-                    status_message = "Select a baseline before querying bins."
-                    status_level = "warning"
-                else:
-                    baseline_record = selected_baseline
-                    baseline_id = int(baseline_record.get('id'))
-                    freq_center_hz = center_mhz * 1e6
-                    half_window_hz = window_khz * 1e3
-                    freq_min = freq_center_hz - half_window_hz
-                    freq_max = freq_center_hz + half_window_hz
-                    freq_span_label = f"{freq_min/1e6:.3f}–{freq_max/1e6:.3f} MHz"
-                    params: List[Any] = [baseline_id]
-                    order_clause = "freq_hz"
-                    query = [
-                        "SELECT baseline_id, noise_floor_ema, power_ema, occ_count, last_seen_utc",
-                    ]
-                    has_freq_col = "freq_hz" in stats_columns
-                    has_bin_index = "bin_index" in stats_columns
-                    if has_freq_col:
-                        query.append(", freq_hz")
-                    if has_bin_index:
-                        query.append(", bin_index")
-                    query.append(" FROM baseline_stats WHERE baseline_id = ?")
-                    if has_freq_col:
-                        query.append(" AND freq_hz BETWEEN ? AND ?")
-                        params.extend([freq_min, freq_max])
-                    elif has_bin_index:
-                        bin_hz_val = float(baseline_record.get('bin_hz') or 0.0)
-                        freq_start_hz = float(baseline_record.get('freq_start_hz') or 0.0)
-                        if bin_hz_val <= 0:
-                            status_message = "Baseline bin width is zero; cannot derive bin frequencies."
-                            status_level = "error"
-                            query = []
-                        else:
-                            order_clause = "bin_index"
-                            idx_min = int(max(0, math.floor((freq_min - freq_start_hz) / bin_hz_val)))
-                            idx_max = int(max(idx_min, math.ceil((freq_max - freq_start_hz) / bin_hz_val)))
-                            query.append(" AND bin_index BETWEEN ? AND ?")
-                            params.extend([idx_min, idx_max])
-                    else:
-                        status_message = "baseline_stats is missing both freq_hz and bin_index columns."
-                        status_level = "error"
-                        query = []
-
-                    if query:
-                        query.append(f" ORDER BY {order_clause}")
-                        stats_rows = qa(con(), "".join(query), tuple(params))
-                        total_windows = int(baseline_record.get('total_windows') or 0)
-                        freq_start_hz_val = float(baseline_record.get('freq_start_hz') or 0.0)
-                        bin_hz_val = float(baseline_record.get('bin_hz') or 0.0)
-                        for row in stats_rows:
-                            freq_hz_val: Optional[float] = None
-                            if has_freq_col and row.get('freq_hz') is not None:
-                                try:
-                                    freq_hz_val = float(row.get('freq_hz'))
-                                except Exception:
-                                    freq_hz_val = None
-                            elif has_bin_index and bin_hz_val > 0:
-                                try:
-                                    freq_hz_val = freq_start_hz_val + float(row.get('bin_index') or 0) * bin_hz_val
-                                except Exception:
-                                    freq_hz_val = None
-                            occ_count = row.get('occ_count') or 0
-                            try:
-                                occ_count_val = float(occ_count)
-                            except Exception:
-                                occ_count_val = 0.0
-                            occ_count_int = int(occ_count_val)
-                            occ_ratio = (
-                                (occ_count_val / total_windows)
-                                if total_windows > 0
-                                else None
-                            )
-                            rows.append(
-                                {
-                                    "freq_hz": freq_hz_val,
-                                    "occ_ratio": occ_ratio,
-                                    "occ_count": occ_count_int,
-                                    "total_windows": total_windows,
-                                    "power_ema": row.get('power_ema'),
-                                    "noise_floor_ema": row.get('noise_floor_ema'),
-                                    "last_seen_utc": row.get('last_seen_utc'),
-                                }
-                            )
-                        if rows:
-                            status_message = f"Showing {len(rows)} bins across {freq_span_label}."
-                        else:
-                            status_message = "No baseline stats in the selected window yet."
-                            status_level = "warning"
-
-        selected_baseline_id = str(selected_baseline.get('id')) if selected_baseline else ""
-        return render_template(
-            "baseline.html",
-            rows=rows,
-            req_args=args,
-            baselines=baselines,
-            selected_baseline=selected_baseline,
-            selected_baseline_id=selected_baseline_id,
-            status_message=status_message,
-            status_level=status_level,
-            freq_span_label=freq_span_label,
-            stats_available=stats_available,
         )
 
     @app.route('/spur-map')

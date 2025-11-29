@@ -719,6 +719,11 @@ def make_app(manager: JobManager, token: Optional[str] = None):
                 400,
             )
         baseline_id = payload.get("baseline_id")
+        if baseline_id is None:
+            return (
+                jsonify({"error": "baseline_id is required; create or select a baseline first."}),
+                400,
+            )
         try:
             baseline_id_int = int(baseline_id)
         except (TypeError, ValueError):
