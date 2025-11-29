@@ -107,6 +107,7 @@ class Segment:
     peak_db: float
     noise_db: float
     snr_db: float
+    bandwidth_hz: float = 0.0
 
 
 @dataclass
@@ -792,6 +793,47 @@ def cfar_os_mask(psd_db: np.ndarray, train: int, guard: int, quantile: float, al
 # Detection & PSD
 # ------------------------------
 
+def _expand_bandwidth_indices(
+    psd_db: np.ndarray,
+    noise_db: np.ndarray,
+    peak_idx: int,
+    *,
+    floor_margin_db: float,
+    peak_drop_db: float,
+    max_gap_bins: int,
+) -> Tuple[int, int]:
+    """Walk away from the peak until power falls near noise or gaps out."""
+    N = psd_db.size
+    if N == 0:
+        return 0, 0
+    threshold_peak = psd_db[peak_idx] - float(max(0.0, peak_drop_db))
+
+    def walk(direction: int) -> int:
+        idx = peak_idx
+        best = peak_idx
+        gap = 0
+        while True:
+            nxt = idx + direction
+            if nxt < 0 or nxt >= N:
+                break
+            local_noise = float(noise_db[nxt]) if noise_db.shape == psd_db.shape else float(noise_db[peak_idx])
+            floor_threshold = local_noise + float(floor_margin_db)
+            threshold = max(floor_threshold, threshold_peak)
+            if psd_db[nxt] >= threshold:
+                best = nxt
+                gap = 0
+            else:
+                gap += 1
+                if gap > max_gap_bins:
+                    break
+            idx = nxt
+        return best
+
+    low_idx = walk(-1)
+    high_idx = walk(1)
+    return low_idx, high_idx
+
+
 def detect_segments(
     freqs_hz: np.ndarray,
     psd_db: np.ndarray,
@@ -804,6 +846,10 @@ def detect_segments(
     cfar_quantile: float = 0.75,
     cfar_alpha_db: Optional[float] = None,
     abs_power_floor_db: Optional[float] = None,
+    *,
+    bandwidth_floor_db: float = 2.0,
+    bandwidth_peak_drop_db: float = 18.0,
+    bandwidth_gap_hz: float = 15_000.0,
 ) -> Tuple[List[Segment], np.ndarray, np.ndarray]:
     """Detect contiguous energy segments.
     If cfar_mode != 'off', use OS-CFAR to produce the detection mask. Otherwise use a global robust noise floor.
@@ -825,6 +871,13 @@ def detect_segments(
         dynamic = nf + float(thresh_db)
         above = psd_db > dynamic
         noise_for_snr_db = np.full(N, nf, dtype=np.float64)
+
+    if N > 1:
+        diffs = np.diff(freqs_hz)
+        bin_hz = float(np.median(diffs)) if diffs.size else 0.0
+    else:
+        bin_hz = 0.0
+    gap_bins = max(1, int(round(bandwidth_gap_hz / max(bin_hz, 1.0)))) if bin_hz > 0 else max(1, min_width_bins)
 
     # Merge small gaps (guard_bins) and form contiguous segments
     segs: List[Segment] = []
@@ -850,10 +903,21 @@ def detect_segments(
                 # Representative noise for SNR = local noise at the peak bin
                 noise_db = float(noise_for_snr_db[peak_idx])
                 snr_db = float(peak_db - noise_db)
-                # freq bounds (use bin edges assuming uniform spacing)
-                f_low = float(freqs_hz[start_i])
-                f_high = float(freqs_hz[end_i - 1])
-                f_center = float(freqs_hz[(start_i + end_i) // 2])
+                low_idx, high_idx = _expand_bandwidth_indices(
+                    psd_db,
+                    noise_for_snr_db,
+                    peak_idx,
+                    floor_margin_db=float(bandwidth_floor_db),
+                    peak_drop_db=float(bandwidth_peak_drop_db),
+                    max_gap_bins=gap_bins,
+                )
+                idx_low = min(low_idx, high_idx)
+                idx_high = max(low_idx, high_idx)
+                f_low = float(freqs_hz[idx_low])
+                f_high = float(freqs_hz[idx_high])
+                center_idx = (idx_low + idx_high) // 2
+                f_center = float(freqs_hz[center_idx])
+                bandwidth_hz = max(f_high - f_low + (bin_hz if bin_hz > 0 else 0.0), 0.0)
                 segs.append(
                     Segment(
                         f_low_hz=int(round(f_low)),
@@ -862,6 +926,7 @@ def detect_segments(
                         peak_db=peak_db,
                         noise_db=noise_db,
                         snr_db=snr_db,
+                        bandwidth_hz=float(bandwidth_hz),
                     )
                 )
             i = j
@@ -885,7 +950,7 @@ class DetectionCluster:
     last_window: int
     hits: int = 0
     windows: Set[int] = field(default_factory=set)
-    best_seg: Segment = field(default_factory=lambda: Segment(0, 0, 0, -999.0, -999.0, -999.0))
+    best_seg: Segment = field(default_factory=lambda: Segment(0, 0, 0, -999.0, -999.0, -999.0, 0.0))
     emitted: bool = False
     center_weight_sum: float = 0.0
     center_weight_total: float = 0.0
@@ -1083,6 +1148,7 @@ class DetectionEngine:
         cluster_center_hz = self._cluster_center_hz(cluster)
         window_ratio = self._cluster_window_ratio(cluster)
         duration_seconds = self._cluster_duration_seconds(cluster)
+        span_width = max(float(cluster.f_high_hz - cluster.f_low_hz), float(best_seg.bandwidth_hz), self.bin_hz)
         combined_seg = Segment(
             f_low_hz=cluster.f_low_hz,
             f_high_hz=cluster.f_high_hz,
@@ -1090,6 +1156,7 @@ class DetectionEngine:
             peak_db=best_seg.peak_db,
             noise_db=best_seg.noise_db,
             snr_db=best_seg.snr_db,
+            bandwidth_hz=span_width,
         )
         svc, reg, note = self.bandplan.lookup(combined_seg.f_center_hz)
 
@@ -1107,6 +1174,7 @@ class DetectionEngine:
             "f_center_hz": combined_seg.f_center_hz,
             "f_low_hz": combined_seg.f_low_hz,
             "f_high_hz": combined_seg.f_high_hz,
+            "bandwidth_hz": combined_seg.bandwidth_hz,
             "peak_db": combined_seg.peak_db,
             "noise_db": combined_seg.noise_db,
             "snr_db": combined_seg.snr_db,
@@ -1368,6 +1436,7 @@ def maybe_emit_jsonl(path: Optional[str], record: dict):
 
 def _parse_duration_to_seconds(text: Optional[str]) -> Optional[float]:
     """Parse a human-friendly duration string to seconds.
+
     Supports integers/floats (seconds) or suffixes: s, m, h, d.
     Returns None if text is falsy.
     """

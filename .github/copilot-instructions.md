@@ -105,6 +105,7 @@ Tables referenced by code/UI (column names are contract):
     "f_center_hz": 100500000,
     "f_low_hz": 100437500,
     "f_high_hz": 100562500,
+    "bandwidth_hz": 125000,
     "peak_db": -37.1,
     "noise_db": -51.3,
     "snr_db": 14.2,
@@ -112,7 +113,10 @@ Tables referenced by code/UI (column names are contract):
     "region": "Global",
     "notes": "",
     "is_new": true,
-    "confidence": 0.82
+    "confidence": 0.82,
+    "window_ratio": 0.73,
+    "duration_s": 42.0,
+    "persistence_mode": "hits"
   }
   ```
 

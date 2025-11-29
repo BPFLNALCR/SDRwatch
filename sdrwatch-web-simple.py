@@ -1195,9 +1195,17 @@ def create_app(db_path: str) -> Flask:
         try:
             active_rows = qa(
                 con(),
-                """
-                SELECT id, f_center_hz, f_low_hz, f_high_hz, confidence,
-                       last_seen_utc, first_seen_utc, total_hits, total_windows
+                  """
+                  SELECT id,
+                      f_center_hz,
+                      f_low_hz,
+                      f_high_hz,
+                      (f_high_hz - f_low_hz) AS bandwidth_hz,
+                      confidence,
+                      last_seen_utc,
+                      first_seen_utc,
+                      total_hits,
+                      total_windows
                 FROM baseline_detections
                 WHERE baseline_id = ?
                   AND last_seen_utc >= datetime('now', ?)
@@ -1223,9 +1231,14 @@ def create_app(db_path: str) -> Flask:
                 f_high = float(row.get("f_high_hz"))
             except Exception:
                 f_high = None
-            bandwidth = None
-            if f_low is not None and f_high is not None:
+            bandwidth = row.get("bandwidth_hz")
+            if bandwidth is None and f_low is not None and f_high is not None:
                 bandwidth = max(0.0, f_high - f_low)
+            if bandwidth is not None:
+                try:
+                    bandwidth = max(0.0, float(bandwidth))
+                except Exception:
+                    bandwidth = None
             active_payload.append(
                 {
                     "id": row.get("id"),

@@ -48,7 +48,7 @@ At its current stage of development, SDR-Watch is:
   - Exposes a RESTful job API (`/jobs`, `/jobs/<id>`, `/jobs/<id>/logs`) that the web layer simply proxies.
 - **🔔 Alerts & Outputs**:
   - Desktop notifications (`notify-send`) for new detections.
-  - JSONL stream for integration with Grafana, Loki, ELK (each record now includes the window coverage ratio, observed duration, and persistence mode used for gating).
+  - JSONL stream for integration with Grafana, Loki, ELK (each record now includes the window coverage ratio, observed duration, bandwidth estimate, and persistence mode used for gating).
 - **⚙️ Services Integration**: Systemd units for `sdrwatch-control` (API manager) and `sdrwatch-web` (dashboard).
   - Web UI now uses REST endpoints (`/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`) so multiple browser sessions stay in sync and the architecture can scale horizontally.
 
