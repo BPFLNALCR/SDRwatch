@@ -26,13 +26,13 @@
       {% if event.confidence is not none %}
         <span>Confidence {{ '%.2f'|format(event.confidence) }}</span>
       {% endif %}
-      {% if event.delta_db is not none %}
+      {% if event.delta_db is defined and event.delta_db is not none %}
         <span>Δ {{ '%.1f'|format(event.delta_db) }} dB</span>
       {% endif %}
-      {% if event.total_windows %}
+      {% if event.total_windows is defined and event.total_windows %}
         <span>Total windows {{ event.total_windows }}</span>
       {% endif %}
-      {% if event.downtime_minutes is not none %}
+      {% if event.downtime_minutes is defined and event.downtime_minutes is not none %}
         <span>Quiet {{ '%.0f'|format(event.downtime_minutes) }} min</span>
       {% endif %}
     </div>
