@@ -683,8 +683,9 @@ def create_app(db_path: str) -> Flask:
     app._db_error = None
     app._con = None
     app._has_confidence_column = None
-    app._ctl = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
     app._table_columns_cache = {}
+    app._table_exists_cache = {}
+    app._ctl = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
 
     def _ensure_con() -> Optional[sqlite3.Connection]:
         if app._con is not None:
@@ -707,6 +708,7 @@ def create_app(db_path: str) -> Flask:
                 pass
         app._con = None
         app._table_columns_cache = {}
+        app._table_exists_cache = {}
 
     # Attempt initial connection (tolerates failure if DB is missing)
     _ensure_con()
@@ -738,6 +740,27 @@ def create_app(db_path: str) -> Flask:
                 columns.add(str(name).lower())
         cache[key] = columns
         return columns
+
+    def table_exists(table_name: str) -> bool:
+        cache = app._table_exists_cache
+        key = table_name.lower()
+        if key in cache:
+            return cache[key]
+        connection = _ensure_con()
+        if connection is None:
+            cache[key] = False
+            return False
+        try:
+            row = q1(
+                connection,
+                "SELECT name FROM sqlite_master WHERE type='table' AND lower(name)=?",
+                (key,),
+            )
+            exists = bool(row and row.get('name'))
+        except sqlite3.OperationalError:
+            exists = False
+        cache[key] = exists
+        return exists
 
     def db_state() -> Tuple[str, str]:
         connection = _ensure_con()
@@ -1574,11 +1597,16 @@ def create_app(db_path: str) -> Flask:
             return render_template("dashboard.html", **context)
 
         def safe_table_count(table: str) -> int:
+            if not table_exists(table):
+                return 0
             try:
                 row = q1(con(), f"SELECT COUNT(*) AS c FROM {table}")
             except sqlite3.OperationalError:
                 return 0
             return int(row.get('c') or 0)
+
+        detections_available = table_exists("detections")
+        scans_available = table_exists("scans")
 
         scans_total = safe_table_count("scans")
         detections_total = safe_table_count("detections")
@@ -1612,27 +1640,97 @@ def create_app(db_path: str) -> Flask:
             except Exception:
                 pass
 
-        conds_count, params_count = detection_predicates(filters, alias="d")
-        count_where = " WHERE " + " AND ".join(conds_count) if conds_count else ""
-        if count_where:
-            filtered_row = q1(
-                con(),
-                f"SELECT COUNT(*) AS c FROM detections d{count_where}",
-                tuple(params_count),
-            )
-            filtered_detections = filtered_row.get("c") if filtered_row else 0
-        else:
-            filtered_detections = detections_total
-        filtered_detections = int(filtered_detections or 0)
+        def empty_timeline_payload() -> Dict[str, Any]:
+            return {
+                "bucket_hours": 1,
+                "buckets": [],
+                "det_max": 0,
+                "scan_max": 0,
+                "snr_max": 0,
+                "style_attr": f'style="height:{CHART_HEIGHT_PX}px;"',
+            }
 
-        snr_hist, snr_stats = snr_histogram(con(), filters, bucket_db=snr_bucket_db)
-        freq_bins, latest, freq_max = frequency_bins_latest_scan(con(), filters, num_bins=40)
-        avg_bins, avg_start_mhz, avg_stop_mhz, avg_max = frequency_bins_all_scans_avg(con(), filters, num_bins=40)
-        timeline = timeline_metrics(con(), filters)
-        heatmap = coverage_heatmap(con(), filters, max_scans=heatmap_scans, num_bins=heatmap_bins)
-        services = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
-        top_services_data = top_services(con(), filters, limit=10)
-        strongest = strongest_signals(con(), filters, limit=10, include_confidence=confidence_available)
+        def empty_heatmap_payload() -> Dict[str, Any]:
+            return {
+                "rows": [],
+                "bin_labels": [],
+                "f_start_mhz": None,
+                "f_stop_mhz": None,
+                "bin_width_mhz": None,
+                "max_count": 0,
+            }
+
+        filtered_detections = 0
+        snr_hist: List[Dict[str, Any]] = []
+        snr_stats: Optional[Dict[str, Any]] = None
+        freq_bins: List[Dict[str, Any]] = []
+        latest: Optional[Dict[str, Any]] = None
+        freq_max = 0
+        avg_bins: List[Dict[str, Any]] = []
+        avg_start_mhz = 0.0
+        avg_stop_mhz = 0.0
+        avg_max = 0.0
+        timeline = empty_timeline_payload()
+        heatmap = empty_heatmap_payload()
+        services: List[str] = []
+        top_services_data: List[Dict[str, Any]] = []
+        strongest: List[Dict[str, Any]] = []
+
+        if detections_available:
+            conds_count, params_count = detection_predicates(filters, alias="d")
+            count_where = " WHERE " + " AND ".join(conds_count) if conds_count else ""
+            if count_where:
+                try:
+                    filtered_row = q1(
+                        con(),
+                        f"SELECT COUNT(*) AS c FROM detections d{count_where}",
+                        tuple(params_count),
+                    )
+                    filtered_detections = int((filtered_row or {}).get("c") or 0)
+                except sqlite3.OperationalError:
+                    filtered_detections = 0
+            else:
+                filtered_detections = detections_total
+
+            try:
+                snr_hist, snr_stats = snr_histogram(con(), filters, bucket_db=snr_bucket_db)
+            except sqlite3.OperationalError:
+                snr_hist, snr_stats = [], None
+
+            if scans_available:
+                try:
+                    freq_bins, latest, freq_max = frequency_bins_latest_scan(con(), filters, num_bins=40)
+                except sqlite3.OperationalError:
+                    freq_bins, latest, freq_max = [], None, 0
+            if scans_available:
+                try:
+                    avg_bins, avg_start_mhz, avg_stop_mhz, avg_max = frequency_bins_all_scans_avg(con(), filters, num_bins=40)
+                except sqlite3.OperationalError:
+                    avg_bins, avg_start_mhz, avg_stop_mhz, avg_max = [], 0.0, 0.0, 0.0
+
+            if scans_available:
+                try:
+                    timeline = timeline_metrics(con(), filters)
+                except sqlite3.OperationalError:
+                    timeline = empty_timeline_payload()
+                try:
+                    heatmap = coverage_heatmap(con(), filters, max_scans=heatmap_scans, num_bins=heatmap_bins)
+                except sqlite3.OperationalError:
+                    heatmap = empty_heatmap_payload()
+            try:
+                services = [r['service'] for r in qa(con(), "SELECT DISTINCT COALESCE(service,'Unknown') AS service FROM detections ORDER BY service")]
+            except sqlite3.OperationalError:
+                services = []
+            try:
+                top_services_data = top_services(con(), filters, limit=10)
+            except sqlite3.OperationalError:
+                top_services_data = []
+            try:
+                strongest = strongest_signals(con(), filters, limit=10, include_confidence=confidence_available)
+            except sqlite3.OperationalError:
+                strongest = []
+        else:
+            services = []
 
         active_filters: List[Dict[str, str]] = []
         if filters.get('service'):
