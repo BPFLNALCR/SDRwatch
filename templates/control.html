@@ -21,9 +21,14 @@
             <select id="baseline_select" class="input" {% if not has_baselines %}disabled{% endif %}>
               <option value="">{% if has_baselines %}(select baseline){% else %}(no baselines yet){% endif %}</option>
               {% for b in baseline_list %}
-              {% set start_mhz = (b.freq_start_hz or 0) / 1e6 %}
-              {% set stop_mhz = (b.freq_stop_hz or 0) / 1e6 %}
-              <option value="{{ b.id }}">#{{ b.id }} · {{ b.name }} ({{ '%.1f' % start_mhz }}–{{ '%.1f' % stop_mhz }} MHz)</option>
+              {% if b.freq_start_hz and b.freq_stop_hz and b.freq_stop_hz > b.freq_start_hz %}
+                {% set range_label = '%.1f–%.1f MHz' % ((b.freq_start_hz / 1e6), (b.freq_stop_hz / 1e6)) %}
+              {% elif b.freq_stop_hz %}
+                {% set range_label = '≤ %.1f MHz' % (b.freq_stop_hz / 1e6) %}
+              {% else %}
+                {% set range_label = 'auto span' %}
+              {% endif %}
+              <option value="{{ b.id }}">#{{ b.id }} · {{ b.name }} ({{ range_label }})</option>
               {% endfor %}
             </select>
             <div class="hint mt-1 text-xs" id="baselineHint">
@@ -180,13 +185,9 @@
 
   <div class="card">
     <h3 class="text-lg font-semibold mb-2">Create baseline</h3>
-    <p class="text-sm muted mb-3">Define the antenna/location pair and frequency span your scans will maintain.</p>
+    <p class="text-sm muted mb-3">Define the antenna/location pair. The baseline's frequency span grows automatically as scans add data.</p>
     <form id="baselineForm" class="grid gap-3">
       <div class="field"><label for="baseline_name">Name</label><input id="baseline_name" class="input" name="name" placeholder="Roof VHF" required /></div>
-      <div class="subgrid">
-        <div class="field"><label for="baseline_freq_start_hz">Start (Hz)</label><input id="baseline_freq_start_hz" class="input" name="freq_start_hz" inputmode="numeric" placeholder="88e6" required /></div>
-        <div class="field"><label for="baseline_freq_stop_hz">Stop (Hz)</label><input id="baseline_freq_stop_hz" class="input" name="freq_stop_hz" inputmode="numeric" placeholder="108e6" required /></div>
-      </div>
       <div class="subgrid">
         <div class="field"><label for="baseline_location_lat">Latitude</label><input id="baseline_location_lat" class="input" name="location_lat" inputmode="decimal" placeholder="41.878" /></div>
         <div class="field"><label for="baseline_location_lon">Longitude</label><input id="baseline_location_lon" class="input" name="location_lon" inputmode="decimal" placeholder="-87.629" /></div>
@@ -198,9 +199,8 @@
       <div class="field"><label for="baseline_notes">Notes</label><textarea id="baseline_notes" class="input" name="notes" rows="2" placeholder="Roof mount, 50ft LMR-400."></textarea></div>
       <div class="flex flex-wrap gap-2">
         <button class="btn" type="submit">＋ Create baseline</button>
-        <button class="btn" type="button" id="baselineCopyRange">↔ Copy sweep range</button>
       </div>
-      <div class="text-xs muted" id="baselineFormStatus">Baselines tie scans to one hardware/site. Re-run scans on the same baseline to build persistence.</div>
+      <div class="text-xs muted" id="baselineFormStatus">Baselines tie scans to one hardware/site. Range is derived automatically from future sweeps.</div>
     </form>
   </div>
 
@@ -289,7 +289,6 @@ const baselineHiddenInput = document.getElementById('activeBaselineId');
 const baselineHint = document.getElementById('baselineHint');
 const baselineForm = document.getElementById('baselineForm');
 const baselineFormStatus = document.getElementById('baselineFormStatus');
-const baselineCopyRangeBtn = document.getElementById('baselineCopyRange');
 const BASELINE_STORAGE_KEY = 'SDRWATCH_ACTIVE_BASELINE_ID';
 let activeBaselineId = null;
 const startBtn = f?.querySelector('button[type="submit"]');
@@ -305,7 +304,15 @@ function hzToMHz(val){
 }
 function formatBaselineRange(record){
   if(!record) return '—';
-  return `${hzToMHz(record.freq_start_hz)}–${hzToMHz(record.freq_stop_hz)} MHz`;
+  const start = Number(record.freq_start_hz || 0);
+  const stop = Number(record.freq_stop_hz || 0);
+  if(start > 0 && stop > start){
+    return `${hzToMHz(start)}–${hzToMHz(stop)} MHz`;
+  }
+  if(stop > 0){
+    return `≤ ${hzToMHz(stop)} MHz`;
+  }
+  return 'Auto range (pending scans)';
 }
 function getBaselineSummaryEntry(id){
   if(!id){ return null; }
@@ -343,7 +350,7 @@ function renderBaselineOptions(){
   for(const b of BASELINE_DATA){
     const opt = document.createElement('option');
     opt.value = b.id;
-    opt.textContent = `#${b.id} · ${b.name} (${hzToMHz(b.freq_start_hz)}–${hzToMHz(b.freq_stop_hz)} MHz)`;
+    opt.textContent = `#${b.id} · ${b.name} (${formatBaselineRange(b)})`;
     baselineSelect.appendChild(opt);
   }
   baselineSelect.disabled = BASELINE_DATA.length === 0;
@@ -410,19 +417,13 @@ if(savedBaselineId && BASELINE_DATA.some(b => String(b.id) === savedBaselineId))
 baselineSelect?.addEventListener('change', (ev)=>{
   setActiveBaseline(ev.target.value || '', {persist:true});
 });
-baselineCopyRangeBtn?.addEventListener('click', ()=>{
-  if(!baselineForm || !f) return;
-  baselineForm.freq_start_hz.value = f.start?.value || '';
-  baselineForm.freq_stop_hz.value = f.stop?.value || '';
-  if(baselineFormStatus){ baselineFormStatus.textContent = 'Copied sweep range into the baseline form.'; }
-});
 baselineForm?.addEventListener('submit', async (ev)=>{
   ev.preventDefault();
   if(!baselineForm){ return; }
   if(baselineFormStatus){ baselineFormStatus.textContent = 'Creating baseline...'; }
   const fd = new FormData(baselineForm);
   const payload = Object.fromEntries(fd.entries());
-  const numericFields = ['freq_start_hz','freq_stop_hz','location_lat','location_lon','bin_hz'];
+  const numericFields = ['location_lat','location_lon','bin_hz'];
   numericFields.forEach((field)=>{
     if(payload[field] !== undefined && payload[field] !== ''){
       payload[field] = Number(payload[field]);

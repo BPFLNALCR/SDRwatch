@@ -375,8 +375,8 @@ class Store:
         return BaselineContext(
             id=int(row[0]),
             name=str(row[1]),
-            freq_start_hz=int(row[2]),
-            freq_stop_hz=int(row[3]),
+            freq_start_hz=int(row[2] or 0),
+            freq_stop_hz=int(row[3] or 0),
             bin_hz=float(row[4]),
             baseline_version=int(row[5]),
             total_windows=int(row[6] or 0),
@@ -391,6 +391,37 @@ class Store:
         cur.execute("SELECT total_windows FROM baselines WHERE id = ?", (int(baseline_id),))
         row = cur.fetchone()
         return int(row[0] or 0) if row else 0
+
+    def update_baseline_span(self, baseline_id: int, sweep_start_hz: float, sweep_stop_hz: float) -> Tuple[int, int]:
+        start = int(min(sweep_start_hz, sweep_stop_hz))
+        stop = int(max(sweep_start_hz, sweep_stop_hz))
+        cur = self.con.cursor()
+        cur.execute(
+            "SELECT freq_start_hz, freq_stop_hz, total_windows FROM baselines WHERE id = ?",
+            (int(baseline_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise RuntimeError(f"Baseline id {baseline_id} not found for span update")
+        current_start = int(row[0] or 0)
+        current_stop = int(row[1] or 0)
+        current_windows = int(row[2] or 0)
+        if stop <= 0:
+            return current_start, current_stop
+        new_start = current_start
+        if current_start == 0 or current_windows == 0:
+            new_start = start
+        new_stop = stop if current_stop == 0 else max(current_stop, stop)
+        if new_start <= 0 and new_stop <= 0:
+            return current_start, current_stop
+        if new_start != current_start or new_stop != current_stop:
+            cur.execute(
+                "UPDATE baselines SET freq_start_hz = ?, freq_stop_hz = ? WHERE id = ?",
+                (int(new_start), int(new_stop), int(baseline_id)),
+            )
+            self.con.commit()
+            return new_start, new_stop
+        return current_start, current_stop
 
     def update_baseline_stats(
         self,
@@ -1468,7 +1499,6 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
                     baseline_ctx.total_windows = total_windows
                     store.commit()
                 elif not warned_bin_mismatch:
-                    # Warn once if sweep is outside baseline range
                     print(
                         f"[baseline] sweep window {center/1e6:.3f} MHz outside baseline span {baseline_ctx.freq_start_hz/1e6:.3f}-{baseline_ctx.freq_stop_hz/1e6:.3f} MHz",
                         file=sys.stderr,
@@ -1524,6 +1554,15 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
             num_new_signals=total_new_signals,
         )
         store.commit()
+        updated_start, updated_stop = store.update_baseline_span(
+            baseline_ctx.id,
+            min(args.start, args.stop),
+            max(args.start, args.stop),
+        )
+        if updated_start:
+            baseline_ctx.freq_start_hz = updated_start
+        if updated_stop:
+            baseline_ctx.freq_stop_hz = updated_stop
         print(
             f"[scan] end sweep baseline={baseline_ctx.id} hits={total_hits} promoted={total_promoted} new={total_new_signals}",
             flush=True,
@@ -1559,15 +1598,20 @@ def run(args):
 
     baseline_ctx = _resolve_baseline_context(store, getattr(args, "baseline_id", None))
     args.baseline_id = baseline_ctx.id
+    planned_start = min(args.start, args.stop)
+    planned_stop = max(args.start, args.stop)
+    if baseline_ctx.freq_start_hz <= 0:
+        baseline_ctx.freq_start_hz = planned_start
+    if planned_stop > baseline_ctx.freq_stop_hz:
+        baseline_ctx.freq_stop_hz = planned_stop
+    if baseline_ctx.freq_start_hz > 0 and baseline_ctx.freq_stop_hz > 0:
+        span_text = f"{baseline_ctx.freq_start_hz/1e6:.3f}-{baseline_ctx.freq_stop_hz/1e6:.3f} MHz"
+    else:
+        span_text = "auto (pending scans)"
     print(
-        f"[baseline] using id={baseline_ctx.id} name='{baseline_ctx.name}' span={baseline_ctx.freq_start_hz/1e6:.3f}-{baseline_ctx.freq_stop_hz/1e6:.3f} MHz bin={baseline_ctx.bin_hz:.1f} Hz",
+        f"[baseline] using id={baseline_ctx.id} name='{baseline_ctx.name}' span={span_text} bin={baseline_ctx.bin_hz:.1f} Hz",
         flush=True,
     )
-    if args.start < baseline_ctx.freq_start_hz or args.stop > baseline_ctx.freq_stop_hz:
-        print(
-            f"[baseline] WARNING: sweep span exceeds baseline span {baseline_ctx.freq_start_hz/1e6:.3f}-{baseline_ctx.freq_stop_hz/1e6:.3f} MHz",
-            file=sys.stderr,
-        )
 
     # Parse --soapy-args into a dict if present
     soapy_args_dict: Optional[Dict[str, str]] = None

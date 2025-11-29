@@ -5,7 +5,15 @@
     <div>
       <h2 class="text-lg font-semibold">Baseline bins</h2>
       {% if selected_baseline %}
-        <div class="text-xs muted">#{{ selected_baseline.id }} · {{ selected_baseline.name }} · {{ '%.3f' % (selected_baseline.freq_start_hz/1e6) }}–{{ '%.3f' % (selected_baseline.freq_stop_hz/1e6) }} MHz</div>
+        {% set start = selected_baseline.freq_start_hz or 0 %}
+        {% set stop = selected_baseline.freq_stop_hz or 0 %}
+        {% if start and stop and stop > start %}
+          <div class="text-xs muted">#{{ selected_baseline.id }} · {{ selected_baseline.name }} · {{ '%.3f' % (start/1e6) }}–{{ '%.3f' % (stop/1e6) }} MHz</div>
+        {% elif stop %}
+          <div class="text-xs muted">#{{ selected_baseline.id }} · {{ selected_baseline.name }} · ≤ {{ '%.3f' % (stop/1e6) }} MHz (auto span)</div>
+        {% else %}
+          <div class="text-xs muted">#{{ selected_baseline.id }} · {{ selected_baseline.name }} · Auto span (pending sweeps)</div>
+        {% endif %}
       {% else %}
         <div class="text-xs muted">Create a baseline to populate persistent stats.</div>
       {% endif %}

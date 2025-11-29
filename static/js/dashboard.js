@@ -54,6 +54,18 @@
     return (Number(value) / 1e6).toFixed(3);
   }
 
+  function formatRangeLabel(startHz, stopHz){
+    const start = Number(startHz || 0);
+    const stop = Number(stopHz || 0);
+    if(start > 0 && stop > start){
+      return `${formatMHz(startHz)}–${formatMHz(stopHz)} MHz`;
+    }
+    if(stop > 0){
+      return `≤ ${formatMHz(stopHz)} MHz`;
+    }
+    return 'Auto range (pending scans)';
+  }
+
   function formatKHz(value){
     if(value === null || value === undefined || Number.isNaN(Number(value))){
       return '—';
@@ -135,7 +147,7 @@
     }
     const baseline = payload.baseline;
     const snapshot = payload.snapshot || {};
-    const freqLabel = `${formatMHz(baseline.freq_start_hz)}–${formatMHz(baseline.freq_stop_hz)} MHz`;
+    const freqLabel = formatRangeLabel(baseline.freq_start_hz, baseline.freq_stop_hz);
     const lines = [
       `<div><span class="muted">Range:</span> ${freqLabel}</div>`,
       `<div><span class="muted">Created:</span> ${escapeHtml(baseline.created_at || '—')}</div>`,

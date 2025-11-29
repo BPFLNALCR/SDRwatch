@@ -628,7 +628,7 @@ class ControllerClient:
             headers["Authorization"] = f"Bearer {self.token}"
         if body is not None:
             data = json.dumps(body).encode('utf-8')
-        req = urlreq.Request(url, data=data, headers=headers, method=method.upper())
+        req = urlreq.Request(url, data, headers=headers, method=method.upper())
         try:
             with urlreq.urlopen(req, timeout=10) as resp:
                 ct = resp.headers.get('Content-Type','')
@@ -1317,14 +1317,6 @@ def create_app(db_path: str) -> Flask:
         if not name:
             raise ValueError("name is required")
 
-        def _coerce_int(value: Any, field: str) -> int:
-            if value in (None, ""):
-                raise ValueError(f"{field} is required")
-            try:
-                return int(float(value))
-            except Exception as exc:
-                raise ValueError(f"{field} must be a number") from exc
-
         def _coerce_float(value: Any) -> Optional[float]:
             if value in (None, ""):
                 return None
@@ -1332,11 +1324,6 @@ def create_app(db_path: str) -> Flask:
                 return float(value)
             except Exception as exc:
                 raise ValueError("Invalid coordinate value") from exc
-
-        freq_start = _coerce_int(data.get("freq_start_hz"), "freq_start_hz")
-        freq_stop = _coerce_int(data.get("freq_stop_hz"), "freq_stop_hz")
-        if freq_stop <= freq_start:
-            raise ValueError("freq_stop_hz must be greater than freq_start_hz")
 
         bin_val_raw = data.get("bin_hz")
         try:
@@ -1352,8 +1339,8 @@ def create_app(db_path: str) -> Flask:
             "sdr_serial": (str(data.get("sdr_serial") or "").strip() or None),
             "antenna": (str(data.get("antenna") or "").strip() or None),
             "notes": (str(data.get("notes") or "").strip() or None),
-            "freq_start_hz": freq_start,
-            "freq_stop_hz": freq_stop,
+            "freq_start_hz": 0,
+            "freq_stop_hz": 0,
             "bin_hz": bin_hz,
             "baseline_version": int(data.get("baseline_version") or 1),
         }
