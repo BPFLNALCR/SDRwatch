@@ -50,7 +50,8 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np  # type: ignore
 
@@ -1078,6 +1079,7 @@ class DetectionEngine:
         min_windows: int = 2,
         max_gap_windows: int = 3,
         freq_merge_hz: Optional[float] = None,
+        logger: Optional["ScanLogger"] = None,
     ):
         self.store = store
         self.bandplan = bandplan
@@ -1114,6 +1116,11 @@ class DetectionEngine:
         )
         self._revisit_tags: List[RevisitTag] = []
         self._tag_counter = 0
+        self.logger = logger
+        
+    def _log(self, event: str, **fields: Any) -> None:
+        if self.logger:
+            self.logger.log(event, **fields)
 
     def ingest(self, window_idx: int, segments: List[Segment]) -> Tuple[int, int, int, int]:
         self._last_window_idx = max(self._last_window_idx, window_idx)
@@ -1222,26 +1229,63 @@ class DetectionEngine:
     def _maybe_emit_cluster(self, cluster: DetectionCluster):
         if cluster.emitted:
             return
-        if not self._cluster_qualifies(cluster):
+        qualifies, reasons = self._cluster_gate_status(cluster)
+        if not qualifies:
+            self._log(
+                "cluster_reject",
+                baseline_id=self.baseline_ctx.id,
+                center_hz=self._cluster_center_hz(cluster),
+                width_hz=max(float(cluster.f_high_hz - cluster.f_low_hz), 0.0),
+                hits=cluster.hits,
+                windows=len(cluster.windows),
+                window_ratio=self._cluster_window_ratio(cluster),
+                duration_s=self._cluster_duration_seconds(cluster),
+                reasons=reasons,
+            )
             return
         self._emit_detection(cluster)
 
-    def _cluster_qualifies(self, cluster: DetectionCluster) -> bool:
+    def _cluster_gate_status(self, cluster: DetectionCluster) -> Tuple[bool, List[str]]:
+        reasons: List[str] = []
         width_hz = float(cluster.f_high_hz - cluster.f_low_hz)
         if width_hz < self.min_width_hz:
-            return False
-        if cluster.hits < self.min_hits or len(cluster.windows) < self.min_windows:
-            return False
+            reasons.append(f"width={width_hz:.1f} < min_width={self.min_width_hz:.1f}")
+        if cluster.hits < self.min_hits:
+            reasons.append(f"hits={cluster.hits} < min_hits={self.min_hits}")
+        win_count = len(cluster.windows)
+        if win_count < self.min_windows:
+            reasons.append(f"windows={win_count} < min_windows={self.min_windows}")
         ratio_threshold = float(self.persistence_hit_ratio)
-        ratio_ok = True if ratio_threshold <= 0.0 else (self._cluster_window_ratio(cluster) >= ratio_threshold)
+        ratio_value = self._cluster_window_ratio(cluster)
+        ratio_ok = True if ratio_threshold <= 0.0 else (ratio_value >= ratio_threshold)
         duration_threshold = float(self.persistence_min_seconds)
-        duration_ok = True if duration_threshold <= 0.0 else (self._cluster_duration_seconds(cluster) >= duration_threshold)
+        duration_value = self._cluster_duration_seconds(cluster)
+        duration_ok = True if duration_threshold <= 0.0 else (duration_value >= duration_threshold)
         mode = self.persistence_mode
         if mode == "duration":
-            return duration_ok
-        if mode == "both":
-            return ratio_ok and duration_ok
-        return ratio_ok
+            if not duration_ok:
+                reasons.append(
+                    f"duration={duration_value:.2f}s < min_duration={duration_threshold:.2f}s"
+                )
+        elif mode == "both":
+            if not ratio_ok:
+                reasons.append(
+                    f"ratio={ratio_value:.2f} < threshold={ratio_threshold:.2f}"
+                )
+            if not duration_ok:
+                reasons.append(
+                    f"duration={duration_value:.2f}s < min_duration={duration_threshold:.2f}s"
+                )
+        else:  # hits ratio mode
+            if not ratio_ok:
+                reasons.append(
+                    f"ratio={ratio_value:.2f} < threshold={ratio_threshold:.2f}"
+                )
+        return (len(reasons) == 0, reasons)
+
+    def _cluster_qualifies(self, cluster: DetectionCluster) -> bool:
+        qualifies, _ = self._cluster_gate_status(cluster)
+        return qualifies
 
     def _emit_detection(self, cluster: DetectionCluster):
         cluster.emitted = True
@@ -1355,7 +1399,23 @@ class DetectionEngine:
                 if det.missing_since_utc:
                     det.missing_since_utc = None
                     self.store.clear_detection_missing(det.id, det.baseline_id)
+                self._log(
+                    "persist_match",
+                    detection_id=det.id,
+                    baseline_id=self.baseline_ctx.id,
+                    center_delta_hz=int(seg.f_center_hz - det.f_center_hz),
+                    spans_overlap=spans_overlap,
+                    center_close=center_close,
+                    seg_width_hz=max(seg.bandwidth_hz, 0.0),
+                    persisted_width_hz=max(det.f_high_hz - det.f_low_hz, 0),
+                )
                 return det
+        self._log(
+            "persist_no_match",
+            baseline_id=self.baseline_ctx.id,
+            center_hz=seg.f_center_hz,
+            width_hz=max(seg.bandwidth_hz, 0.0),
+        )
         return None
 
     def _find_persistent_by_id(self, detection_id: int) -> Optional[PersistentDetection]:
@@ -1393,9 +1453,28 @@ class DetectionEngine:
             reason=reason,
             created_utc=utc_now_str(),
         )
-        if reason != "missing" and self._tag_overlaps_known(tag):
+        blocked = reason != "missing" and self._tag_overlaps_known(tag)
+        if blocked:
+            self._log(
+                "revisit_queue",
+                action="skipped_overlap",
+                tag_id=tag.tag_id,
+                detection_id=detection_id,
+                reason=reason,
+                center_hz=tag.f_center_hz,
+                width_hz=max(tag.f_high_hz - tag.f_low_hz, 0),
+            )
             return
         self._revisit_tags.append(tag)
+        self._log(
+            "revisit_queue",
+            action="queued",
+            tag_id=tag.tag_id,
+            detection_id=detection_id,
+            reason=reason,
+            center_hz=tag.f_center_hz,
+            width_hz=max(tag.f_high_hz - tag.f_low_hz, 0),
+        )
 
     def _tag_overlaps_known(self, tag: RevisitTag) -> bool:
         for det in self._persisted:
@@ -1410,14 +1489,25 @@ class DetectionEngine:
     def _filter_tags(self, tags: List[RevisitTag]) -> List[RevisitTag]:
         seen: Set[str] = set()
         filtered: List[RevisitTag] = []
+        dup_dropped = 0
+        overlap_dropped = 0
         for tag in tags:
             key = f"{tag.detection_id}:{tag.f_center_hz}:{tag.reason}"
             if key in seen:
+                dup_dropped += 1
                 continue
             if tag.reason != "missing" and self._tag_overlaps_known(tag):
+                overlap_dropped += 1
                 continue
             seen.add(key)
             filtered.append(tag)
+        self._log(
+            "revisit_filter_summary",
+            input=len(tags),
+            output=len(filtered),
+            duplicates=dup_dropped,
+            overlap_blocked=overlap_dropped,
+        )
         return filtered
 
     def finalize_coarse_pass(self) -> List[RevisitTag]:
@@ -1449,6 +1539,12 @@ class DetectionEngine:
             self.store.commit()
         tags = self._filter_tags(self._revisit_tags) if self.two_pass_enabled else []
         self._revisit_tags = []
+        self._log(
+            "sweep_finalize",
+            seen_persistent=len(self._seen_persistent),
+            missing_marked=len(to_mark),
+            tags_emitted=len(tags),
+        )
         self._seen_persistent.clear()
         return tags
 
@@ -1654,6 +1750,47 @@ def maybe_emit_jsonl(path: Optional[str], record: dict):
         pass
 
 
+class ScanLogger:
+    def __init__(self, log_path: Path):
+        self.log_path = log_path
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        self.run_id = f"run-{int(time.time() * 1000)}-pid{os.getpid()}"
+        self.current_sweep: Optional[int] = None
+
+    @classmethod
+    def from_db_path(cls, db_path: str) -> "ScanLogger":
+        if not db_path or db_path == ":memory:":
+            base_dir = Path.cwd()
+        else:
+            expanded = Path(db_path).expanduser()
+            if not expanded.is_absolute():
+                expanded = (Path.cwd() / expanded).absolute()
+            base_dir = expanded.parent if expanded.parent != Path("") else Path.cwd()
+        log_path = base_dir / "sdrwatch-scan.log"
+        return cls(log_path)
+
+    def start_sweep(self, sweep_id: int, **metadata: Any) -> None:
+        self.current_sweep = sweep_id
+        self.log("sweep_start", **metadata)
+
+    def log(self, event: str, **fields: Any) -> None:
+        record = {
+            "ts": utc_now_str(),
+            "run_id": self.run_id,
+            "sweep_id": self.current_sweep,
+            "event": event,
+            **fields,
+        }
+        try:
+            with self.log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
+        except Exception:
+            pass
+
+
 # ------------------------------
 # Main sweep logic
 # ------------------------------
@@ -1756,7 +1893,15 @@ def _resolve_baseline_context(store: "Store", baseline_arg) -> BaselineContext:
     return ctx
 
 
-def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: BaselineContext) -> None:
+def _do_one_sweep(
+    args,
+    store: Store,
+    bandplan: Bandplan,
+    src,
+    baseline_ctx: BaselineContext,
+    sweep_seq: int,
+    logger: Optional[ScanLogger] = None,
+) -> None:
     """Perform a single full sweep across [start, stop] inclusive, updating baseline stats/detections."""
     bin_hz = float(args.samp_rate) / float(args.fft) if args.fft else float(args.samp_rate)
     if baseline_ctx.bin_hz > 0:
@@ -1778,9 +1923,45 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
             baseline_ctx=baseline_ctx,
             min_hits=int(getattr(args, "persistence_min_hits", 2)),
             min_windows=int(getattr(args, "persistence_min_windows", 2)),
+            logger=logger,
         )
     power_monitor = WindowPowerMonitor()
     spur_tracker: Dict[int, Dict[str, float]] = {}
+
+    if logger:
+        sweep_params = {
+            "start_hz": args.start,
+            "stop_hz": args.stop,
+            "step_hz": args.step,
+            "samp_rate_hz": args.samp_rate,
+            "fft": args.fft,
+            "avg": args.avg,
+            "threshold_db": args.threshold_db,
+            "guard_bins": args.guard_bins,
+            "min_width_bins": args.min_width_bins,
+            "cfar_mode": args.cfar,
+            "cfar_train": args.cfar_train,
+            "cfar_guard": args.cfar_guard,
+            "cfar_quantile": args.cfar_quantile,
+            "cfar_alpha_db": args.cfar_alpha_db,
+            "gain": args.gain,
+            "driver": args.driver,
+            "profile": getattr(args, "profile", None),
+            "spur_calibration": bool(args.spur_calibration),
+            "two_pass": bool(getattr(args, "two_pass", False)),
+            "persistence_mode": getattr(args, "persistence_mode", None),
+            "persistence_hit_ratio": getattr(args, "persistence_hit_ratio", None),
+            "persistence_min_seconds": getattr(args, "persistence_min_seconds", None),
+            "persistence_min_hits": getattr(args, "persistence_min_hits", None),
+            "persistence_min_windows": getattr(args, "persistence_min_windows", None),
+        }
+        logger.start_sweep(
+            sweep_seq,
+            baseline_id=baseline_ctx.id,
+            baseline_span_hz=[baseline_ctx.freq_start_hz, baseline_ctx.freq_stop_hz],
+            bin_hz=bin_hz,
+            params=sweep_params,
+        )
 
     total_segments = 0
     total_hits = 0
@@ -1822,6 +2003,25 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
                 cfar_alpha_db=args.cfar_alpha_db,
                 abs_power_floor_db=getattr(args, "abs_power_floor_db", None),
             )
+
+            if logger:
+                widths = np.array([max(float(seg.bandwidth_hz), 0.0) for seg in segs], dtype=float)
+                avg_bw = float(np.mean(widths)) if widths.size else None
+                min_bw = float(np.min(widths)) if widths.size else None
+                median_bw = float(np.median(widths)) if widths.size else None
+                max_bw = float(np.max(widths)) if widths.size else None
+                strongest_snr = max((seg.snr_db for seg in segs), default=None)
+                logger.log(
+                    "segment_inventory",
+                    window_idx=window_idx,
+                    center_hz=float(center),
+                    num_segments=len(segs),
+                    avg_bandwidth_hz=avg_bw,
+                    min_bandwidth_hz=min_bw,
+                    median_bandwidth_hz=median_bw,
+                    max_bandwidth_hz=max_bw,
+                    strongest_snr_db=strongest_snr,
+                )
 
             mean_psd_db = float(np.mean(psd_db))
             p90_psd_db = float(np.percentile(psd_db, 90.0))
@@ -1916,6 +2116,7 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
                 src,
                 detection_engine,
                 revisit_tags,
+                logger,
             )
             total_revisits += revisit_stats.get("total", 0)
             total_revisit_confirmed += revisit_stats.get("confirmed", 0)
@@ -1955,6 +2156,18 @@ def _do_one_sweep(args, store: Store, bandplan: Bandplan, src, baseline_ctx: Bas
             f"[scan] end sweep baseline={baseline_ctx.id} hits={total_hits} promoted={total_promoted} new={total_new_signals}",
             flush=True,
         )
+        if logger:
+            logger.log(
+                "sweep_summary",
+                baseline_id=baseline_ctx.id,
+                hits=total_hits,
+                segments=total_segments,
+                promoted=total_promoted,
+                new_signals=total_new_signals,
+                revisits_total=total_revisits,
+                revisits_confirmed=total_revisit_confirmed,
+                revisits_false_positive=total_revisit_false,
+            )
 
 
 def _select_revisit_segment(tag: RevisitTag, segments: List[Segment]) -> Optional[Segment]:
@@ -1971,6 +2184,7 @@ def _run_revisit_pass(
     src,
     detection_engine: DetectionEngine,
     tags: List[RevisitTag],
+    logger: Optional[ScanLogger] = None,
 ) -> Dict[str, int]:
     stats = {"total": len(tags), "confirmed": 0, "false_positive": 0}
     if not tags:
@@ -1993,6 +2207,16 @@ def _run_revisit_pass(
             detection_engine.apply_revisit_miss(tag)
             if tag.reason == "new":
                 stats["false_positive"] += 1
+            if logger:
+                logger.log(
+                    "revisit_result",
+                    tag_id=tag.tag_id,
+                    reason=tag.reason,
+                    center_hz=tag.f_center_hz,
+                    coarse_width_hz=max(tag.f_high_hz - tag.f_low_hz, 0),
+                    error=str(exc),
+                    matched=False,
+                )
             continue
 
         baseband_f, psd_db = compute_psd_db(samples, args.samp_rate, revisit_fft, revisit_avg)
@@ -2018,6 +2242,26 @@ def _run_revisit_pass(
             detection_engine.apply_revisit_miss(tag)
             if tag.reason == "new":
                 stats["false_positive"] += 1
+        if logger:
+            measured_width = float(match.bandwidth_hz) if match else None
+            logger.log(
+                "revisit_result",
+                tag_id=tag.tag_id,
+                reason=tag.reason,
+                center_hz=tag.f_center_hz,
+                coarse_width_hz=max(tag.f_high_hz - tag.f_low_hz, 0),
+                matched=bool(match),
+                measured_width_hz=measured_width,
+                segment_count=len(segs),
+                strongest_snr_db=(max(seg.snr_db for seg in segs) if segs else None),
+            )
+    if logger:
+        logger.log(
+            "revisit_summary",
+            total=stats.get("total", 0),
+            confirmed=stats.get("confirmed", 0),
+            false_positive=stats.get("false_positive", 0),
+        )
     return stats
 
 
@@ -2045,10 +2289,18 @@ def run(args):
     if args.tmpdir:
         os.environ["TMPDIR"] = args.tmpdir
 
+    logger = ScanLogger.from_db_path(args.db)
     bandplan = Bandplan(args.bandplan)
     store = Store(args.db)
 
     baseline_ctx = _resolve_baseline_context(store, getattr(args, "baseline_id", None))
+    logger.log(
+        "baseline_context",
+        baseline_id=baseline_ctx.id,
+        baseline_span_hz=[baseline_ctx.freq_start_hz, baseline_ctx.freq_stop_hz],
+        bin_hz=baseline_ctx.bin_hz,
+        db_path=os.path.abspath(args.db),
+    )
     args.baseline_id = baseline_ctx.id
     planned_start = min(args.start, args.stop)
     planned_stop = max(args.start, args.stop)
@@ -2135,13 +2387,15 @@ def run(args):
     else:
         sweeps_remaining = 1  # default single sweep
 
+    sweep_seq = 1
     try:
         while True:
             # Duration check (before starting next sweep)
             if duration_s is not None and (time.time() - start_time) >= duration_s:
                 break
 
-            _do_one_sweep(args, store, bandplan, src, baseline_ctx)
+            _do_one_sweep(args, store, bandplan, src, baseline_ctx, sweep_seq, logger)
+            sweep_seq += 1
 
             # After each sweep, respect duration again
             if duration_s is not None and (time.time() - start_time) >= duration_s:
