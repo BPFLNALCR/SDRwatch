@@ -126,6 +126,8 @@
       hotspotMeta: document.getElementById('hotspot-meta'),
       hotspotAxis: document.getElementById('hotspot-axis'),
       hotspotEmpty: document.getElementById('hotspot-empty'),
+      bandSummaryBody: document.getElementById('band-summary-body'),
+      bandSummaryMeta: document.getElementById('band-summary-meta'),
     };
   }
 
@@ -138,6 +140,12 @@
     if(elements.hotspotAxis){ elements.hotspotAxis.innerHTML = ''; }
     setText(elements.hotspotMeta, '—');
     setBodyMessage(elements.hotspotEmpty, 'Select a baseline to render occupancy.');
+    if(elements.bandSummaryBody){
+      setBodyMessage(elements.bandSummaryBody, 'Select a baseline to build band summaries.');
+    }
+    if(elements.bandSummaryMeta){
+      setText(elements.bandSummaryMeta, '—');
+    }
   }
 
   function renderSnapshot(elements, payload){
@@ -251,6 +259,62 @@
     setText(elements.hotspotMeta, `Buckets ${buckets.length} · ${bucketWidthMhz} MHz each`);
   }
 
+  function renderBandSummary(elements, payload){
+    if(!elements.bandSummaryBody){ return; }
+    const bands = payload?.band_summary || [];
+    const meta = payload?.band_summary_meta || {};
+    if(!bands.length){
+      setBodyMessage(elements.bandSummaryBody, 'Band-level stats are not available yet.');
+      const metaText = meta.band_count ? `Bands ${meta.band_count}` : '—';
+      setText(elements.bandSummaryMeta, metaText);
+      return;
+    }
+    const rows = bands.map((band)=>{
+      const occFraction = Number(band.occupied_fraction) || 0;
+      const occPct = Math.round(occFraction * 100);
+      const occLabel = `${band.occupancy_level || 'Low'} (${occPct}%)`;
+      const note = band.note || '—';
+      const recent = band.recent_new ?? 0;
+      const persistent = band.persistent_signals ?? 0;
+      const noise = Number.isFinite(Number(band.avg_noise_db)) ? `${Number(band.avg_noise_db).toFixed(1)} dB` : '—';
+      return `
+        <tr class="hover:bg-white/5">
+          <td class="td">
+            <div class="font-semibold">${escapeHtml(band.label || '—')}</div>
+            <div class="text-[11px] muted">Avg noise ${noise}</div>
+          </td>
+          <td class="td text-center">${persistent}</td>
+          <td class="td text-center">${recent}</td>
+          <td class="td text-center">${occLabel}</td>
+          <td class="td">${escapeHtml(note)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    elements.bandSummaryBody.innerHTML = `
+      <div class="overflow-x-auto">
+        <table class="table text-xs">
+          <thead>
+            <tr class="text-slate-400">
+              <th class="th text-left">Band / Range</th>
+              <th class="th">Persistent</th>
+              <th class="th">Recent new</th>
+              <th class="th">Occupancy</th>
+              <th class="th text-left">Note</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+
+    const metaBits = [];
+    if(meta.band_count){ metaBits.push(`Bands ${meta.band_count}`); }
+    if(meta.band_width_mhz){ metaBits.push(`${Number(meta.band_width_mhz).toFixed(1)} MHz slices`); }
+    if(meta.recent_minutes){ metaBits.push(`New window ${meta.recent_minutes} min`); }
+    setText(elements.bandSummaryMeta, metaBits.join(' · ') || '—');
+  }
+
   function loadTacticalData(elements){
     const baselineId = getBaselineId();
     if(!baselineId){
@@ -262,15 +326,23 @@
     setBodyMessage(elements.snapshotBody, 'Loading baseline snapshot…', 'text-sm text-slate-200');
     setBodyMessage(elements.activeBody, 'Loading active signals…', 'text-sm text-slate-200');
     setBodyMessage(elements.hotspotEmpty, 'Loading hotspots…', 'text-sm text-slate-200');
+    if(elements.bandSummaryBody){
+      setBodyMessage(elements.bandSummaryBody, 'Loading band summary…', 'text-sm text-slate-200');
+    }
+    if(elements.bandSummaryMeta){
+      setText(elements.bandSummaryMeta, '—');
+    }
     const requestId = ++state.lastRequestId;
     fetchJson(`/api/baseline/${baselineId}/tactical`).then((data)=>{
       if(requestId !== state.lastRequestId){ return; }
       renderSnapshot(elements, data);
       renderActiveSignals(elements, data);
+      renderBandSummary(elements, data);
     }).catch((err)=>{
       if(requestId !== state.lastRequestId){ return; }
       setBodyMessage(elements.snapshotBody, `Failed to load snapshot: ${err.message}`, 'text-sm text-red-300');
       setBodyMessage(elements.activeBody, 'Unable to load active signals.', 'text-sm text-red-300');
+      setBodyMessage(elements.bandSummaryBody, 'Unable to load band summary.', 'text-sm text-red-300');
     });
     fetchJson(`/api/baseline/${baselineId}/hotspots`).then((data)=>{
       if(requestId !== state.lastRequestId){ return; }

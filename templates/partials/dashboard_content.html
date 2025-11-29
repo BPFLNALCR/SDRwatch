@@ -65,15 +65,24 @@
   </div>
 
   <section class="grid grid-cols-1 xl:grid-cols-3 gap-4" id="tactical-panels">
-    <div class="card" id="tacticalSnapshot">
-      <div class="flex items-center justify-between gap-3">
-        <div>
-          <h2 class="text-lg font-semibold">Tactical Snapshot</h2>
-          <div class="text-xs muted" id="tactical-baseline-label">No baseline selected.</div>
+    <div class="space-y-4 xl:col-span-1" id="tactical-summary-column">
+      <div class="card" id="tacticalSnapshot">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-lg font-semibold">Tactical Snapshot</h2>
+            <div class="text-xs muted" id="tactical-baseline-label">No baseline selected.</div>
+          </div>
+          <button type="button" class="btn text-xs py-1 px-3" id="tactical-refresh-btn">Refresh</button>
         </div>
-        <button type="button" class="btn text-xs py-1 px-3" id="tactical-refresh-btn">Refresh</button>
+        <div class="mt-3 text-sm" id="tactical-snapshot-body">Select a baseline from the Control page to populate this view.</div>
       </div>
-      <div class="mt-3 text-sm" id="tactical-snapshot-body">Select a baseline from the Control page to populate this view.</div>
+      <div class="card" id="bandSummaryCard">
+        <div class="flex items-center justify-between gap-3">
+          <h2 class="text-lg font-semibold">Band Summary (Active Baseline)</h2>
+          <div class="text-xs muted" id="band-summary-meta">—</div>
+        </div>
+        <div class="mt-3 text-sm" id="band-summary-body">Select a baseline to build short band summaries.</div>
+      </div>
     </div>
     <div class="card xl:col-span-2" id="activeSignalsCard">
       <div class="flex items-center justify-between gap-3">

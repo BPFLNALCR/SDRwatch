@@ -22,125 +22,6 @@ Auth notes:
 from __future__ import annotations
 import argparse, os, io, sqlite3, math, json
 from bisect import bisect_left
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
-from flask import Flask, request, Response, render_template, render_template_string, jsonify, abort, url_for  # type: ignore
-from urllib import request as urlreq, parse as urlparse, error as urlerr
-
-# ================================
-# Config
-# ================================
-CHART_HEIGHT_PX = 160
-
-
-def _int_env(name: str, default: int) -> int:
-    val = os.getenv(name)
-    if not val:
-        return default
-    try:
-        return max(1, int(float(val)))
-    except Exception:
-        return default
-
-def _float_env(name: str, default: float) -> float:
-    val = os.getenv(name)
-    if not val:
-        return default
-    try:
-        return float(val)
-    except Exception:
-        return default
-
-
-API_TOKEN = os.getenv("SDRWATCH_TOKEN", "")  # page auth (optional)
-CONTROL_URL = os.getenv("SDRWATCH_CONTROL_URL", "http://127.0.0.1:8765")
-CONTROL_TOKEN = os.getenv("SDRWATCH_CONTROL_TOKEN", "") or os.getenv("SDRWATCH_TOKEN", "")
-BASELINE_NEW_THRESHOLD = 0.2
-TACTICAL_RECENT_MINUTES = _int_env("SDRWATCH_TACTICAL_RECENT_MINUTES", 30)
-ACTIVE_SIGNAL_WINDOW_MINUTES = _int_env("SDRWATCH_ACTIVE_SIGNAL_MINUTES", 15)
-HOTSPOT_BUCKET_COUNT = _int_env("SDRWATCH_HOTSPOT_BUCKETS", 60)
-CHANGE_WINDOW_MINUTES = _int_env("SDRWATCH_CHANGE_WINDOW_MINUTES", 60)
-NEW_SIGNAL_WINDOW_MINUTES = _int_env("SDRWATCH_NEW_SIGNAL_MINUTES", CHANGE_WINDOW_MINUTES)
-POWER_SHIFT_THRESHOLD_DB = _float_env("SDRWATCH_POWER_SHIFT_THRESHOLD_DB", 6.0)
-QUIETED_TIMEOUT_MINUTES = _int_env("SDRWATCH_QUIETED_TIMEOUT_MINUTES", 15)
-QUIETED_MIN_WINDOWS = _int_env("SDRWATCH_QUIETED_MIN_WINDOWS", 20)
-CHANGE_EVENT_LIMIT = _int_env("SDRWATCH_CHANGE_EVENT_LIMIT", 120)
-
-# ================================
-# DB helpers
-# ================================
-
-def open_db_ro(path: str) -> sqlite3.Connection:
-    abspath = os.path.abspath(path)
-    con = sqlite3.connect(f"file:{abspath}?mode=ro", uri=True, check_same_thread=False)
-    con.execute("PRAGMA busy_timeout=2000;")
-    con.row_factory = lambda cur, row: {d[0]: row[i] for i, d in enumerate(cur.description)}
-    return con
-
-def q1(con: sqlite3.Connection, sql: str, params: Tuple[Any, ...] = ()):  # one row
-    cur = con.execute(sql, params)
-    return cur.fetchone()
-
-def qa(con: sqlite3.Connection, sql: str, params: Tuple[Any, ...] = ()):  # all rows
-    cur = con.execute(sql, params)
-    return cur.fetchall()
-
-# ================================
-# Graph helpers
-# ================================
-
-def _percentile(xs: List[float], p: float) -> Optional[float]:
-    if not xs: return None
-    xs = sorted(xs); k = (len(xs) - 1) * p; f = int(math.floor(k)); c = int(math.ceil(k))
-    if f == c: return float(xs[f])
-    return float(xs[f] + (xs[c] - xs[f]) * (k - f))
-
-def _scale_counts_to_px(series: List[Dict[str, Any]], count_key: str = "count") -> float:
-    values: List[float] = []
-    for x in series:
-        try: v = float(x.get(count_key, 0) or 0)
-        except Exception: v = 0.0
-        values.append(v)
-    maxc = max(values) if values else 0.0
-    for i, x in enumerate(series):
-        c = values[i]
-        if maxc <= 0 or c <= 0: x["height_px"] = 0
-        else:
-            h = int(round((c / maxc) * CHART_HEIGHT_PX))
-            x["height_px"] = max(2, h)
-    return maxc
-
-
-def parse_detection_filters(args, *, default_since_hours: Optional[int] = None) -> Tuple[Dict[str, Any], Dict[str, str]]:
-    """Parse query params into normalized detection filters and form defaults."""
-    def _clean_str(key: str) -> str:
-        val = args.get(key) if hasattr(args, "get") else args.get(key)
-        if val is None:
-            return ""
-        if isinstance(val, str):
-            return val.strip()
-        return str(val).strip()
-
-    def _coerce_float(text: str) -> Optional[float]:
-        if text == "":
-            return None
-        try:
-            return float(text)
-        except Exception:
-            return None
-
-    filters: Dict[str, Any] = {
-        "service": None,
-        "min_snr": None,
-        "f_min_hz": None,
-        "f_max_hz": None,
-        "since_hours": default_since_hours,
-        "min_conf": None,
-    }
-    form_defaults: Dict[str, str] = {
-        "service": "",
-        "min_snr": "",
-        "f_min_mhz": "",
         "f_max_mhz": "",
         "since_hours": "" if default_since_hours is None else str(default_since_hours),
         "min_conf": "",
@@ -1244,10 +1125,14 @@ def create_app(db_path: str) -> Flask:
             "latest_update": latest_update_row,
         }
 
+        band_summary = band_summary_for_baseline(baseline_row)
+
         return {
             "baseline": baseline_row,
             "snapshot": snapshot,
             "active_signals": active_payload,
+            "band_summary": band_summary.get("bands", []),
+            "band_summary_meta": band_summary.get("meta", {}),
         }
 
     def hotspots_payload(baseline_id: int) -> Optional[Dict[str, Any]]:
@@ -1376,6 +1261,216 @@ def create_app(db_path: str) -> Flask:
             "max_power": max_power or 0.0,
             "has_samples": samples_present,
         }
+
+    def _band_partitions(freq_start_hz: float, freq_stop_hz: float) -> Tuple[List[Tuple[float, float]], float]:
+        span = freq_stop_hz - freq_start_hz
+        if span <= 0:
+            return [], 0.0
+        target_width = BAND_SUMMARY_TARGET_WIDTH_HZ if BAND_SUMMARY_TARGET_WIDTH_HZ > 0 else span
+        target_width = max(1_000_000.0, target_width)
+        approx_count = max(1, int(math.ceil(span / target_width)))
+        band_count = max(1, min(BAND_SUMMARY_MAX_BANDS, approx_count))
+        band_width = span / band_count if band_count else span
+        partitions: List[Tuple[float, float]] = []
+        for idx in range(band_count):
+            low = freq_start_hz + idx * band_width
+            high = freq_start_hz + (idx + 1) * band_width if idx < band_count - 1 else freq_stop_hz
+            partitions.append((low, high))
+        return partitions, band_width
+
+    def _band_label(f_low_hz: float, f_high_hz: float) -> str:
+        span_mhz = max(0.0, (f_high_hz - f_low_hz) / 1e6)
+        decimals = 0 if span_mhz >= 10 else 1
+        return f"{f_low_hz / 1e6:.{decimals}f}–{f_high_hz / 1e6:.{decimals}f} MHz"
+
+    def _band_occupancy_level(fraction: float) -> str:
+        if fraction >= 0.6:
+            return "High"
+        if fraction >= 0.3:
+            return "Medium"
+        return "Low"
+
+    def _band_summary_note(persistent: int, recent: int, fraction: float) -> str:
+        if recent >= 2 or (recent >= 1 and fraction >= 0.2):
+            return "Active / changing"
+        if persistent >= 2 and recent == 0:
+            return "Stable"
+        if persistent == 0 and recent == 0 and fraction < 0.1:
+            return "Quiet"
+        if recent == 0 and persistent > 0:
+            return "Stable"
+        return "Active / changing"
+
+    def band_summary_for_baseline(baseline_row: Dict[str, Any]) -> Dict[str, Any]:
+        freq_start = float(baseline_row.get("freq_start_hz") or 0.0)
+        freq_stop = float(baseline_row.get("freq_stop_hz") or 0.0)
+        raw_id = baseline_row.get("id") or baseline_row.get("baseline_id")
+        try:
+            baseline_id = int(raw_id)
+        except Exception:
+            baseline_id = None
+        meta: Dict[str, Any] = {
+            "band_count": 0,
+            "band_width_mhz": None,
+            "recent_minutes": BAND_SUMMARY_RECENT_MINUTES,
+        }
+        if baseline_id is None or freq_stop <= freq_start:
+            return {"bands": [], "meta": meta}
+        partitions, band_width = _band_partitions(freq_start, freq_stop)
+        if not partitions or band_width <= 0:
+            return {"bands": [], "meta": meta}
+        meta["band_count"] = len(partitions)
+        meta["band_width_mhz"] = band_width / 1e6
+
+        bands: List[Dict[str, Any]] = []
+        for idx, (low, high) in enumerate(partitions):
+            bands.append(
+                {
+                    "band_index": idx,
+                    "label": _band_label(low, high),
+                    "f_low_hz": low,
+                    "f_high_hz": high,
+                    "persistent_signals": 0,
+                    "recent_new": 0,
+                    "avg_noise_db": None,
+                    "avg_power_db": None,
+                    "occupied_fraction": 0.0,
+                    "occupancy_level": "Low",
+                    "note": "Quiet",
+                }
+            )
+
+        band_width_param = band_width if band_width > 0 else 1.0
+        recent_clause = f"-{max(1, BAND_SUMMARY_RECENT_MINUTES)} minutes"
+
+        detection_rows: List[Dict[str, Any]] = []
+        if table_exists("baseline_detections"):
+            try:
+                detection_rows = qa(
+                    con(),
+                    """
+                    SELECT
+                        CAST((f_center_hz - :start_hz) / :band_width AS INTEGER) AS band_idx,
+                        COUNT(*) AS persistent_count,
+                        SUM(CASE WHEN first_seen_utc >= datetime('now', :recent_clause) THEN 1 ELSE 0 END) AS recent_new
+                    FROM baseline_detections
+                    WHERE baseline_id = :baseline_id
+                      AND f_center_hz BETWEEN :start_hz AND :stop_hz
+                    GROUP BY band_idx
+                    """,
+                    {
+                        "baseline_id": baseline_id,
+                        "start_hz": freq_start,
+                        "stop_hz": freq_stop,
+                        "band_width": band_width_param,
+                        "recent_clause": recent_clause,
+                    },
+                )
+            except sqlite3.OperationalError:
+                detection_rows = []
+        detection_map: Dict[int, Dict[str, Any]] = {}
+        for row in detection_rows:
+            idx_val = row.get("band_idx")
+            if idx_val is None:
+                continue
+            try:
+                idx = int(idx_val)
+            except Exception:
+                continue
+            if idx < 0 or idx >= len(bands):
+                continue
+            detection_map[idx] = row
+
+        stats_rows: List[Dict[str, Any]] = []
+        stats_columns = table_columns("baseline_stats") if table_exists("baseline_stats") else set()
+        bin_hz = float(baseline_row.get("bin_hz") or 0.0)
+        total_windows = int(baseline_row.get("total_windows") or 0)
+        occ_threshold = 1
+        if total_windows > 0:
+            occ_threshold = max(1, int(math.ceil(total_windows * max(0.0, BAND_SUMMARY_OCC_THRESHOLD))))
+        freq_expr = None
+        where_clause = ""
+        stats_params: Dict[str, Any] = {
+            "baseline_id": baseline_id,
+            "start_hz": freq_start,
+            "stop_hz": freq_stop,
+            "band_width": band_width_param,
+            "occ_threshold": occ_threshold,
+            "freq_start": freq_start,
+            "bin_hz": bin_hz,
+        }
+        if "freq_hz" in stats_columns:
+            freq_expr = "freq_hz"
+            where_clause = "AND freq_hz BETWEEN :start_hz AND :stop_hz"
+        elif "bin_index" in stats_columns and bin_hz > 0:
+            freq_expr = "(:freq_start + bin_index * :bin_hz)"
+        if freq_expr:
+            try:
+                stats_rows = qa(
+                    con(),
+                    f"""
+                    SELECT
+                        CAST(({freq_expr} - :start_hz) / :band_width AS INTEGER) AS band_idx,
+                        COUNT(*) AS bin_count,
+                        AVG(noise_floor_ema) AS avg_noise_db,
+                        AVG(power_ema) AS avg_power_db,
+                        SUM(CASE WHEN occ_count >= :occ_threshold THEN 1 ELSE 0 END) AS occupied_bins
+                    FROM baseline_stats
+                    WHERE baseline_id = :baseline_id
+                    {where_clause}
+                    GROUP BY band_idx
+                    """,
+                    stats_params,
+                )
+            except sqlite3.OperationalError:
+                stats_rows = []
+        stats_map: Dict[int, Dict[str, Any]] = {}
+        for row in stats_rows:
+            idx_val = row.get("band_idx")
+            if idx_val is None:
+                continue
+            try:
+                idx = int(idx_val)
+            except Exception:
+                continue
+            if idx < 0 or idx >= len(bands):
+                continue
+            stats_map[idx] = row
+
+        for band in bands:
+            idx = band["band_index"]
+            det = detection_map.get(idx, {})
+            stats = stats_map.get(idx, {})
+            try:
+                band["persistent_signals"] = int(det.get("persistent_count", 0) or 0)
+            except Exception:
+                band["persistent_signals"] = 0
+            try:
+                band["recent_new"] = int(det.get("recent_new", 0) or 0)
+            except Exception:
+                band["recent_new"] = 0
+            try:
+                avg_noise = stats.get("avg_noise_db")
+                band["avg_noise_db"] = float(avg_noise) if avg_noise is not None else None
+            except Exception:
+                band["avg_noise_db"] = None
+            try:
+                avg_power = stats.get("avg_power_db")
+                band["avg_power_db"] = float(avg_power) if avg_power is not None else None
+            except Exception:
+                band["avg_power_db"] = None
+            try:
+                bin_count = int(stats.get("bin_count", 0) or 0)
+                occupied_bins = int(stats.get("occupied_bins", 0) or 0)
+            except Exception:
+                bin_count = 0
+                occupied_bins = 0
+            fraction = (occupied_bins / bin_count) if bin_count > 0 else 0.0
+            band["occupied_fraction"] = max(0.0, min(1.0, fraction))
+            band["occupancy_level"] = _band_occupancy_level(band["occupied_fraction"])
+            band["note"] = _band_summary_note(band["persistent_signals"], band["recent_new"], band["occupied_fraction"])
+
+        return {"bands": bands, "meta": meta}
 
     def _now_utc() -> datetime:
         return datetime.utcnow().replace(microsecond=0)
