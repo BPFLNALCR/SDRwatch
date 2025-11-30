@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Dict, Iterable, List, Optional, Tuple
+import math
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np  # type: ignore
 
 from sdrwatch.baseline.model import BaselineContext
+from sdrwatch.baseline.summary import BandSummaryConfig, band_partitions, tactical_recent_minutes
 from sdrwatch.detection.types import PersistentDetection
 from sdrwatch.util.time import utc_now_str
 
@@ -45,11 +48,21 @@ class Store:
         )
         cur.execute(
             """
-            CREATE TABLE IF NOT EXISTS baseline_stats (
+            CREATE TABLE IF NOT EXISTS baseline_noise (
                 baseline_id INTEGER NOT NULL,
                 bin_index INTEGER NOT NULL,
                 noise_floor_ema REAL NOT NULL,
                 power_ema REAL NOT NULL,
+                last_seen_utc TEXT NOT NULL,
+                PRIMARY KEY (baseline_id, bin_index)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS baseline_occupancy (
+                baseline_id INTEGER NOT NULL,
+                bin_index INTEGER NOT NULL,
                 occ_count INTEGER NOT NULL,
                 last_seen_utc TEXT NOT NULL,
                 PRIMARY KEY (baseline_id, bin_index)
@@ -97,12 +110,55 @@ class Store:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS baseline_band_summary (
+                baseline_id INTEGER NOT NULL,
+                band_index INTEGER NOT NULL,
+                f_low_hz INTEGER NOT NULL,
+                f_high_hz INTEGER NOT NULL,
+                persistent_signals INTEGER NOT NULL,
+                recent_new_signals INTEGER NOT NULL,
+                occupied_fraction REAL NOT NULL,
+                avg_noise_db REAL,
+                avg_power_db REAL,
+                last_updated_utc TEXT NOT NULL,
+                PRIMARY KEY (baseline_id, band_index)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS baseline_summary_meta (
+                baseline_id INTEGER PRIMARY KEY,
+                band_count INTEGER NOT NULL,
+                band_width_hz REAL NOT NULL,
+                recent_minutes INTEGER NOT NULL,
+                occ_threshold REAL NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS baseline_snapshot (
+                baseline_id INTEGER PRIMARY KEY,
+                total_windows INTEGER NOT NULL,
+                persistent_detections INTEGER NOT NULL,
+                last_detection_utc TEXT,
+                last_update_utc TEXT,
+                recent_new_signals INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         self.con.commit()
 
         self._ensure_column("baseline_detections", "missing_since_utc", "TEXT")
         self._ensure_column("scan_updates", "num_revisits", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("scan_updates", "num_confirmed", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("scan_updates", "num_false_positive", "INTEGER NOT NULL DEFAULT 0")
+        self._migrate_baseline_stats()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
         cur = self.con.cursor()
@@ -111,6 +167,75 @@ class Store:
         if column not in cols:
             cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
             self.con.commit()
+
+    def _table_exists(self, table: str) -> bool:
+        cur = self.con.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+            (table,),
+        )
+        return cur.fetchone() is not None
+
+    def _migrate_baseline_stats(self) -> None:
+        if not self._table_exists("baseline_stats"):
+            return
+        cur = self.con.cursor()
+        cur.execute("PRAGMA table_info(baseline_stats)")
+        columns = {row[1] for row in cur.fetchall()}
+        required = {"baseline_id", "bin_index", "noise_floor_ema", "power_ema", "occ_count", "last_seen_utc"}
+        if not required.issubset(columns):
+            # Unknown legacy layout; keep table for manual handling.
+            return
+        count_row = cur.execute("SELECT COUNT(*) FROM baseline_stats").fetchone()
+        total = int(count_row[0]) if count_row and count_row[0] is not None else 0
+        if total == 0:
+            cur.execute("DROP TABLE baseline_stats")
+            self.con.commit()
+            return
+        self.begin()
+        try:
+            select_cur = self.con.cursor()
+            select_cur.execute(
+                """
+                SELECT baseline_id, bin_index, noise_floor_ema, power_ema, occ_count, last_seen_utc
+                FROM baseline_stats
+                """
+            )
+            insert_cur = self.con.cursor()
+            for row in select_cur:
+                baseline_id, bin_index, noise_floor, power, occ_count, last_seen = row
+                ts_val = str(last_seen) if last_seen is not None else utc_now_str()
+                noise_val = float(noise_floor) if noise_floor is not None else 0.0
+                power_val = float(power) if power is not None else 0.0
+                occ_val = int(occ_count or 0)
+                insert_cur.execute(
+                    """
+                    INSERT INTO baseline_noise(baseline_id, bin_index, noise_floor_ema, power_ema, last_seen_utc)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(baseline_id, bin_index)
+                    DO UPDATE SET
+                        noise_floor_ema = excluded.noise_floor_ema,
+                        power_ema = excluded.power_ema,
+                        last_seen_utc = excluded.last_seen_utc
+                    """,
+                    (int(baseline_id), int(bin_index), noise_val, power_val, ts_val),
+                )
+                insert_cur.execute(
+                    """
+                    INSERT INTO baseline_occupancy(baseline_id, bin_index, occ_count, last_seen_utc)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(baseline_id, bin_index)
+                    DO UPDATE SET
+                        occ_count = excluded.occ_count,
+                        last_seen_utc = excluded.last_seen_utc
+                    """,
+                    (int(baseline_id), int(bin_index), occ_val, ts_val),
+                )
+            insert_cur.execute("DROP TABLE baseline_stats")
+            self.commit()
+        except Exception:
+            self.rollback()
+            raise
 
     def begin(self) -> None:
         self.con.execute("BEGIN")
@@ -238,45 +363,66 @@ class Store:
         cur = self.con.cursor()
         for idx, noise_db, power_db_val, occupied in zip(bin_indices, noise_floor_db, power_db, occupied_mask):
             idx_int = int(idx)
-            cur.execute(
+            noise_row = cur.execute(
                 """
-                SELECT noise_floor_ema, power_ema, occ_count FROM baseline_stats
+                SELECT noise_floor_ema, power_ema FROM baseline_noise
                 WHERE baseline_id = ? AND bin_index = ?
                 """,
                 (int(baseline_id), idx_int),
-            )
-            row = cur.fetchone()
-            if row:
-                noise_ema = float(row[0]) if row[0] is not None else float(noise_db)
-                power_ema = float(row[1]) if row[1] is not None else float(power_db_val)
-                occ_count = int(row[2] or 0)
-                noise_ema = (1.0 - ema_alpha) * noise_ema + ema_alpha * float(noise_db)
-                power_ema = (1.0 - ema_alpha) * power_ema + ema_alpha * float(power_db_val)
-                occ_count = occ_count + (1 if bool(occupied) else 0)
+            ).fetchone()
+            noise_val = float(noise_db)
+            power_val = float(power_db_val)
+            if noise_row:
+                prev_noise = float(noise_row[0]) if noise_row[0] is not None else noise_val
+                prev_power = float(noise_row[1]) if noise_row[1] is not None else power_val
+                noise_val = (1.0 - ema_alpha) * prev_noise + ema_alpha * noise_val
+                power_val = (1.0 - ema_alpha) * prev_power + ema_alpha * power_val
                 cur.execute(
                     """
-                    UPDATE baseline_stats
-                    SET noise_floor_ema = ?, power_ema = ?, occ_count = ?, last_seen_utc = ?
+                    UPDATE baseline_noise
+                    SET noise_floor_ema = ?, power_ema = ?, last_seen_utc = ?
                     WHERE baseline_id = ? AND bin_index = ?
                     """,
-                    (noise_ema, power_ema, occ_count, timestamp_utc, int(baseline_id), idx_int),
+                    (noise_val, power_val, timestamp_utc, int(baseline_id), idx_int),
                 )
             else:
                 cur.execute(
                     """
-                    INSERT INTO baseline_stats(
-                        baseline_id, bin_index, noise_floor_ema, power_ema, occ_count, last_seen_utc
+                    INSERT INTO baseline_noise(
+                        baseline_id, bin_index, noise_floor_ema, power_ema, last_seen_utc
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (
-                        int(baseline_id),
-                        idx_int,
-                        float(noise_db),
-                        float(power_db_val),
-                        1 if bool(occupied) else 0,
-                        timestamp_utc,
-                    ),
+                    (int(baseline_id), idx_int, noise_val, power_val, timestamp_utc),
+                )
+
+            occ_increment = 1 if bool(occupied) else 0
+            occ_row = cur.execute(
+                """
+                SELECT occ_count FROM baseline_occupancy
+                WHERE baseline_id = ? AND bin_index = ?
+                """,
+                (int(baseline_id), idx_int),
+            ).fetchone()
+            if occ_row:
+                occ_count = int(occ_row[0] or 0) + occ_increment
+                cur.execute(
+                    """
+                    UPDATE baseline_occupancy
+                    SET occ_count = ?, last_seen_utc = ?
+                    WHERE baseline_id = ? AND bin_index = ?
+                    """,
+                    (occ_count, timestamp_utc, int(baseline_id), idx_int),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO baseline_occupancy(
+                        baseline_id, bin_index, occ_count, last_seen_utc
+                    )
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (int(baseline_id), idx_int, occ_increment, timestamp_utc),
                 )
         self.con.commit()
 
@@ -439,7 +585,7 @@ class Store:
     def baseline_occ_ratio(self, baseline_id: int, bin_index: int) -> Optional[float]:
         cur = self.con.cursor()
         cur.execute(
-            "SELECT occ_count FROM baseline_stats WHERE baseline_id = ? AND bin_index = ?",
+            "SELECT occ_count FROM baseline_occupancy WHERE baseline_id = ? AND bin_index = ?",
             (int(baseline_id), int(bin_index)),
         )
         row = cur.fetchone()
@@ -452,6 +598,291 @@ class Store:
         if total_windows <= 0:
             return None
         return float(occ_count) / float(total_windows)
+
+    def refresh_baseline_snapshot(
+        self,
+        baseline_ctx: BaselineContext,
+        *,
+        last_update_utc: str,
+        recent_minutes: Optional[int] = None,
+    ) -> None:
+        baseline_id = int(baseline_ctx.id)
+        recent_window = max(1, int(recent_minutes or tactical_recent_minutes()))
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(minutes=recent_window)
+        cutoff_ts = cutoff_dt.isoformat()
+        cur = self.con.cursor()
+        det_row = cur.execute(
+            """
+            SELECT COUNT(*) AS cnt, MAX(last_seen_utc) AS last_seen
+            FROM baseline_detections
+            WHERE baseline_id = ?
+            """,
+            (baseline_id,),
+        ).fetchone()
+        persistent = int(det_row[0] or 0) if det_row else 0
+        last_detection = det_row[1] if det_row else None
+        recent_row = cur.execute(
+            """
+            SELECT COALESCE(SUM(num_new_signals), 0) AS new_sum
+            FROM scan_updates
+            WHERE baseline_id = ? AND timestamp_utc >= ?
+            """,
+            (baseline_id, cutoff_ts),
+        ).fetchone()
+        recent_new = int(recent_row[0] or 0) if recent_row else 0
+        snapshot_ts = utc_now_str()
+        cur.execute(
+            """
+            INSERT INTO baseline_snapshot(
+                baseline_id,
+                total_windows,
+                persistent_detections,
+                last_detection_utc,
+                last_update_utc,
+                recent_new_signals,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(baseline_id)
+            DO UPDATE SET
+                total_windows = excluded.total_windows,
+                persistent_detections = excluded.persistent_detections,
+                last_detection_utc = excluded.last_detection_utc,
+                last_update_utc = excluded.last_update_utc,
+                recent_new_signals = excluded.recent_new_signals,
+                updated_at = excluded.updated_at
+            """,
+            (
+                baseline_id,
+                int(baseline_ctx.total_windows or 0),
+                persistent,
+                last_detection,
+                last_update_utc,
+                recent_new,
+                snapshot_ts,
+            ),
+        )
+        self.con.commit()
+
+    def refresh_band_summary(
+        self,
+        baseline_ctx: BaselineContext,
+        *,
+        config: Optional[BandSummaryConfig] = None,
+    ) -> None:
+        cfg = config or BandSummaryConfig.from_env()
+        freq_start = float(baseline_ctx.freq_start_hz)
+        freq_stop = float(baseline_ctx.freq_stop_hz)
+        bin_hz = float(baseline_ctx.bin_hz)
+        baseline_id = int(baseline_ctx.id)
+        if freq_stop <= freq_start or bin_hz <= 0.0:
+            self.begin()
+            try:
+                cur = self.con.cursor()
+                cur.execute("DELETE FROM baseline_band_summary WHERE baseline_id = ?", (baseline_id,))
+                cur.execute("DELETE FROM baseline_summary_meta WHERE baseline_id = ?", (baseline_id,))
+                self.commit()
+            except Exception:
+                self.rollback()
+                raise
+            return
+
+        partitions, band_width = band_partitions(freq_start, freq_stop, cfg)
+        if not partitions or band_width <= 0:
+            self.begin()
+            try:
+                cur = self.con.cursor()
+                cur.execute("DELETE FROM baseline_band_summary WHERE baseline_id = ?", (baseline_id,))
+                cur.execute("DELETE FROM baseline_summary_meta WHERE baseline_id = ?", (baseline_id,))
+                self.commit()
+            except Exception:
+                self.rollback()
+                raise
+            return
+
+        band_count = len(partitions)
+        persistent = [0 for _ in range(band_count)]
+        recent_new = [0 for _ in range(band_count)]
+        noise_sums = [0.0 for _ in range(band_count)]
+        noise_counts = [0 for _ in range(band_count)]
+        power_sums = [0.0 for _ in range(band_count)]
+        power_counts = [0 for _ in range(band_count)]
+        occupied_bins = [0 for _ in range(band_count)]
+        bin_counts = [0 for _ in range(band_count)]
+        registered_bins: set[Tuple[int, int]] = set()
+
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(minutes=max(1, int(cfg.recent_minutes or 1)))
+        total_windows = max(0, int(baseline_ctx.total_windows or 0))
+        occ_ratio = max(0.0, min(1.0, cfg.occ_threshold_ratio))
+        occ_threshold = max(1, int(math.ceil(total_windows * occ_ratio))) if total_windows > 0 else 0
+
+        def band_index_for_freq(freq_hz: float) -> Optional[int]:
+            if freq_hz < freq_start or freq_hz > freq_stop:
+                return None
+            rel = (freq_hz - freq_start) / band_width if band_width > 0 else 0.0
+            idx_val = int(math.floor(rel))
+            if idx_val < 0:
+                return None
+            if idx_val >= band_count:
+                idx_val = band_count - 1
+            return idx_val
+
+        def parse_timestamp(text: Optional[str]) -> Optional[datetime]:
+            if text in (None, ""):
+                return None
+            cleaned = str(text).strip()
+            if not cleaned:
+                return None
+            if cleaned.endswith("Z"):
+                cleaned = cleaned[:-1] + "+00:00"
+            try:
+                parsed = datetime.fromisoformat(cleaned)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+
+        cur = self.con.cursor()
+        det_cur = self.con.cursor()
+        det_cur.execute(
+            """
+            SELECT f_center_hz, first_seen_utc
+            FROM baseline_detections
+            WHERE baseline_id = ? AND f_center_hz BETWEEN ? AND ?
+            """,
+            (baseline_id, int(freq_start), int(freq_stop)),
+        )
+        for center_hz, first_seen in det_cur:
+            idx = band_index_for_freq(float(center_hz))
+            if idx is None:
+                continue
+            persistent[idx] += 1
+            ts_val = parse_timestamp(first_seen)
+            if ts_val is not None and ts_val >= cutoff_dt:
+                recent_new[idx] += 1
+
+        noise_cur = self.con.cursor()
+        noise_cur.execute(
+            """
+            SELECT bin_index, noise_floor_ema, power_ema
+            FROM baseline_noise
+            WHERE baseline_id = ?
+            """,
+            (baseline_id,),
+        )
+        origin = float(baseline_ctx.freq_start_hz)
+        for bin_index, noise_val, power_val in noise_cur:
+            freq = origin + float(bin_index) * bin_hz
+            idx = band_index_for_freq(freq)
+            if idx is None:
+                continue
+            bin_key = (idx, int(bin_index))
+            if bin_key not in registered_bins:
+                registered_bins.add(bin_key)
+                bin_counts[idx] += 1
+            if noise_val is not None:
+                noise_sums[idx] += float(noise_val)
+                noise_counts[idx] += 1
+            if power_val is not None:
+                power_sums[idx] += float(power_val)
+                power_counts[idx] += 1
+
+        occ_cur = self.con.cursor()
+        occ_cur.execute(
+            """
+            SELECT bin_index, occ_count
+            FROM baseline_occupancy
+            WHERE baseline_id = ?
+            """,
+            (baseline_id,),
+        )
+        for bin_index, occ_count in occ_cur:
+            freq = origin + float(bin_index) * bin_hz
+            idx = band_index_for_freq(freq)
+            if idx is None:
+                continue
+            bin_key = (idx, int(bin_index))
+            if bin_key not in registered_bins:
+                registered_bins.add(bin_key)
+                bin_counts[idx] += 1
+            if occ_threshold > 0 and int(occ_count or 0) >= occ_threshold:
+                occupied_bins[idx] += 1
+
+        summary_ts = utc_now_str()
+        rows: List[Tuple[int, int, int, int, int, int, float, Optional[float], Optional[float], str]] = []
+        for idx, (low, high) in enumerate(partitions):
+            bin_count = max(1, bin_counts[idx])
+            occ_fraction = 0.0
+            if occupied_bins[idx] > 0:
+                occ_fraction = min(1.0, max(0.0, occupied_bins[idx] / float(bin_count)))
+            avg_noise = (noise_sums[idx] / noise_counts[idx]) if noise_counts[idx] else None
+            avg_power = (power_sums[idx] / power_counts[idx]) if power_counts[idx] else None
+            rows.append(
+                (
+                    baseline_id,
+                    idx,
+                    int(low),
+                    int(high),
+                    int(persistent[idx]),
+                    int(recent_new[idx]),
+                    occ_fraction,
+                    avg_noise,
+                    avg_power,
+                    summary_ts,
+                )
+            )
+
+        self.begin()
+        try:
+            cur.execute("DELETE FROM baseline_band_summary WHERE baseline_id = ?", (baseline_id,))
+            cur.executemany(
+                """
+                INSERT INTO baseline_band_summary(
+                    baseline_id,
+                    band_index,
+                    f_low_hz,
+                    f_high_hz,
+                    persistent_signals,
+                    recent_new_signals,
+                    occupied_fraction,
+                    avg_noise_db,
+                    avg_power_db,
+                    last_updated_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            cur.execute(
+                """
+                INSERT INTO baseline_summary_meta(
+                    baseline_id,
+                    band_count,
+                    band_width_hz,
+                    recent_minutes,
+                    occ_threshold,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(baseline_id)
+                DO UPDATE SET
+                    band_count = excluded.band_count,
+                    band_width_hz = excluded.band_width_hz,
+                    recent_minutes = excluded.recent_minutes,
+                    occ_threshold = excluded.occ_threshold,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    baseline_id,
+                    band_count,
+                    float(band_width),
+                    int(cfg.recent_minutes),
+                    occ_ratio,
+                    summary_ts,
+                ),
+            )
+            self.commit()
+        except Exception:
+            self.rollback()
+            raise
 
     def update_spur_bin(self, bin_hz: int, power_db: float, hits_increment: int = 1, ema_alpha: float = 0.2) -> None:
         cur = self.con.cursor()

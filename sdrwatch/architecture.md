@@ -232,8 +232,9 @@ All SQL consolidated here:
 
 * Insert scans
 * Insert detections
-* Update baseline_stats
+* Update baseline_noise / baseline_occupancy
 * Update baseline_detections
+* Refresh baseline_snapshot + baseline_band_summary tables
 * Query helpers
 * WAL settings
 

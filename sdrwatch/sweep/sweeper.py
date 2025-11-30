@@ -11,6 +11,7 @@ from sdrwatch.baseline.events import BaselineEventWriter
 from sdrwatch.baseline.spur import SpurCalibrationTracker
 from sdrwatch.baseline.stats import BaselineStatsUpdater
 from sdrwatch.baseline.store import BaselineContext, Store
+from sdrwatch.baseline.summary import BandSummaryConfig
 from sdrwatch.detection.engine import DetectionEngine
 from sdrwatch.detection.types import RevisitTag, Segment
 from sdrwatch.dsp.detection import detect_segments
@@ -423,6 +424,11 @@ class Sweeper:
                 revisits_confirmed=total_revisit_confirmed,
                 revisits_false_positive=total_revisit_false,
             )
+            try:
+                band_summary_cfg = BandSummaryConfig.from_env()
+                store.refresh_band_summary(baseline_ctx, config=band_summary_cfg)
+            except Exception as exc:
+                print(f"[baseline] band summary refresh failed: {exc}", file=sys.stderr)
             print(
                 f"[scan] end sweep baseline={baseline_ctx.id} hits={total_hits} promoted={total_promoted} new={total_new_signals}",
                 flush=True,

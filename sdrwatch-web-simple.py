@@ -922,53 +922,24 @@ def create_app(db_path: str) -> Flask:
 
     def baseline_stats_span_map() -> Dict[int, Dict[str, Optional[float]]]:
         spans: Dict[int, Dict[str, Optional[float]]] = {}
-        if not table_exists("baseline_stats"):
-            return spans
         connection = _ensure_con()
         if connection is None:
             return spans
-        stats_columns = table_columns("baseline_stats")
-        if not stats_columns:
-            return spans
         try:
-            if "freq_hz" in stats_columns:
-                rows = qa(
-                    connection,
-                    """
-                    SELECT baseline_id,
-                           MIN(freq_hz) AS min_hz,
-                           MAX(freq_hz) AS max_hz
-                    FROM baseline_stats
-                    WHERE freq_hz IS NOT NULL
-                    GROUP BY baseline_id
-                    """,
-                )
-                for row in rows:
-                    try:
-                        bid = int(row.get("baseline_id"))
-                    except Exception:
-                        continue
-                    spans[bid] = {
-                        "min_hz": float(row.get("min_hz")) if row.get("min_hz") is not None else None,
-                        "max_hz": float(row.get("max_hz")) if row.get("max_hz") is not None else None,
-                    }
-            elif "bin_index" in stats_columns:
+            if table_exists("baseline_noise"):
                 idx_rows = qa(
                     connection,
                     """
                     SELECT baseline_id,
                            MIN(bin_index) AS min_idx,
                            MAX(bin_index) AS max_idx
-                    FROM baseline_stats
+                    FROM baseline_noise
                     WHERE bin_index IS NOT NULL
                     GROUP BY baseline_id
                     """,
                 )
                 if idx_rows:
-                    meta_rows = qa(
-                        connection,
-                        "SELECT id, freq_start_hz, bin_hz FROM baselines",
-                    )
+                    meta_rows = qa(connection, "SELECT id, freq_start_hz, bin_hz FROM baselines")
                     meta: Dict[int, Tuple[float, float]] = {}
                     for meta_row in meta_rows:
                         raw_id = meta_row.get("id") if isinstance(meta_row, dict) else None
@@ -1005,6 +976,84 @@ def create_app(db_path: str) -> Flask:
                             "min_hz": float(min_freq),
                             "max_hz": float(max_freq),
                         }
+            elif table_exists("baseline_stats"):
+                stats_columns = table_columns("baseline_stats")
+                if not stats_columns:
+                    return spans
+                if "freq_hz" in stats_columns:
+                    rows = qa(
+                        connection,
+                        """
+                        SELECT baseline_id,
+                               MIN(freq_hz) AS min_hz,
+                               MAX(freq_hz) AS max_hz
+                        FROM baseline_stats
+                        WHERE freq_hz IS NOT NULL
+                        GROUP BY baseline_id
+                        """,
+                    )
+                    for row in rows:
+                        try:
+                            bid = int(row.get("baseline_id"))
+                        except Exception:
+                            continue
+                        spans[bid] = {
+                            "min_hz": float(row.get("min_hz")) if row.get("min_hz") is not None else None,
+                            "max_hz": float(row.get("max_hz")) if row.get("max_hz") is not None else None,
+                        }
+                elif "bin_index" in stats_columns:
+                    idx_rows = qa(
+                        connection,
+                        """
+                        SELECT baseline_id,
+                               MIN(bin_index) AS min_idx,
+                               MAX(bin_index) AS max_idx
+                        FROM baseline_stats
+                        WHERE bin_index IS NOT NULL
+                        GROUP BY baseline_id
+                        """,
+                    )
+                    if idx_rows:
+                        meta_rows = qa(
+                            connection,
+                            "SELECT id, freq_start_hz, bin_hz FROM baselines",
+                        )
+                        meta: Dict[int, Tuple[float, float]] = {}
+                        for meta_row in meta_rows:
+                            raw_id = meta_row.get("id") if isinstance(meta_row, dict) else None
+                            if raw_id is None:
+                                continue
+                            try:
+                                bid = int(raw_id)
+                            except Exception:
+                                continue
+                            freq_start = float(meta_row.get("freq_start_hz") or 0.0)
+                            bin_hz = float(meta_row.get("bin_hz") or 0.0)
+                            meta[bid] = (freq_start, bin_hz)
+                        for row in idx_rows:
+                            try:
+                                bid = int(row.get("baseline_id"))
+                            except Exception:
+                                continue
+                            info = meta.get(bid)
+                            if not info:
+                                continue
+                            freq_start, bin_hz = info
+                            if bin_hz <= 0 or freq_start <= 0:
+                                continue
+                            min_idx = row.get("min_idx")
+                            max_idx = row.get("max_idx")
+                            if min_idx is None or max_idx is None:
+                                continue
+                            try:
+                                min_freq = freq_start + int(min_idx) * bin_hz
+                                max_freq = freq_start + int(max_idx) * bin_hz
+                            except Exception:
+                                continue
+                            spans[bid] = {
+                                "min_hz": float(min_freq),
+                                "max_hz": float(max_freq),
+                            }
         except sqlite3.OperationalError:
             return spans
         return spans
@@ -1059,6 +1108,7 @@ def create_app(db_path: str) -> Flask:
                     "last_detection_utc": None,
                     "last_update_utc": None,
                     "total_windows": 0,
+                    "recent_new_signals": 0,
                 },
             )
 
@@ -1080,44 +1130,102 @@ def create_app(db_path: str) -> Flask:
         except sqlite3.OperationalError:
             return summaries
 
-        try:
-            det_rows = qa(
-                connection,
-                """
-                SELECT baseline_id, COUNT(*) AS detection_count, MAX(last_seen_utc) AS last_detection_utc
-                FROM baseline_detections
-                GROUP BY baseline_id
-                """,
-            )
+        missing_ids: Set[int] = set(summaries.keys())
+
+        if table_exists("baseline_snapshot"):
+            try:
+                snapshot_rows = qa(
+                    connection,
+                    """
+                    SELECT baseline_id, total_windows, persistent_detections,
+                           last_detection_utc, last_update_utc, recent_new_signals
+                    FROM baseline_snapshot
+                    """,
+                )
+            except sqlite3.OperationalError:
+                snapshot_rows = []
+            for row in snapshot_rows:
+                raw_id = row.get("baseline_id")
+                if raw_id is None:
+                    continue
+                try:
+                    bid = int(raw_id)
+                except Exception:
+                    continue
+                entry = ensure_entry(bid)
+                entry["total_windows"] = int(row.get("total_windows") or entry.get("total_windows") or 0)
+                entry["persistent_detections"] = int(row.get("persistent_detections") or 0)
+                entry["last_detection_utc"] = row.get("last_detection_utc")
+                entry["last_update_utc"] = row.get("last_update_utc")
+                entry["recent_new_signals"] = row.get("recent_new_signals")
+                if bid in missing_ids:
+                    missing_ids.remove(bid)
+
+        def _run_det_query(target_ids: Set[int]) -> None:
+            if not target_ids or not table_exists("baseline_detections"):
+                return
+            placeholders = ",".join("?" for _ in target_ids)
+            if not placeholders:
+                return
+            try:
+                det_rows = qa(
+                    connection,
+                    f"""
+                    SELECT baseline_id, COUNT(*) AS detection_count, MAX(last_seen_utc) AS last_detection_utc
+                    FROM baseline_detections
+                    WHERE baseline_id IN ({placeholders})
+                    GROUP BY baseline_id
+                    """,
+                    tuple(target_ids),
+                )
+            except sqlite3.OperationalError:
+                det_rows = []
             for row in det_rows:
                 raw_id = row.get("baseline_id")
                 if raw_id is None:
                     continue
-                bid = int(raw_id)
+                try:
+                    bid = int(raw_id)
+                except Exception:
+                    continue
                 entry = ensure_entry(bid)
                 entry["persistent_detections"] = int(row.get("detection_count") or 0)
                 entry["last_detection_utc"] = row.get("last_detection_utc")
-        except sqlite3.OperationalError:
-            pass
 
-        try:
-            update_rows = qa(
-                connection,
-                """
-                SELECT baseline_id, MAX(timestamp_utc) AS last_update_utc
-                FROM scan_updates
-                GROUP BY baseline_id
-                """,
-            )
+        def _run_update_query(target_ids: Set[int]) -> None:
+            if not target_ids or not table_exists("scan_updates"):
+                return
+            placeholders = ",".join("?" for _ in target_ids)
+            if not placeholders:
+                return
+            try:
+                update_rows = qa(
+                    connection,
+                    f"""
+                    SELECT baseline_id, MAX(timestamp_utc) AS last_update_utc
+                    FROM scan_updates
+                    WHERE baseline_id IN ({placeholders})
+                    GROUP BY baseline_id
+                    """,
+                    tuple(target_ids),
+                )
+            except sqlite3.OperationalError:
+                update_rows = []
             for row in update_rows:
                 raw_id = row.get("baseline_id")
                 if raw_id is None:
                     continue
-                bid = int(raw_id)
+                try:
+                    bid = int(raw_id)
+                except Exception:
+                    continue
                 entry = ensure_entry(bid)
                 entry["last_update_utc"] = row.get("last_update_utc")
-        except sqlite3.OperationalError:
-            pass
+
+        if missing_ids:
+            ids_copy = set(missing_ids)
+            _run_det_query(ids_copy)
+            _run_update_query(ids_copy)
 
         return summaries
 
@@ -1157,31 +1265,51 @@ def create_app(db_path: str) -> Flask:
             except Exception:
                 return default
 
-        persistent_signals = _safe_count(
-            "SELECT COUNT(*) AS c FROM baseline_detections WHERE baseline_id = ?",
-            (baseline_id,),
-        )
+        snapshot_row = None
+        last_update: Optional[str] = None
+        recent_new = 0
+        if table_exists("baseline_snapshot"):
+            try:
+                snapshot_row = q1(
+                    con(),
+                    """
+                    SELECT persistent_detections, last_detection_utc, last_update_utc, recent_new_signals
+                    FROM baseline_snapshot
+                    WHERE baseline_id = ?
+                    """,
+                    (baseline_id,),
+                )
+            except sqlite3.OperationalError:
+                snapshot_row = None
 
-        try:
-            last_update_row = q1(
-                con(),
-                "SELECT MAX(timestamp_utc) AS last_ts FROM scan_updates WHERE baseline_id = ?",
+        if snapshot_row:
+            persistent_signals = int(snapshot_row.get("persistent_detections") or 0)
+            last_update = snapshot_row.get("last_update_utc")
+            recent_new = int(snapshot_row.get("recent_new_signals") or 0)
+        else:
+            persistent_signals = _safe_count(
+                "SELECT COUNT(*) AS c FROM baseline_detections WHERE baseline_id = ?",
                 (baseline_id,),
             )
-            last_update = last_update_row.get("last_ts") if last_update_row else None
-        except sqlite3.OperationalError:
-            last_update = None
-
-        recent_window_clause = f"-{TACTICAL_RECENT_MINUTES} minutes"
-        try:
-            recent_row = q1(
-                con(),
-                "SELECT COALESCE(SUM(num_new_signals), 0) AS total FROM scan_updates WHERE baseline_id = ? AND timestamp_utc >= datetime('now', ?)",
-                (baseline_id, recent_window_clause),
-            )
-            recent_new = int(recent_row.get("total") or 0) if recent_row else 0
-        except sqlite3.OperationalError:
-            recent_new = 0
+            try:
+                last_update_row = q1(
+                    con(),
+                    "SELECT MAX(timestamp_utc) AS last_ts FROM scan_updates WHERE baseline_id = ?",
+                    (baseline_id,),
+                )
+                last_update = last_update_row.get("last_ts") if last_update_row else None
+            except sqlite3.OperationalError:
+                last_update = None
+            recent_window_clause = f"-{TACTICAL_RECENT_MINUTES} minutes"
+            try:
+                recent_row = q1(
+                    con(),
+                    "SELECT COALESCE(SUM(num_new_signals), 0) AS total FROM scan_updates WHERE baseline_id = ? AND timestamp_utc >= datetime('now', ?)",
+                    (baseline_id, recent_window_clause),
+                )
+                recent_new = int(recent_row.get("total") or 0) if recent_row else 0
+            except sqlite3.OperationalError:
+                recent_new = 0
 
         try:
             latest_update_row = q1(
@@ -1303,18 +1431,39 @@ def create_app(db_path: str) -> Flask:
         except Exception:
             bin_hz = None
 
-        try:
-            stats_rows = qa(
-                con(),
-                """
-                SELECT bin_index, freq_hz, noise_floor_ema, power_ema, occ_count
-                FROM baseline_stats
-                WHERE baseline_id = ?
-                """,
-                (baseline_id,),
-            )
-        except sqlite3.OperationalError:
-            stats_rows = []
+        stats_rows: List[Dict[str, Any]] = []
+        if table_exists("baseline_noise"):
+            try:
+                stats_rows = qa(
+                    con(),
+                    """
+                    SELECT bn.bin_index AS bin_index,
+                           NULL AS freq_hz,
+                           bn.noise_floor_ema AS noise_floor_ema,
+                           bn.power_ema AS power_ema,
+                           COALESCE(bo.occ_count, 0) AS occ_count
+                    FROM baseline_noise AS bn
+                    LEFT JOIN baseline_occupancy AS bo
+                      ON bn.baseline_id = bo.baseline_id AND bn.bin_index = bo.bin_index
+                    WHERE bn.baseline_id = ?
+                    """,
+                    (baseline_id,),
+                )
+            except sqlite3.OperationalError:
+                stats_rows = []
+        elif table_exists("baseline_stats"):
+            try:
+                stats_rows = qa(
+                    con(),
+                    """
+                    SELECT bin_index, freq_hz, noise_floor_ema, power_ema, occ_count
+                    FROM baseline_stats
+                    WHERE baseline_id = ?
+                    """,
+                    (baseline_id,),
+                )
+            except sqlite3.OperationalError:
+                stats_rows = []
 
         buckets: List[Dict[str, Any]] = []
         for idx in range(bucket_count):
@@ -1454,6 +1603,71 @@ def create_app(db_path: str) -> Flask:
         }
         if baseline_id is None or freq_stop <= freq_start:
             return {"bands": [], "meta": meta}
+
+        if table_exists("baseline_band_summary"):
+            try:
+                stored_rows = qa(
+                    con(),
+                    """
+                    SELECT band_index, f_low_hz, f_high_hz,
+                           persistent_signals, recent_new_signals,
+                           occupied_fraction, avg_noise_db, avg_power_db
+                    FROM baseline_band_summary
+                    WHERE baseline_id = ?
+                    ORDER BY band_index
+                    """,
+                    (baseline_id,),
+                )
+            except sqlite3.OperationalError:
+                stored_rows = []
+            if stored_rows:
+                summary_meta = None
+                if table_exists("baseline_summary_meta"):
+                    try:
+                        summary_meta = q1(
+                            con(),
+                            "SELECT band_count, band_width_hz, recent_minutes FROM baseline_summary_meta WHERE baseline_id = ?",
+                            (baseline_id,),
+                        )
+                    except sqlite3.OperationalError:
+                        summary_meta = None
+                bands: List[Dict[str, Any]] = []
+                for row in stored_rows:
+                    low = float(row.get("f_low_hz") or 0.0)
+                    high = float(row.get("f_high_hz") or 0.0)
+                    occ_fraction = float(row.get("occupied_fraction") or 0.0)
+                    idx_val = row.get("band_index")
+                    try:
+                        idx = int(idx_val)
+                    except Exception:
+                        idx = len(bands)
+                    band = {
+                        "band_index": idx,
+                        "label": _band_label(low, high),
+                        "f_low_hz": low,
+                        "f_high_hz": high,
+                        "persistent_signals": int(row.get("persistent_signals") or 0),
+                        "recent_new": int(row.get("recent_new_signals") or 0),
+                        "avg_noise_db": row.get("avg_noise_db"),
+                        "avg_power_db": row.get("avg_power_db"),
+                        "occupied_fraction": max(0.0, min(1.0, occ_fraction)),
+                    }
+                    band["occupancy_level"] = _band_occupancy_level(band["occupied_fraction"])
+                    band["note"] = _band_summary_note(
+                        band["persistent_signals"], band["recent_new"], band["occupied_fraction"]
+                    )
+                    bands.append(band)
+                if summary_meta:
+                    meta["band_count"] = int(summary_meta.get("band_count") or len(bands))
+                    bw = summary_meta.get("band_width_hz")
+                    meta["band_width_mhz"] = (float(bw) / 1e6) if bw else None
+                    meta["recent_minutes"] = int(summary_meta.get("recent_minutes") or BAND_SUMMARY_RECENT_MINUTES)
+                else:
+                    meta["band_count"] = len(bands)
+                    if bands:
+                        meta["band_width_mhz"] = max(0.0, (bands[0]["f_high_hz"] - bands[0]["f_low_hz"]) / 1e6)
+                return {"bands": bands, "meta": meta}
+
         partitions, band_width = _band_partitions(freq_start, freq_stop)
         if not partitions or band_width <= 0:
             return {"bands": [], "meta": meta}
@@ -1520,14 +1734,11 @@ def create_app(db_path: str) -> Flask:
             detection_map[idx] = row
 
         stats_rows: List[Dict[str, Any]] = []
-        stats_columns = table_columns("baseline_stats") if table_exists("baseline_stats") else set()
         bin_hz = float(baseline_row.get("bin_hz") or 0.0)
         total_windows = int(baseline_row.get("total_windows") or 0)
         occ_threshold = 1
         if total_windows > 0:
             occ_threshold = max(1, int(math.ceil(total_windows * max(0.0, BAND_SUMMARY_OCC_THRESHOLD))))
-        freq_expr = None
-        where_clause = ""
         stats_params: Dict[str, Any] = {
             "baseline_id": baseline_id,
             "start_hz": freq_start,
@@ -1537,12 +1748,8 @@ def create_app(db_path: str) -> Flask:
             "freq_start": freq_start,
             "bin_hz": bin_hz,
         }
-        if "freq_hz" in stats_columns:
-            freq_expr = "freq_hz"
-            where_clause = "AND freq_hz BETWEEN :start_hz AND :stop_hz"
-        elif "bin_index" in stats_columns and bin_hz > 0:
-            freq_expr = "(:freq_start + bin_index * :bin_hz)"
-        if freq_expr:
+        if table_exists("baseline_noise") and bin_hz > 0:
+            freq_expr = "(:freq_start + bn.bin_index * :bin_hz)"
             try:
                 stats_rows = qa(
                     con(),
@@ -1550,18 +1757,49 @@ def create_app(db_path: str) -> Flask:
                     SELECT
                         CAST(({freq_expr} - :start_hz) / :band_width AS INTEGER) AS band_idx,
                         COUNT(*) AS bin_count,
-                        AVG(noise_floor_ema) AS avg_noise_db,
-                        AVG(power_ema) AS avg_power_db,
-                        SUM(CASE WHEN occ_count >= :occ_threshold THEN 1 ELSE 0 END) AS occupied_bins
-                    FROM baseline_stats
-                    WHERE baseline_id = :baseline_id
-                    {where_clause}
+                        AVG(bn.noise_floor_ema) AS avg_noise_db,
+                        AVG(bn.power_ema) AS avg_power_db,
+                        SUM(CASE WHEN COALESCE(bo.occ_count, 0) >= :occ_threshold THEN 1 ELSE 0 END) AS occupied_bins
+                    FROM baseline_noise AS bn
+                    LEFT JOIN baseline_occupancy AS bo
+                      ON bn.baseline_id = bo.baseline_id AND bn.bin_index = bo.bin_index
+                    WHERE bn.baseline_id = :baseline_id
+                      AND ({freq_expr}) BETWEEN :start_hz AND :stop_hz
                     GROUP BY band_idx
                     """,
                     stats_params,
                 )
             except sqlite3.OperationalError:
                 stats_rows = []
+        elif table_exists("baseline_stats"):
+            stats_columns = table_columns("baseline_stats")
+            freq_expr = None
+            where_clause = ""
+            if "freq_hz" in stats_columns:
+                freq_expr = "freq_hz"
+                where_clause = "AND freq_hz BETWEEN :start_hz AND :stop_hz"
+            elif "bin_index" in stats_columns and bin_hz > 0:
+                freq_expr = "(:freq_start + bin_index * :bin_hz)"
+            if freq_expr:
+                try:
+                    stats_rows = qa(
+                        con(),
+                        f"""
+                        SELECT
+                            CAST(({freq_expr} - :start_hz) / :band_width AS INTEGER) AS band_idx,
+                            COUNT(*) AS bin_count,
+                            AVG(noise_floor_ema) AS avg_noise_db,
+                            AVG(power_ema) AS avg_power_db,
+                            SUM(CASE WHEN occ_count >= :occ_threshold THEN 1 ELSE 0 END) AS occupied_bins
+                        FROM baseline_stats
+                        WHERE baseline_id = :baseline_id
+                        {where_clause}
+                        GROUP BY band_idx
+                        """,
+                        stats_params,
+                    )
+                except sqlite3.OperationalError:
+                    stats_rows = []
         stats_map: Dict[int, Dict[str, Any]] = {}
         for row in stats_rows:
             idx_val = row.get("band_idx")
@@ -1849,23 +2087,41 @@ def create_app(db_path: str) -> Flask:
                 }
                 append_event(event)
 
-        if include_type("POWER_SHIFT") and table_exists("baseline_stats"):
-            try:
-                rows = qa(
-                    con(),
-                    """
-                    SELECT bin_index, freq_hz, power_ema, noise_floor_ema,
-                           last_seen_utc
-                    FROM baseline_stats
-                    WHERE baseline_id = ?
-                      AND last_seen_utc >= ?
-                    ORDER BY last_seen_utc DESC
-                    LIMIT ?
-                    """,
-                    (baseline_id, base_cutoff_iso, CHANGE_EVENT_LIMIT * 2),
-                )
-            except sqlite3.OperationalError:
-                rows = []
+        if include_type("POWER_SHIFT"):
+            rows: List[Dict[str, Any]] = []
+            if table_exists("baseline_noise"):
+                try:
+                    rows = qa(
+                        con(),
+                        """
+                        SELECT bin_index, NULL AS freq_hz, power_ema, noise_floor_ema, last_seen_utc
+                        FROM baseline_noise
+                        WHERE baseline_id = ?
+                          AND last_seen_utc >= ?
+                        ORDER BY last_seen_utc DESC
+                        LIMIT ?
+                        """,
+                        (baseline_id, base_cutoff_iso, CHANGE_EVENT_LIMIT * 2),
+                    )
+                except sqlite3.OperationalError:
+                    rows = []
+            elif table_exists("baseline_stats"):
+                try:
+                    rows = qa(
+                        con(),
+                        """
+                        SELECT bin_index, freq_hz, power_ema, noise_floor_ema,
+                               last_seen_utc
+                        FROM baseline_stats
+                        WHERE baseline_id = ?
+                          AND last_seen_utc >= ?
+                        ORDER BY last_seen_utc DESC
+                        LIMIT ?
+                        """,
+                        (baseline_id, base_cutoff_iso, CHANGE_EVENT_LIMIT * 2),
+                    )
+                except sqlite3.OperationalError:
+                    rows = []
             freq_start = float(baseline_row.get("freq_start_hz") or 0.0)
             bin_hz = float(baseline_row.get("bin_hz") or 0.0)
             for row in rows:
@@ -1960,17 +2216,6 @@ def create_app(db_path: str) -> Flask:
             )
             """,
             """
-            CREATE TABLE IF NOT EXISTS baseline_stats (
-                baseline_id INTEGER NOT NULL,
-                bin_index INTEGER NOT NULL,
-                noise_floor_ema REAL NOT NULL,
-                power_ema REAL NOT NULL,
-                occ_count INTEGER NOT NULL,
-                last_seen_utc TEXT NOT NULL,
-                PRIMARY KEY (baseline_id, bin_index)
-            )
-            """,
-            """
             CREATE TABLE IF NOT EXISTS baseline_detections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 baseline_id INTEGER NOT NULL,
@@ -1991,7 +2236,10 @@ def create_app(db_path: str) -> Flask:
                 timestamp_utc TEXT NOT NULL,
                 num_hits INTEGER NOT NULL,
                 num_segments INTEGER NOT NULL,
-                num_new_signals INTEGER NOT NULL
+                num_new_signals INTEGER NOT NULL,
+                num_revisits INTEGER NOT NULL DEFAULT 0,
+                num_confirmed INTEGER NOT NULL DEFAULT 0,
+                num_false_positive INTEGER NOT NULL DEFAULT 0
             )
             """,
             """
@@ -2000,6 +2248,61 @@ def create_app(db_path: str) -> Flask:
                 mean_power_db REAL,
                 hits          INTEGER,
                 last_seen_utc TEXT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS baseline_noise (
+                baseline_id INTEGER NOT NULL,
+                bin_index INTEGER NOT NULL,
+                noise_floor_ema REAL NOT NULL,
+                power_ema REAL NOT NULL,
+                last_seen_utc TEXT NOT NULL,
+                PRIMARY KEY (baseline_id, bin_index)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS baseline_occupancy (
+                baseline_id INTEGER NOT NULL,
+                bin_index INTEGER NOT NULL,
+                occ_count INTEGER NOT NULL,
+                last_seen_utc TEXT NOT NULL,
+                PRIMARY KEY (baseline_id, bin_index)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS baseline_band_summary (
+                baseline_id INTEGER NOT NULL,
+                band_index INTEGER NOT NULL,
+                f_low_hz INTEGER NOT NULL,
+                f_high_hz INTEGER NOT NULL,
+                persistent_signals INTEGER NOT NULL,
+                recent_new_signals INTEGER NOT NULL,
+                occupied_fraction REAL NOT NULL,
+                avg_noise_db REAL,
+                avg_power_db REAL,
+                last_updated_utc TEXT NOT NULL,
+                PRIMARY KEY (baseline_id, band_index)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS baseline_summary_meta (
+                baseline_id INTEGER PRIMARY KEY,
+                band_count INTEGER NOT NULL,
+                band_width_hz REAL NOT NULL,
+                recent_minutes INTEGER NOT NULL,
+                occ_threshold REAL NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS baseline_snapshot (
+                baseline_id INTEGER PRIMARY KEY,
+                total_windows INTEGER NOT NULL,
+                persistent_detections INTEGER NOT NULL,
+                last_detection_utc TEXT,
+                last_update_utc TEXT,
+                recent_new_signals INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
             )
             """,
         ]

@@ -42,6 +42,15 @@ class BaselineEventWriter:
             num_false_positive=revisits_false_positive,
         )
         self.store.commit()
+        try:
+            self.store.refresh_baseline_snapshot(self.baseline_ctx, last_update_utc=timestamp)
+        except Exception:
+            if self.logger:
+                self.logger.log(
+                    "baseline_snapshot_error",
+                    baseline_id=self.baseline_ctx.id,
+                    error="snapshot_refresh_failed",
+                )
         if self.logger:
             self.logger.log(
                 "sweep_summary",

@@ -100,9 +100,13 @@ Treat the scanner’s baseline-oriented DB schema + CLI behavior as authoritativ
 Tables referenced by code/UI (column names are contract). Ownership lives in `sdrwatch.baseline.*` and `sdrwatch.io.store`, so adjust those modules if schema changes:
 
 * **`baselines`**: `id`, `name`, `created_at`, `location_lat`, `location_lon`, `sdr_serial`, `antenna`, `notes`, `freq_start_hz`, `freq_stop_hz`, `bin_hz`, `baseline_version`.
-* **`baseline_stats`**: `baseline_id`, `freq_hz` (or migration-specific `bin_index`), `noise_floor_ema`, `power_ema`, `occ_count`, `last_seen_utc`.
+* **`baseline_noise`**: `baseline_id`, `bin_index`, `noise_floor_ema`, `power_ema`, `last_seen_utc`.
+* **`baseline_occupancy`**: `baseline_id`, `bin_index`, `occ_count`, `last_seen_utc`.
 * **`baseline_detections`**: `id`, `baseline_id`, `f_low_hz`, `f_high_hz`, `f_center_hz`, `first_seen_utc`, `last_seen_utc`, `total_hits`, `total_windows`, `confidence`.
-* **`scan_updates`**: `id`, `baseline_id`, `timestamp_utc`, `num_hits`, `num_segments`, `num_new_signals`.
+* **`baseline_snapshot`**: `baseline_id`, `total_windows`, `persistent_detections`, `last_detection_utc`, `last_update_utc`, `recent_new_signals`, `updated_at`.
+* **`baseline_band_summary`**: `baseline_id`, `band_index`, `f_low_hz`, `f_high_hz`, `persistent_signals`, `recent_new_signals`, `occupied_fraction`, `avg_noise_db`, `avg_power_db`, `last_updated_utc`.
+* **`baseline_summary_meta`**: `baseline_id`, `band_count`, `band_width_hz`, `recent_minutes`, `occ_threshold`, `updated_at`.
+* **`scan_updates`**: `id`, `baseline_id`, `timestamp_utc`, `num_hits`, `num_segments`, `num_new_signals`, `num_revisits`, `num_confirmed`, `num_false_positive`.
 * **`spur_map`**: `bin_hz INTEGER PRIMARY KEY`, `mean_power_db REAL`, `hits INTEGER`, `last_seen_utc TEXT` (populated via spur calibration mode).
 
 Baseline math should continue to flow through the context/persistence helpers rather than issuing ad-hoc SQL in new code.
