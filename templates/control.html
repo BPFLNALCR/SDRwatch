@@ -121,6 +121,9 @@
           <div class="field"><label for="guard_bins">Guard bins</label><input id="guard_bins" class="input" name="guard_bins" value="1" inputmode="numeric" /></div>
           <div class="field"><label for="min_width_bins">Min width (bins)</label><input id="min_width_bins" class="input" name="min_width_bins" value="2" inputmode="numeric" /></div>
           <div class="field"><label for="new_ema_occ">New EMA occ (0–1)</label><input id="new_ema_occ" class="input" name="new_ema_occ" value="0.02" inputmode="decimal" /></div>
+          <div class="field"><label for="cluster_merge_hz">Cluster merge span (Hz)</label><input id="cluster_merge_hz" class="input" name="cluster_merge_hz" value="" inputmode="numeric" placeholder="(auto)" /><div class="hint mt-1 text-xs">Overrides how close segments must be to merge; blank keeps scanner default.</div></div>
+          <div class="field"><label for="max_detection_width_ratio">Max width ratio</label><input id="max_detection_width_ratio" class="input" name="max_detection_width_ratio" value="3" inputmode="decimal" step="0.1" /><div class="hint mt-1 text-xs">Rejects merges when a new span is wider than ratio × persisted width.</div></div>
+          <div class="field"><label for="max_detection_width_hz">Max detection width (Hz)</label><input id="max_detection_width_hz" class="input" name="max_detection_width_hz" value="" inputmode="numeric" placeholder="(unbounded)" /><div class="hint mt-1 text-xs">Optional hard cap for persistent bandwidth. Leave empty to disable.</div></div>
         </div>
       </div>
 
@@ -608,6 +611,9 @@ function applyProfileDefaults(){
   setFieldValue('persistence_min_seconds', prof.persistence_min_seconds);
   setFieldValue('persistence_min_hits', prof.persistence_min_hits);
   setFieldValue('persistence_min_windows', prof.persistence_min_windows);
+  setFieldValue('cluster_merge_hz', prof.cluster_merge_hz);
+  setFieldValue('max_detection_width_ratio', prof.max_detection_width_ratio);
+  setFieldValue('max_detection_width_hz', prof.max_detection_width_hz);
   setFieldValue('revisit_fft', prof.revisit_fft);
   setFieldValue('revisit_avg', prof.revisit_avg);
   setFieldValue('revisit_margin_hz', prof.revisit_margin_hz);
@@ -666,7 +672,23 @@ document.getElementById('refreshDevicesBtn')?.addEventListener('click', loadDevi
 function preset(k){
   f.samp_rate.value = '2.4e6'; f.fft.value = '4096'; f.avg.value = '8'; f.gain.value = f.gain.value || 'auto';
   if(k==='FULL'){ f.start.value='24e6'; f.stop.value='1766e6'; f.step.value='2.4e6'; }
-  if(k==='FM'){ f.start.value='88e6'; f.stop.value='108e6'; f.step.value='1.2e6'; }
+  if(k==='FM'){
+    const fmProfileName = 'fm_broadcast';
+    if(profileSelect && PROFILE_MAP?.[fmProfileName]){
+      profileSelect.value = fmProfileName;
+      applyProfileDefaults();
+    } else {
+      f.threshold_db.value = '6';
+      f.guard_bins.value = '3';
+      f.min_width_bins.value = '12';
+      f.cluster_merge_hz.value = '12000';
+      f.max_detection_width_ratio.value = '2.5';
+      f.max_detection_width_hz.value = '270000';
+      f.fft.value = '8192';
+      f.avg.value = '10';
+    }
+    f.start.value='88e6'; f.stop.value='108e6'; f.step.value='1.2e6';
+  }
   if(k==='VHF_AIR'){ f.start.value='118e6'; f.stop.value='137e6'; f.step.value='500e3'; }
   if(k==='UHF_MILAIR'){ f.start.value='225e6'; f.stop.value='400e6'; f.step.value='2.4e6'; }
   if(k==='2m'){ f.start.value='144e6'; f.stop.value='146e6'; f.step.value='1.2e6'; }
@@ -711,7 +733,7 @@ f.addEventListener('submit', async (e)=>{
       delete body[k];
     }
   };
-  ['start','stop','step','samp_rate','fft','avg','threshold_db','guard_bins','min_width_bins','cfar_train','cfar_guard','cfar_quantile','cfar_alpha_db','new_ema_occ','sleep_between_sweeps','repeat','persistence_hit_ratio','persistence_min_seconds','persistence_min_hits','persistence_min_windows','revisit_fft','revisit_avg','revisit_margin_hz','revisit_span_limit_hz','revisit_max_bands','revisit_floor_threshold_db'].forEach(maybeNum);
+  ['start','stop','step','samp_rate','fft','avg','threshold_db','guard_bins','min_width_bins','cfar_train','cfar_guard','cfar_quantile','cfar_alpha_db','new_ema_occ','sleep_between_sweeps','repeat','persistence_hit_ratio','persistence_min_seconds','persistence_min_hits','persistence_min_windows','cluster_merge_hz','max_detection_width_ratio','max_detection_width_hz','revisit_fft','revisit_avg','revisit_margin_hz','revisit_span_limit_hz','revisit_max_bands','revisit_floor_threshold_db'].forEach(maybeNum);
   if(body.mode==='loop'){ body.loop = true; }
   if(body.mode==='repeat'){ body.repeat = body.repeat||1; }
   delete body.mode;

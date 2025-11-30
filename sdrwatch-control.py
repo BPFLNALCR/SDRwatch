@@ -547,6 +547,9 @@ class JobManager:
             "persistence_min_seconds": "--persistence-min-seconds",
             "persistence_min_hits": "--persistence-min-hits",
             "persistence_min_windows": "--persistence-min-windows",
+            "cluster_merge_hz": "--cluster-merge-hz",
+            "max_detection_width_ratio": "--max-detection-width-ratio",
+            "max_detection_width_hz": "--max-detection-width-hz",
             "revisit_fft": "--revisit-fft",
             "revisit_avg": "--revisit-avg",
             "revisit_margin_hz": "--revisit-margin-hz",
@@ -842,6 +845,9 @@ def cmd_start(args: argparse.Namespace) -> int:
         "persistence_min_seconds": args.persistence_min_seconds,
         "persistence_min_hits": args.persistence_min_hits,
         "persistence_min_windows": args.persistence_min_windows,
+        "cluster_merge_hz": args.cluster_merge_hz,
+        "max_detection_width_ratio": args.max_detection_width_ratio,
+        "max_detection_width_hz": args.max_detection_width_hz,
     }
     params.update(parse_kv_pairs(args.param))
     if args.extra:
@@ -947,6 +953,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     s.add_argument("--persistence-min-seconds", type=float, help="Minimum wall-clock seconds for persistence")
     s.add_argument("--persistence-min-hits", type=int, help="Minimum hits before persistence evaluation")
     s.add_argument("--persistence-min-windows", type=int, help="Minimum windows before persistence evaluation")
+    s.add_argument("--cluster-merge-hz", type=float, help="Override Hz span when merging per-window detections into clusters")
+    s.add_argument("--max-detection-width-ratio", type=float, help="Reject cluster matches wider than ratio * persisted width")
+    s.add_argument("--max-detection-width-hz", type=float, help="Clamp persistent detection widths to this absolute Hz span (0 disabled)")
 
     s.add_argument("--param", action="append", default=[], help="Extra k=v args to pass through (coerces numbers/bools)")
     s.add_argument("--extra", nargs=argparse.REMAINDER, help="Raw extra args appended after '--' to sdrwatch.py")
