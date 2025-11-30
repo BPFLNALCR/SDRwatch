@@ -118,7 +118,7 @@ The first pass runs today’s coarse sweep, tagging suspicious hits. The revisit
 
 #### FM broadcast preset
 
-For repeatable FM-band validation sweeps, pass `--profile fm_broadcast`. The profile pins the range to 88–108 MHz, step size to 1.2 MHz overlap, FFT 8192, avg 10, gain 20 dB, threshold 9 dB, guard 2, min width 16 bins, and two-pass revisit defaults (32768 FFT, 200 kHz margin, 40 bands). It also relaxes persistence to hit-ratio 0.4 with single-window acceptance so long-lived stations are promoted immediately. The web control surface now auto-fills the same values whenever “fm_broadcast” is selected in the Profile dropdown, eliminating guess work between the GUI and CLI.
+For repeatable FM-band validation sweeps, pass `--profile fm_broadcast`. The profile pins the range to 88–108 MHz, step size to 1.2 MHz overlap, FFT 8192, avg 10, gain 20 dB, a lower 6 dB threshold, guard 3, min width 12 bins, and two-pass revisit defaults (32768 FFT, 200 kHz margin, 40 bands). It also relaxes persistence to hit-ratio 0.25 with single-window acceptance so long-lived stations are promoted immediately, then enforces ~200 kHz wide outputs via bandwidth padding so the JSONL looks like the actual FM deviation. The web control surface now auto-fills the same values whenever “fm_broadcast” is selected in the Profile dropdown, eliminating guess work between the GUI and CLI.
 
 ### Configurable persistence gates
 

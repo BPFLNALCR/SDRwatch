@@ -149,6 +149,8 @@ class ScanProfile:
     revisit_max_bands: Optional[int] = None
     revisit_floor_threshold_db: Optional[float] = None
     two_pass: Optional[bool] = None
+    bandwidth_pad_hz: Optional[float] = None
+    min_emit_bandwidth_hz: Optional[float] = None
 
 
 def default_scan_profiles() -> Dict[str, ScanProfile]:
@@ -174,17 +176,17 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             fft=8192,
             avg=10,
             gain_db=20.0,
-            threshold_db=9.0,
-            min_width_bins=16,
-            guard_bins=2,
+            threshold_db=6.0,
+            min_width_bins=12,
+            guard_bins=3,
             abs_power_floor_db=-92.0,
             step_hz=1.2e6,
             cfar_train=32,
             cfar_guard=6,
-            cfar_quantile=0.68,
-            persistence_hit_ratio=0.4,
-            persistence_min_seconds=5.0,
-            persistence_min_hits=2,
+            cfar_quantile=0.6,
+            persistence_hit_ratio=0.25,
+            persistence_min_seconds=2.0,
+            persistence_min_hits=1,
             persistence_min_windows=1,
             revisit_fft=32768,
             revisit_avg=4,
@@ -192,6 +194,8 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             revisit_max_bands=40,
             revisit_floor_threshold_db=6.0,
             two_pass=True,
+            bandwidth_pad_hz=60_000.0,
+            min_emit_bandwidth_hz=180_000.0,
         ),
         ScanProfile(
             name="ism_902",
@@ -241,6 +245,8 @@ def _emit_profiles_json() -> None:
                 "revisit_max_bands": prof.revisit_max_bands,
                 "revisit_floor_threshold_db": prof.revisit_floor_threshold_db,
                 "two_pass": prof.two_pass,
+                "bandwidth_pad_hz": prof.bandwidth_pad_hz,
+                "min_emit_bandwidth_hz": prof.min_emit_bandwidth_hz,
             }
             for prof in ordered
         ]
@@ -1160,6 +1166,8 @@ class DetectionEngine:
         self._tag_counter = 0
         self.logger = logger
         self.profile_name = getattr(args, "profile", None)
+        self.bandwidth_pad_hz = max(0.0, float(getattr(args, "bandwidth_pad_hz", 0.0) or 0.0))
+        self.min_emit_bandwidth_hz = max(0.0, float(getattr(args, "min_emit_bandwidth_hz", 0.0) or 0.0))
         
     def _log(self, event: str, **fields: Any) -> None:
         if not self.logger:
@@ -1235,6 +1243,22 @@ class DetectionEngine:
         if cluster.center_weight_total <= 0.0:
             return int((cluster.f_low_hz + cluster.f_high_hz) / 2)
         return int(round(cluster.center_weight_sum / cluster.center_weight_total))
+
+    def _shape_emit_span(self, center_hz: int, raw_low: int, raw_high: int) -> Tuple[int, int]:
+        width = max(float(raw_high - raw_low), self.bin_hz)
+        if self.bandwidth_pad_hz > 0.0:
+            width += self.bandwidth_pad_hz * 2.0
+        min_emit = self.min_emit_bandwidth_hz
+        if min_emit > 0.0 and width < min_emit:
+            width = min_emit
+        half = width / 2.0
+        low = int(round(center_hz - half))
+        high = int(round(center_hz + half))
+        low = max(low, self.baseline_ctx.freq_start_hz)
+        high = min(high, self.baseline_ctx.freq_stop_hz)
+        if high <= low:
+            high = low + int(max(1.0, self.bin_hz))
+        return low, high
 
     def _blend_centers(self, center_a: int, weight_a: int, center_b: int, weight_b: int) -> int:
         wa = max(1, int(weight_a))
@@ -1346,6 +1370,9 @@ class DetectionEngine:
         cluster_center_hz = self._cluster_center_hz(cluster)
         window_ratio = self._cluster_window_ratio(cluster)
         duration_seconds = self._cluster_duration_seconds(cluster)
+        emit_low, emit_high = self._shape_emit_span(cluster_center_hz, cluster.f_low_hz, cluster.f_high_hz)
+        cluster.f_low_hz = emit_low
+        cluster.f_high_hz = emit_high
         span_width = max(float(cluster.f_high_hz - cluster.f_low_hz), float(best_seg.bandwidth_hz), self.bin_hz)
         combined_seg = Segment(
             f_low_hz=cluster.f_low_hz,
@@ -2014,6 +2041,10 @@ def _apply_scan_profile(args, parser: argparse.ArgumentParser):
         maybe_set("revisit_floor_threshold_db", prof.revisit_floor_threshold_db)
     if prof.two_pass is not None:
         maybe_set("two_pass", bool(prof.two_pass))
+    if prof.bandwidth_pad_hz is not None:
+        setattr(args, "bandwidth_pad_hz", float(prof.bandwidth_pad_hz))
+    if prof.min_emit_bandwidth_hz is not None:
+        setattr(args, "min_emit_bandwidth_hz", float(prof.min_emit_bandwidth_hz))
 
     if prof.abs_power_floor_db is not None:
         setattr(args, "abs_power_floor_db", prof.abs_power_floor_db)
