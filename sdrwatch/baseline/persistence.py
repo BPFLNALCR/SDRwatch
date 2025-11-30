@@ -231,9 +231,14 @@ class BaselinePersistence:
         self.store.begin()
         try:
             match = self._match_persistent(seg)
-            cluster_center = seg.f_center_hz
+            cluster_center_hz = seg.f_center_hz
             if match:
-                blended_center = self._blend_centers(match.f_center_hz, match.total_hits, cluster_center_hz, cluster.hits)
+                blended_center = self._blend_centers(
+                    match.f_center_hz,
+                    match.total_hits,
+                    cluster_center_hz,
+                    cluster.hits,
+                )
                 prev_width = max(float(match.f_high_hz - match.f_low_hz), self.bin_hz)
                 cluster_width = max(float(cluster.f_high_hz - cluster.f_low_hz), self.bin_hz)
                 alpha = 0.25
