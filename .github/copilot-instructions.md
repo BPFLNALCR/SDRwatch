@@ -62,6 +62,7 @@ Treat the scanner’s baseline-oriented DB schema + CLI behavior as authoritativ
   * CLI parsing + scan profile application (`--profile`) with fixed gain, absolute power floors, baseline loader (`--baseline-id` required), and optional spur calibration mode.
   * Sweep loop: tune → capture → PSD → CFAR/abs-floor filtering → anomalous-window gating → baseline EMA updates + occupancy tracking → persistence updates in `baseline_detections` and lightweight `scan_updates` rows.
   * DetectionEngine clusters hits across windows, consults `spur_map`, computes `confidence`, and only promotes persistent, baseline-linked detections (JSONL emission mirrors `baseline_detections` and always includes `baseline_id`).
+  * Revisit confirmation runs `_constrain_revisit_segment` to clamp each follow-up span to `revisit_span_limit_hz` (profile default or `--revisit-span-limit-hz` override); FM profile now defaults to 420 kHz so closely spaced channels stay distinct while wider bands can opt in to larger caps.
 * `sdrwatch-control.py`
 
   * Device discovery (serial/index/driver).
@@ -182,6 +183,7 @@ Tables referenced by code/UI (column names are contract):
 
 ## 10) CLI patterns (examples)
 
+* Use `--revisit-span-limit-hz` whenever a job needs to widen/narrow the confirmation span beyond the profile default (FM profile ships with 420 kHz).
 * One-shot FM scan (optionally with a profile) tied to an active baseline (create/select the baseline via controller or web first):
 
   ```bash

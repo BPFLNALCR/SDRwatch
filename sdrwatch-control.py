@@ -550,6 +550,7 @@ class JobManager:
             "revisit_fft": "--revisit-fft",
             "revisit_avg": "--revisit-avg",
             "revisit_margin_hz": "--revisit-margin-hz",
+            "revisit_span_limit_hz": "--revisit-span-limit-hz",
             "revisit_max_bands": "--revisit-max-bands",
             "revisit_floor_threshold_db": "--revisit-floor-threshold-db",
         }

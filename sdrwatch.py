@@ -154,6 +154,7 @@ class ScanProfile:
     confidence_hit_normalizer: Optional[float] = None
     confidence_duration_norm: Optional[float] = None
     confidence_bias: Optional[float] = None
+    revisit_span_limit_hz: Optional[float] = None
 
 
 def default_scan_profiles() -> Dict[str, ScanProfile]:
@@ -202,6 +203,7 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             confidence_hit_normalizer=2.0,
             confidence_duration_norm=2.0,
             confidence_bias=0.05,
+            revisit_span_limit_hz=420_000.0,
         ),
         ScanProfile(
             name="ism_902",
@@ -256,6 +258,7 @@ def _emit_profiles_json() -> None:
                 "confidence_hit_normalizer": prof.confidence_hit_normalizer,
                 "confidence_duration_norm": prof.confidence_duration_norm,
                 "confidence_bias": prof.confidence_bias,
+                "revisit_span_limit_hz": prof.revisit_span_limit_hz,
             }
             for prof in ordered
         ]
@@ -1171,6 +1174,12 @@ class DetectionEngine:
         self.revisit_margin_hz = float(
             getattr(args, "revisit_margin_hz", max(self.freq_merge_hz, 25_000.0)) or max(self.freq_merge_hz, 25_000.0)
         )
+        raw_span_limit = getattr(args, "revisit_span_limit_hz", None)
+        try:
+            span_limit = float(raw_span_limit) if raw_span_limit not in (None, "") else 0.0
+        except Exception:
+            span_limit = 0.0
+        self.revisit_span_limit_hz = max(0.0, span_limit)
         self._revisit_tags: List[RevisitTag] = []
         self._tag_counter = 0
         self.logger = logger
@@ -1601,6 +1610,41 @@ class DetectionEngine:
                 return True
         return False
 
+    def _constrain_revisit_segment(self, det: Optional[PersistentDetection], seg: Segment) -> Segment:
+        limit = float(getattr(self, "revisit_span_limit_hz", 0.0) or 0.0)
+        span_width = float(seg.f_high_hz - seg.f_low_hz)
+        if limit <= 0.0 or span_width <= limit:
+            return seg
+        anchor = det.f_center_hz if det else seg.f_center_hz
+        half = limit / 2.0
+        low = int(round(anchor - half))
+        high = int(round(anchor + half))
+        if low < seg.f_low_hz:
+            shift = seg.f_low_hz - low
+            low += shift
+            high += shift
+        if high > seg.f_high_hz:
+            shift = high - seg.f_high_hz
+            high -= shift
+            low -= shift
+        low = max(low, seg.f_low_hz)
+        high = min(high, seg.f_high_hz)
+        if high <= low:
+            low = seg.f_low_hz
+            high = min(seg.f_high_hz, seg.f_low_hz + int(limit))
+        seg.f_low_hz = low
+        seg.f_high_hz = high
+        seg.f_center_hz = int(round((low + high) / 2.0))
+        seg.bandwidth_hz = max(float(seg.f_high_hz - seg.f_low_hz), self.min_emit_bandwidth_hz, self.bin_hz)
+        self._log(
+            "revisit_trim",
+            detection_id=(det.id if det else None),
+            original_width_hz=span_width,
+            trimmed_width_hz=float(seg.bandwidth_hz),
+            anchor_hz=anchor,
+        )
+        return seg
+
     def _filter_tags(self, tags: List[RevisitTag]) -> List[RevisitTag]:
         seen: Set[str] = set()
         filtered: List[RevisitTag] = []
@@ -1676,6 +1720,7 @@ class DetectionEngine:
         det = self._find_persistent_by_id(tag.detection_id)
         if det is None:
             return
+        seg = self._constrain_revisit_segment(det, seg)
         det.f_low_hz = min(det.f_low_hz, seg.f_low_hz)
         det.f_high_hz = max(det.f_high_hz, seg.f_high_hz)
         det.f_center_hz = int(seg.f_center_hz)
@@ -2055,6 +2100,8 @@ def _apply_scan_profile(args, parser: argparse.ArgumentParser):
         maybe_set("revisit_max_bands", prof.revisit_max_bands)
     if prof.revisit_floor_threshold_db is not None:
         maybe_set("revisit_floor_threshold_db", prof.revisit_floor_threshold_db)
+    if prof.revisit_span_limit_hz is not None:
+        maybe_set("revisit_span_limit_hz", prof.revisit_span_limit_hz)
     if prof.two_pass is not None:
         maybe_set("two_pass", bool(prof.two_pass))
     if prof.bandwidth_pad_hz is not None:
@@ -2169,6 +2216,7 @@ def _do_one_sweep(
             "confidence_hit_normalizer": getattr(args, "confidence_hit_normalizer", None),
             "confidence_duration_norm": getattr(args, "confidence_duration_norm", None),
             "confidence_bias": getattr(args, "confidence_bias", None),
+            "revisit_span_limit_hz": getattr(args, "revisit_span_limit_hz", None),
         }
         logger.start_sweep(
             sweep_seq,
@@ -2743,6 +2791,12 @@ def parse_args(argv: Optional[List[str]] = None):
         help="Additional Hz margin added to revisit windows around each tagged center",
     )
     p.add_argument(
+        "--revisit-span-limit-hz",
+        dest="revisit_span_limit_hz",
+        type=float,
+        help="Maximum Hz span allowed when confirming detections during revisit passes (0 disables clamping)",
+    )
+    p.add_argument(
         "--revisit-max-bands",
         dest="revisit_max_bands",
         type=int,
@@ -2803,6 +2857,7 @@ def parse_args(argv: Optional[List[str]] = None):
     _set_default(args, args._cli_overrides, "revisit_fft", None)
     _set_default(args, args._cli_overrides, "revisit_avg", None)
     _set_default(args, args._cli_overrides, "revisit_margin_hz", None)
+    _set_default(args, args._cli_overrides, "revisit_span_limit_hz", None)
     _set_default(args, args._cli_overrides, "revisit_max_bands", 0)
     _set_default(args, args._cli_overrides, "revisit_floor_threshold_db", None)
     _set_default(args, args._cli_overrides, "loop", False)
