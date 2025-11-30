@@ -2858,7 +2858,6 @@ def create_app(db_path: str) -> Flask:
             active_filters=active_filters,
             filtered_detections=filtered_detections,
             heatmap_settings={"scans": heatmap_scans, "bins": heatmap_bins},
-            format_ts_label=format_ts_label,
             confidence_available=confidence_available,
             db_status="ready",
             db_status_message="",
