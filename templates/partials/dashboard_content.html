@@ -1,40 +1,267 @@
-<div class="space-y-6">
-  <section class="grid grid-cols-1 xl:grid-cols-3 gap-4" id="tactical-panels">
-    <div class="space-y-4 xl:col-span-1" id="tactical-summary-column">
-      <div class="card" id="tacticalSnapshot">
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <h2 class="text-lg font-semibold">Tactical Snapshot</h2>
-            <div class="text-xs muted" id="tactical-baseline-label">No baseline selected.</div>
-          </div>
-          <button type="button" class="btn text-xs py-1 px-3" id="tactical-refresh-btn">Refresh</button>
-        </div>
-        <div class="mt-3 text-sm" id="tactical-snapshot-body">Select a baseline from the Control page to populate this view.</div>
-      </div>
-      <div class="card" id="bandSummaryCard">
-        <div class="flex items-center justify-between gap-3">
-          <h2 class="text-lg font-semibold">Band Summary (Active Baseline)</h2>
-          <div class="text-xs muted" id="band-summary-meta">—</div>
-        </div>
-        <div class="mt-3 text-sm" id="band-summary-body">Select a baseline to build short band summaries.</div>
-      </div>
-    </div>
-    <div class="card xl:col-span-2" id="activeSignalsCard">
-      <div class="flex items-center justify-between gap-3">
-        <h2 class="text-lg font-semibold">Current Active Signals</h2>
-        <div class="text-xs muted" id="active-signals-meta">Window —</div>
-      </div>
-      <div class="mt-3 text-sm" id="active-signals-body">Signals seen in the last few minutes will show up here once a baseline is active.</div>
-    </div>
-  </section>
+{% macro freq_span_label(baseline) -%}
+  {%- if baseline and baseline.freq_start_hz and baseline.freq_stop_hz and baseline.freq_stop_hz > baseline.freq_start_hz -%}
+    {{ '%.3f'|format(baseline.freq_start_hz / 1e6) }}–{{ '%.3f'|format(baseline.freq_stop_hz / 1e6) }} MHz
+  {%- elif baseline and baseline.freq_stop_hz and baseline.freq_stop_hz > 0 -%}
+    ≤ {{ '%.3f'|format(baseline.freq_stop_hz / 1e6) }} MHz
+  {%- else -%}
+    Auto span (pending scans)
+  {%- endif -%}
+{%- endmacro %}
 
-  <section class="card" id="hotspot-panel">
-    <div class="flex items-center justify-between gap-3 mb-2">
-      <h2 class="text-lg font-semibold">Hotspots</h2>
-      <div class="text-xs muted" id="hotspot-meta">—</div>
+<div class="space-y-6" id="dashboard-panels">
+  <div class="card flex flex-wrap items-center justify-between gap-4">
+    <div>
+      <div class="text-xs uppercase tracking-wide text-slate-400">Quick navigation</div>
+      <div class="text-sm text-slate-200">Jump between tactical views.</div>
     </div>
-    <div id="hotspot-strip" class="hotspot-strip" role="presentation"></div>
-    <div id="hotspot-empty" class="text-sm muted">Select a baseline to render occupancy.</div>
-    <div id="hotspot-axis" class="flex justify-between text-[11px] text-slate-400 mt-2"></div>
-  </section>
+    <div class="flex flex-wrap gap-2 text-sm" aria-label="Dashboard shortcuts">
+      <a href="#baseline-overview" class="chip chip-active">Dashboard</a>
+      <a href="/changes" class="chip">Changes</a>
+      <a href="/spur-map" class="chip">Spur map</a>
+      <a href="/control" class="chip">Control</a>
+    </div>
+  </div>
+
+  {% if not baselines %}
+    <div class="card">
+      <h2 class="text-lg font-semibold mb-2">Start with a baseline</h2>
+      <p class="text-sm text-slate-300">No baselines are present yet. Create one from the Control page, run a scan tied to that baseline, and this dashboard will populate with baseline stats, deltas, and signal cards.</p>
+      <a href="/control" class="btn mt-3 text-sm">Go to Control</a>
+    </div>
+  {% else %}
+    {% set baseline = selected_baseline %}
+    {% set snapshot = selected_snapshot %}
+    {% set band_summary = selected_tactical.band_summary if selected_tactical else [] %}
+    {% set hotspots = selected_hotspots %}
+    {% set baseline_summary = selected_baseline_summary or {} %}
+    {% set freq_span = freq_span_label(baseline) %}
+    {% set last_update = selected_baseline_last_update %}
+    <section id="baseline-overview" class="card space-y-5">
+      <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <h2 class="text-xl font-semibold">Baseline overview</h2>
+          <p class="text-sm text-slate-300">Understand what “normal” looks like for the active baseline.</p>
+        </div>
+        <form method="get" class="flex flex-wrap items-center gap-2" data-dashboard-baseline-form>
+          <input type="hidden" name="change_filter" value="{{ dashboard_change_filter }}" />
+          <label class="text-xs uppercase tracking-wide text-slate-400" for="baseline-select">Baseline</label>
+          <select id="baseline-select" name="baseline_id" class="input" data-dashboard-baseline-select>
+            {% for b in baselines %}
+              <option value="{{ b.id }}" {% if selected_baseline_id == b.id|string %}selected{% endif %}>#{{ b.id }} · {{ b.name }} ({{ freq_span_label(b) }})</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="btn text-xs" data-dashboard-refresh>Refresh</button>
+        </form>
+      </div>
+
+      {% if baseline %}
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+          <div class="border border-white/10 rounded-xl p-4 bg-white/5">
+            <div class="text-xs uppercase tracking-wide muted">Baseline</div>
+            <div class="text-lg font-semibold">#{{ baseline.id }} · {{ baseline.name }}</div>
+            <div class="text-xs text-slate-400">{{ freq_span }}</div>
+          </div>
+          <div class="border border-white/10 rounded-xl p-4 bg-white/5">
+            <div class="text-xs uppercase tracking-wide muted">Total windows</div>
+            <div class="text-2xl font-semibold">{{ baseline_summary.total_windows or baseline.total_windows or 0 }}</div>
+            <div class="text-xs text-slate-400">derived from scan updates</div>
+          </div>
+          <div class="border border-white/10 rounded-xl p-4 bg-white/5">
+            <div class="text-xs uppercase tracking-wide muted">Persistent signals</div>
+            <div class="text-2xl font-semibold">{{ baseline_summary.persistent_detections or (snapshot.persistent_signals if snapshot else 0) }}</div>
+            <div class="text-xs text-slate-400">updated per sweep</div>
+          </div>
+          <div class="border border-white/10 rounded-xl p-4 bg-white/5">
+            <div class="text-xs uppercase tracking-wide muted">Last update</div>
+            <div class="text-lg font-semibold">{{ format_ts_label(last_update) }}</div>
+            <div class="text-xs text-slate-400">{{ snapshot.recent_new if snapshot else 0 }} new in {{ snapshot.recent_window_minutes if snapshot else tactical_config.recent_new_minutes }} min</div>
+          </div>
+        </div>
+
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm uppercase tracking-wide text-slate-400">Band summary</h3>
+            <div class="text-xs muted">
+              {% if selected_tactical and selected_tactical.band_summary_meta %}
+                {{ selected_tactical.band_summary_meta.band_count or band_summary|length }} bands · {{ '%.1f'|format(selected_tactical.band_summary_meta.band_width_mhz or 0) }} MHz slices
+              {% else %}
+                Waiting for baseline stats
+              {% endif %}
+            </div>
+          </div>
+          {% if band_summary %}
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {% for band in band_summary %}
+                <div class="border border-white/10 rounded-xl p-4 bg-slate-900/40">
+                  <div class="flex items-center justify-between gap-2">
+                    <div>
+                      <div class="text-sm font-semibold">{{ band.label }}</div>
+                      <div class="text-xs text-slate-400">{{ '%.0f'|format((band.occupied_fraction or 0)*100) }}% occupied · {{ band.occupancy_level }}</div>
+                    </div>
+                    <span class="chip text-xs">{{ band.note }}</span>
+                  </div>
+                  <div class="flex flex-wrap gap-4 text-xs text-slate-300 mt-3">
+                    <span>Persistent {{ band.persistent_signals }}</span>
+                    <span>Recent new {{ band.recent_new }}</span>
+                    {% if band.avg_noise_db is not none %}<span>Noise {{ '%.1f'|format(band.avg_noise_db) }} dB</span>{% endif %}
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="text-sm text-slate-300 border border-dashed border-white/20 rounded-xl p-4">Band-level stats will populate after the baseline captures a few sweeps.</div>
+          {% endif %}
+        </div>
+
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm uppercase tracking-wide text-slate-400">Hotspots</h3>
+            <div class="text-xs muted">
+              {% if hotspots and hotspots.bucket_width_hz %}
+                {{ hotspots.buckets|length }} buckets · {{ '%.3f'|format(hotspots.bucket_width_hz / 1e6) }} MHz each
+              {% else %}
+                Pending spur/noise stats
+              {% endif %}
+            </div>
+          </div>
+          {% if hotspots and hotspots.buckets %}
+            {% set max_occ = hotspots.max_occ or 0 %}
+            <div class="flex items-end gap-1" aria-label="Hotspot strip">
+              {% for bucket in hotspots.buckets %}
+                {% set occ = bucket.avg_occ or 0 %}
+                {% set height = 48 * (occ / max_occ) if max_occ > 0 else 4 %}
+                <div class="flex flex-col items-center gap-1">
+                  <div class="w-2 rounded-full bg-sky-500/60" style="height: {{ height|round(0) }}px" title="{{ '%.3f'|format(bucket.f_low_hz/1e6) }}–{{ '%.3f'|format(bucket.f_high_hz/1e6) }} MHz · occ {{ '%.1f'|format(occ*100) }}%"></div>
+                </div>
+              {% endfor %}
+            </div>
+            <div class="flex justify-between text-[11px] text-slate-400">
+              <span>{{ '%.3f'|format((hotspots.freq_start_hz or 0)/1e6) }} MHz</span>
+              <span>{{ '%.3f'|format(((hotspots.freq_start_hz or 0)+(hotspots.freq_stop_hz or 0))/2e6) }} MHz</span>
+              <span>{{ '%.3f'|format((hotspots.freq_stop_hz or 0)/1e6) }} MHz</span>
+            </div>
+          {% else %}
+            <div class="text-sm text-slate-300 border border-dashed border-white/20 rounded-xl p-4">Hotspots will appear once spur calibration or baseline noise stats populate.</div>
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="text-sm text-slate-300">No baseline selected.</div>
+      {% endif %}
+    </section>
+
+    <section id="changes-panel" class="card space-y-4">
+      <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 class="text-xl font-semibold">Current changes / deltas</h2>
+          <p class="text-sm text-slate-300">Surface the last {{ change_window_minutes }} minutes of change events.</p>
+        </div>
+        <div class="flex flex-wrap gap-2" id="change-filter-tabs">
+          {% for opt in dashboard_change_filters %}
+            {% set params = {'baseline_id': selected_baseline_id} %}
+            {% if opt.key != 'ALL' %}
+              {% set _ = params.update({'change_filter': opt.key}) %}
+            {% endif %}
+            <a href="{{ url_for('dashboard', **params) }}" class="chip {{ 'chip-active' if dashboard_change_filter == opt.key else '' }}" data-change-filter-link>{{ opt.label }}</a>
+          {% endfor %}
+        </div>
+      </div>
+      {% if dashboard_change_payload %}
+        <div class="text-xs text-slate-400">
+          {{ dashboard_change_payload.total_events }} events · window {{ dashboard_change_payload.window_minutes }} min · refreshed {{ format_ts_label(dashboard_change_payload.generated_at) }}
+        </div>
+        <div class="space-y-3">
+          {% if dashboard_change_payload.events %}
+            {% for event in dashboard_change_payload.events %}
+              <div class="border border-white/10 rounded-xl p-4 bg-slate-900/40" data-event-type="{{ event.type }}">
+                <div class="flex items-center justify-between text-xs text-slate-400">
+                  <span class="chip text-xs uppercase tracking-wide {{ 'chip-active' if dashboard_change_filter in ('ALL', event.type) else '' }}">{{ event.type }}</span>
+                  <span>{{ event.time_label or format_change_summary(event) }}</span>
+                </div>
+                <div class="text-sm font-semibold mt-2">{{ format_change_summary(event) }}</div>
+                <div class="text-xs text-slate-300 mt-1">{{ event.details }}</div>
+                <div class="flex flex-wrap gap-3 text-[11px] text-slate-400 mt-3">
+                  {% if event.f_center_hz is not none %}
+                    <span>{{ format_freq_label(event.f_center_hz) }} MHz</span>
+                  {% endif %}
+                  {% set event_bw = format_bandwidth_khz(event.bandwidth_hz) %}
+                  {% if event_bw is not none %}
+                    <span>{{ event_bw|round(0) }} kHz</span>
+                  {% endif %}
+                  {% if event.confidence is not none %}
+                    <span>Confidence {{ '%.2f'|format(event.confidence) }}</span>
+                  {% endif %}
+                  {% if event.delta_db is defined and event.delta_db is not none %}
+                    <span>Δ {{ '%.1f'|format(event.delta_db) }} dB</span>
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="text-sm text-slate-300 border border-dashed border-white/20 rounded-xl p-4">No change events in the selected window.</div>
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="text-sm text-slate-300">Select a baseline to view recent changes.</div>
+      {% endif %}
+    </section>
+
+    <section id="signal-cards" class="card space-y-4">
+      <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 class="text-xl font-semibold">Signal cards</h2>
+          <p class="text-sm text-slate-300">Active detections observed in the past {{ (snapshot.active_window_minutes if snapshot else tactical_config.active_window_minutes) or tactical_config.active_window_minutes }} minutes.</p>
+        </div>
+        <div class="text-xs text-slate-400">{{ signal_cards|length }} signals</div>
+      </div>
+      {% if signal_cards %}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {% for sig in signal_cards %}
+            {% set bw = format_bandwidth_khz(sig.bandwidth_hz) %}
+            {% set conf = sig.confidence %}
+            {% set hits = sig.total_hits or 0 %}
+            {% set windows = sig.total_windows or 0 %}
+            {% set ratio = hits / windows if windows else 0 %}
+            <article class="border border-white/10 rounded-2xl p-4 bg-slate-900/60 flex flex-col gap-3">
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="text-sm uppercase tracking-wide text-slate-400">Center frequency</div>
+                  <div class="text-2xl font-semibold">{{ format_freq_label(sig.f_center_hz) }} MHz</div>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  {% if sig.near_spur %}<span class="chip text-xs">Near spur</span>{% endif %}
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div class="text-xs uppercase tracking-wide muted">Bandwidth</div>
+                  <div class="text-lg font-semibold">{{ bw|round(0) if bw is not none else '—' }} kHz</div>
+                </div>
+                <div>
+                  <div class="text-xs uppercase tracking-wide muted">Confidence</div>
+                  <div class="text-lg font-semibold">{% if conf is not none %}{{ (conf * 100)|round(0) }}%{% else %}—{% endif %}</div>
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div class="text-xs uppercase tracking-wide muted">First seen</div>
+                  <div class="text-lg font-semibold">{{ format_ts_label(sig.first_seen_utc) }}</div>
+                </div>
+                <div>
+                  <div class="text-xs uppercase tracking-wide muted">Last seen</div>
+                  <div class="text-lg font-semibold">{{ format_ts_label(sig.last_seen_utc) }}</div>
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-4 text-xs text-slate-300">
+                <span>Hits {{ hits }}</span>
+                <span>Windows {{ windows }}</span>
+                <span>Hit ratio {{ '%.0f'|format(ratio * 100) }}%</span>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="text-sm text-slate-300">No active signals in the current window. Once sweeps run, persistent detections will land here as cards.</div>
+      {% endif %}
+    </section>
+  {% endif %}
 </div>

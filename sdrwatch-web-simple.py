@@ -2624,6 +2624,104 @@ def create_app(db_path: str) -> Flask:
             except Exception:
                 pass
 
+        try:
+            baselines = qa(
+                con(),
+                """
+                SELECT id, name, created_at, freq_start_hz, freq_stop_hz,
+                       bin_hz, total_windows, location_lat, location_lon, notes
+                FROM baselines
+                ORDER BY id DESC
+                LIMIT 12
+                """,
+            )
+        except sqlite3.OperationalError:
+            baselines = []
+
+        baseline_summary_data = baseline_summary_map()
+        baseline_id_param = (request.args.get('baseline_id') or "").strip()
+        selected_baseline: Optional[Dict[str, Any]] = None
+        if baselines:
+            if baseline_id_param:
+                for row in baselines:
+                    if str(row.get('id')) == baseline_id_param:
+                        selected_baseline = row
+                        break
+            if selected_baseline is None:
+                selected_baseline = baselines[0]
+        if baseline_id_param and selected_baseline is None:
+            try:
+                baseline_id_lookup = int(float(baseline_id_param))
+            except Exception:
+                baseline_id_lookup = None
+            if baseline_id_lookup is not None:
+                row = fetch_baseline_record(baseline_id_lookup)
+                if row:
+                    selected_baseline = row
+                    baselines = [row] + [b for b in baselines if b.get('id') != row.get('id')]
+
+        selected_baseline_id = ""
+        selected_baseline_id_int: Optional[int] = None
+        if selected_baseline and selected_baseline.get('id') is not None:
+            try:
+                selected_baseline_id_int = int(selected_baseline.get('id'))
+                selected_baseline_id = str(selected_baseline_id_int)
+            except Exception:
+                selected_baseline_id_int = None
+                selected_baseline_id = ""
+
+        dashboard_change_filters = [
+            {"key": "ALL", "label": "All"},
+            {"key": "NEW_SIGNAL", "label": "New"},
+            {"key": "POWER_SHIFT", "label": "Power shifts"},
+            {"key": "QUIETED", "label": "Quieted"},
+        ]
+        change_filter_param = (
+            request.args.get('change_filter')
+            or request.args.get('type')
+            or "ALL"
+        ).strip().upper()
+        valid_filter_keys = {opt["key"] for opt in dashboard_change_filters}
+        if change_filter_param not in valid_filter_keys:
+            change_filter_param = "ALL"
+        requested_event_types = None
+        if change_filter_param != "ALL":
+            requested_event_types = [change_filter_param]
+
+        tactical_payload = None
+        hotspot_payload = None
+        change_payload_dashboard = None
+        signal_cards: List[Dict[str, Any]] = []
+        if selected_baseline_id_int is not None:
+            tactical_payload = tactical_snapshot_payload(selected_baseline_id_int)
+            hotspot_payload = hotspots_payload(selected_baseline_id_int)
+            change_payload_dashboard = change_events_payload(
+                selected_baseline_id_int,
+                window_minutes=CHANGE_WINDOW_MINUTES,
+                event_types=requested_event_types,
+            )
+            if tactical_payload:
+                cards_src = tactical_payload.get("active_signals") or []
+                signal_cards = [dict(card) for card in cards_src]
+                if signal_cards:
+                    spur_bins = load_spur_bins()
+                    annotate_near_spur(signal_cards, spur_bins)
+
+        selected_baseline_summary = None
+        if selected_baseline_id_int is not None:
+            selected_baseline_summary = baseline_summary_data.get(selected_baseline_id_int)
+
+        snapshot_payload = tactical_payload.get("snapshot") if tactical_payload else None
+        selected_baseline_last_update = None
+        if selected_baseline_summary and selected_baseline_summary.get("last_update_utc"):
+            selected_baseline_last_update = selected_baseline_summary.get("last_update_utc")
+        elif snapshot_payload and snapshot_payload.get("last_update"):
+            selected_baseline_last_update = snapshot_payload.get("last_update")
+        elif snapshot_payload and snapshot_payload.get("latest_update"):
+            latest_obj = snapshot_payload.get("latest_update") or {}
+            if isinstance(latest_obj, dict):
+                selected_baseline_last_update = latest_obj.get("timestamp_utc")
+
         def empty_timeline_payload() -> Dict[str, Any]:
             return {
                 "bucket_hours": 1,
@@ -2766,6 +2864,24 @@ def create_app(db_path: str) -> Flask:
             db_status_message="",
             db_path=app._db_path,
             tactical_config=tactical_config,
+            baselines=baselines,
+            baseline_summaries=baseline_summary_data,
+            selected_baseline=selected_baseline,
+            selected_baseline_id=selected_baseline_id,
+            selected_baseline_summary=selected_baseline_summary,
+            selected_baseline_last_update=selected_baseline_last_update,
+            selected_tactical=tactical_payload,
+            selected_snapshot=snapshot_payload,
+            selected_hotspots=hotspot_payload,
+            signal_cards=signal_cards,
+            dashboard_change_payload=change_payload_dashboard,
+            dashboard_change_filter=change_filter_param,
+            dashboard_change_filters=dashboard_change_filters,
+            change_window_minutes=CHANGE_WINDOW_MINUTES,
+            format_ts_label=format_ts_label,
+            format_freq_label=format_freq_label,
+            format_bandwidth_khz=format_bandwidth_khz,
+            format_change_summary=format_change_summary,
         )
 
         if request.headers.get("HX-Request"):

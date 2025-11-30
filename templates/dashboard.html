@@ -12,7 +12,11 @@
     {% block scripts %}
       {{ super() }}
       <script>
-        window.SDRWATCH_DASHBOARD_CONFIG = {{ tactical_config|tojson }};
+        window.SDRWATCH_DASHBOARD_STATE = {{ {
+          "config": tactical_config,
+          "selected_baseline_id": selected_baseline_id|default('', true),
+          "change_filter": dashboard_change_filter|default('ALL', true),
+        } | tojson }};
       </script>
       <script src="{{ url_for('static', filename='js/dashboard.js') }}" defer></script>
     {% endblock %}
