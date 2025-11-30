@@ -155,6 +155,9 @@ class ScanProfile:
     confidence_duration_norm: Optional[float] = None
     confidence_bias: Optional[float] = None
     revisit_span_limit_hz: Optional[float] = None
+    cluster_merge_hz: Optional[float] = None
+    max_detection_width_ratio: Optional[float] = None
+    max_detection_width_hz: Optional[float] = None
 
 
 def default_scan_profiles() -> Dict[str, ScanProfile]:
@@ -204,6 +207,9 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             confidence_duration_norm=2.0,
             confidence_bias=0.05,
             revisit_span_limit_hz=420_000.0,
+            cluster_merge_hz=12_000.0,
+            max_detection_width_ratio=2.5,
+            max_detection_width_hz=270_000.0,
         ),
         ScanProfile(
             name="ism_902",
@@ -259,6 +265,9 @@ def _emit_profiles_json() -> None:
                 "confidence_duration_norm": prof.confidence_duration_norm,
                 "confidence_bias": prof.confidence_bias,
                 "revisit_span_limit_hz": prof.revisit_span_limit_hz,
+                "cluster_merge_hz": prof.cluster_merge_hz,
+                "max_detection_width_ratio": prof.max_detection_width_ratio,
+                "max_detection_width_hz": prof.max_detection_width_hz,
             }
             for prof in ordered
         ]
@@ -1149,7 +1158,21 @@ class DetectionEngine:
         self.min_hits = max(1, int(min_hits))
         self.min_windows = max(1, int(min_windows))
         self.max_gap_windows = max(1, int(max_gap_windows))
-        self.freq_merge_hz = float(freq_merge_hz if freq_merge_hz is not None else max(self.bin_hz * 2, 25_000.0))
+        merge_override = getattr(args, "cluster_merge_hz", None)
+        merge_override_val: Optional[float]
+        try:
+            merge_override_val = float(merge_override) if merge_override not in (None, "") else None
+        except Exception:
+            merge_override_val = None
+        if merge_override_val is not None and merge_override_val <= 0.0:
+            merge_override_val = None
+        if merge_override_val is not None:
+            freq_merge_val = merge_override_val
+        elif freq_merge_hz is not None:
+            freq_merge_val = float(freq_merge_hz)
+        else:
+            freq_merge_val = max(self.bin_hz * 2.0, 25_000.0)
+        self.freq_merge_hz = float(freq_merge_val)
         self.center_match_hz = max(self.bin_hz * 2.0, self.freq_merge_hz / 2.0)
         raw_mode = str(getattr(args, "persistence_mode", "hits") or "hits").lower()
         self.persistence_mode = raw_mode if raw_mode in {"hits", "duration", "both"} else "hits"
@@ -1159,6 +1182,20 @@ class DetectionEngine:
         raw_duration = getattr(args, "persistence_min_seconds", 0.0)
         self.persistence_min_seconds = float(max(0.0, float(raw_duration if raw_duration is not None else 0.0)))
         self.min_width_hz = max(self.bin_hz * float(args.min_width_bins), self.bin_hz)
+        raw_width_ratio = getattr(args, "max_detection_width_ratio", None)
+        try:
+            width_ratio_val = float(raw_width_ratio if raw_width_ratio is not None else 3.0)
+        except Exception:
+            width_ratio_val = 3.0
+        if width_ratio_val < 1.0:
+            width_ratio_val = 1.0
+        self.max_detection_width_ratio = width_ratio_val
+        raw_width_cap = getattr(args, "max_detection_width_hz", None)
+        try:
+            width_cap_val = float(raw_width_cap if raw_width_cap is not None else 0.0)
+        except Exception:
+            width_cap_val = 0.0
+        self.max_detection_width_hz = max(0.0, width_cap_val)
         self.clusters: List[DetectionCluster] = []
         self._last_window_idx = -1
         self.spur_tolerance_hz = 5_000.0
@@ -1469,9 +1506,29 @@ class DetectionEngine:
         self.store.begin()
         try:
             if match:
-                match.f_low_hz = min(match.f_low_hz, cluster.f_low_hz)
-                match.f_high_hz = max(match.f_high_hz, cluster.f_high_hz)
-                match.f_center_hz = self._blend_centers(match.f_center_hz, match.total_hits, cluster_center_hz, cluster.hits)
+                # Clamp width growth so persistent detections do not absorb adjacent stations over time.
+                blended_center = self._blend_centers(match.f_center_hz, match.total_hits, cluster_center_hz, cluster.hits)
+                prev_width = max(float(match.f_high_hz - match.f_low_hz), self.bin_hz)
+                cluster_width = max(float(cluster.f_high_hz - cluster.f_low_hz), self.bin_hz)
+                alpha = 0.25
+                target_width = prev_width + alpha * (cluster_width - prev_width)
+                if self.max_detection_width_hz > 0.0 and target_width > self.max_detection_width_hz:
+                    target_width = self.max_detection_width_hz
+                half = target_width / 2.0
+                new_low = int(round(blended_center - half))
+                new_high = int(round(blended_center + half))
+                baseline_low = self.baseline_ctx.freq_start_hz
+                baseline_high = self.baseline_ctx.freq_stop_hz
+                new_low = max(new_low, baseline_low)
+                new_high = min(new_high, baseline_high)
+                if new_high <= new_low:
+                    min_width = int(max(1.0, self.bin_hz))
+                    new_high = min(baseline_high, new_low + min_width)
+                    if new_high <= new_low:
+                        new_low = max(baseline_low, new_high - min_width)
+                match.f_low_hz = new_low
+                match.f_high_hz = new_high
+                match.f_center_hz = blended_center
                 match.last_seen_utc = timestamp
                 match.total_hits += cluster.hits
                 match.total_windows += len(cluster.windows)
@@ -1512,6 +1569,7 @@ class DetectionEngine:
         return is_new
 
     def _match_persistent(self, seg: Segment) -> Optional[PersistentDetection]:
+        # Width-aware matching ensures narrow persistents are not polluted by much wider clusters.
         for det in self._persisted:
             spans_overlap = not (
                 seg.f_high_hz < (det.f_low_hz - self.freq_merge_hz)
@@ -1519,6 +1577,19 @@ class DetectionEngine:
             )
             center_close = abs(seg.f_center_hz - det.f_center_hz) <= self.center_match_hz
             if spans_overlap or center_close:
+                width_det = max(float(det.f_high_hz - det.f_low_hz), self.bin_hz)
+                width_seg = max(float(seg.f_high_hz - seg.f_low_hz), self.bin_hz)
+                max_ratio = float(self.max_detection_width_ratio)
+                if width_det > 0.0 and width_seg > width_det * max_ratio:
+                    self._log(
+                        "persist_width_reject",
+                        detection_id=det.id,
+                        baseline_id=self.baseline_ctx.id,
+                        width_det_hz=width_det,
+                        width_seg_hz=width_seg,
+                        max_ratio=max_ratio,
+                    )
+                    continue
                 self._seen_persistent.add(det.id)
                 if det.missing_since_utc:
                     det.missing_since_utc = None
@@ -2114,6 +2185,12 @@ def _apply_scan_profile(args, parser: argparse.ArgumentParser):
         setattr(args, "confidence_duration_norm", float(prof.confidence_duration_norm))
     if prof.confidence_bias is not None:
         setattr(args, "confidence_bias", float(prof.confidence_bias))
+    if prof.cluster_merge_hz is not None:
+        maybe_set("cluster_merge_hz", float(prof.cluster_merge_hz))
+    if prof.max_detection_width_ratio is not None:
+        maybe_set("max_detection_width_ratio", float(prof.max_detection_width_ratio))
+    if prof.max_detection_width_hz is not None:
+        maybe_set("max_detection_width_hz", float(prof.max_detection_width_hz))
 
     if prof.abs_power_floor_db is not None:
         setattr(args, "abs_power_floor_db", prof.abs_power_floor_db)
@@ -2217,6 +2294,9 @@ def _do_one_sweep(
             "confidence_duration_norm": getattr(args, "confidence_duration_norm", None),
             "confidence_bias": getattr(args, "confidence_bias", None),
             "revisit_span_limit_hz": getattr(args, "revisit_span_limit_hz", None),
+            "cluster_merge_hz": getattr(args, "cluster_merge_hz", None),
+            "max_detection_width_ratio": getattr(args, "max_detection_width_ratio", None),
+            "max_detection_width_hz": getattr(args, "max_detection_width_hz", None),
         }
         logger.start_sweep(
             sweep_seq,
@@ -2763,6 +2843,24 @@ def parse_args(argv: Optional[List[str]] = None):
         type=int,
         help="Minimum distinct windows required before persistence evaluation (default 2)",
     )
+    p.add_argument(
+        "--cluster-merge-hz",
+        dest="cluster_merge_hz",
+        type=float,
+        help="Override Hz span when merging per-window segments into clusters/persistent detections",
+    )
+    p.add_argument(
+        "--max-detection-width-ratio",
+        dest="max_detection_width_ratio",
+        type=float,
+        help="Reject cluster matches when the segment width exceeds this ratio of the persisted width (default 3.0)",
+    )
+    p.add_argument(
+        "--max-detection-width-hz",
+        dest="max_detection_width_hz",
+        type=float,
+        help="Clamp persistent detection widths to this maximum Hz span (0 disables)",
+    )
     # CFAR options
     p.add_argument("--cfar", choices=["off", "os", "ca"], help="CFAR mode (default: os)")
     p.add_argument("--cfar-train", dest="cfar_train", type=int, help="Training cells per side for CFAR (default 24)")
@@ -2838,6 +2936,9 @@ def parse_args(argv: Optional[List[str]] = None):
     _set_default(args, args._cli_overrides, "persistence_min_seconds", 10.0)
     _set_default(args, args._cli_overrides, "persistence_min_hits", 2)
     _set_default(args, args._cli_overrides, "persistence_min_windows", 2)
+    _set_default(args, args._cli_overrides, "cluster_merge_hz", None)
+    _set_default(args, args._cli_overrides, "max_detection_width_ratio", 3.0)
+    _set_default(args, args._cli_overrides, "max_detection_width_hz", 0.0)
     _set_default(args, args._cli_overrides, "cfar", "os")
     _set_default(args, args._cli_overrides, "cfar_train", 24)
     _set_default(args, args._cli_overrides, "cfar_guard", 4)
