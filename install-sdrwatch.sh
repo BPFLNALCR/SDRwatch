@@ -28,7 +28,7 @@ PIP_BIN="${VENV_DIR}/bin/pip"
 WEB_DASH="${PROJECT_DIR}/sdrwatch-web-simple.py"      # dash
 WEB_UNDERSCORE="${PROJECT_DIR}/sdrwatch_web_simple.py" # underscore (services default)
 CONTROL_PY="${PROJECT_DIR}/sdrwatch-control.py"
-CORE_PY="${PROJECT_DIR}/sdrwatch.py"
+SCANNER_MODULE="${SCANNER_MODULE:-sdrwatch.cli}"
 
 # Put state under /var to avoid home permission issues with ProtectHome.
 STATE_DIR_DEFAULT=${STATE_DIR_DEFAULT:-"/var/lib/sdrwatch"}
@@ -299,7 +299,7 @@ EOF
   log "Writing systemd unit: $UNIT_CTL"
   sudo bash -c "cat > '$UNIT_CTL'" <<'UNIT'
 [Unit]
-Description=SDRwatch Control API (manager for sdrwatch.py jobs)
+Description=SDRwatch Control API (manager for scanner jobs)
 After=network-online.target
 Wants=network-online.target
 
@@ -392,7 +392,7 @@ Next steps:
   • Reboot recommended so udev + blacklist take effect:   sudo reboot
   • Activate venv in your shell:                          source "$VENV_DIR/bin/activate"
   • Quick scan sanity (FM band):
-      $PYTHON_BIN "$CORE_PY" --driver rtlsdr --start 88e6 --stop 108e6 --fft 4096 --avg 8 --db "$DB_PATH_DEFAULT"
+      $PYTHON_BIN -m "$SCANNER_MODULE" --baseline-id latest --driver rtlsdr --start 88e6 --stop 108e6 --fft 4096 --avg 8 --db "$DB_PATH_DEFAULT"
 
 If you enabled services:
   • Control API:  http://${SDRWATCH_CONTROL_HOST_DEFAULT}:${SDRWATCH_CONTROL_PORT_DEFAULT}

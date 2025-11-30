@@ -89,11 +89,12 @@ SDRWATCH_AUTO_YES=1 ./install-sdrwatch.sh
 Sweep the FM band once (default behavior):
 
 ```bash
-python3 sdrwatch.py --start 88e6 --stop 108e6 --step 1.8e6 \
+python3 -m sdrwatch.cli --baseline-id 3 --start 88e6 --stop 108e6 --step 1.8e6 \
   --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr --gain auto
 ```
 
 Notes:
+- All sweeps must be associated with a baseline (`--baseline-id <id>` or `--baseline-id latest`).
 - By default, the scanner runs a single full sweep and exits.
 - Use `--loop` for continuous sweeps, `--repeat N` for a fixed number of sweeps, or `--duration 10m` to run until the time elapses.
 - Tag scan metadata with `--latitude`/`--longitude` (decimal degrees) when location context matters; the values are stored in the `scans` table and surfaced in the dashboard + heatmap.
@@ -101,7 +102,7 @@ Notes:
 Continuous monitoring across 30 MHz – 1.7 GHz:
 
 ```bash
-python3 sdrwatch.py --start 30e6 --stop 1700e6 --step 2.4e6 \
+python3 -m sdrwatch.cli --baseline-id 3 --start 30e6 --stop 1700e6 --step 2.4e6 \
   --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr \
   --gain auto --loop --notify --db sdrwatch.db --jsonl events.jsonl
 ```
@@ -109,7 +110,7 @@ python3 sdrwatch.py --start 30e6 --stop 1700e6 --step 2.4e6 \
 Enable the **two-pass verification** workflow to refine bandwidths and suppress false positives automatically:
 
 ```bash
-python3 sdrwatch.py --baseline-id 3 --start 88e6 --stop 108e6 --step 2.4e6 \
+python3 -m sdrwatch.cli --baseline-id 3 --start 88e6 --stop 108e6 --step 2.4e6 \
   --samp-rate 2.4e6 --fft 4096 --avg 8 --two-pass \
   --revisit-margin-hz 150e3 --revisit-max-bands 40
 ```
@@ -168,7 +169,7 @@ The controller exposes a stable REST surface consumed by the Flask frontend or a
 
 Set `SDRWATCH_CONTROL_TOKEN` when running `sdrwatch-control.py serve` to require bearer auth. The web app reads `SDRWATCH_CONTROL_URL` / `SDRWATCH_CONTROL_TOKEN` and simply forwards REST calls, exposing its own `Bearer SDRWATCH_TOKEN` guard for the `/api/*` routes.
 
-**Scanner path discovery:** the controller looks for `sdrwatch.py` in the following order each time a job starts: `SDRWATCH_SCRIPT`, `SDRWATCH_PROJECT_DIR/sdrwatch.py`, alongside the controller script, project parent, current working directory, and `/opt/sdrwatch[/current]`. Override via environment variables if you relocate scripts.
+**Scanner path discovery:** the controller launches `python -m sdrwatch.cli` by default and still hunts for a local `sdrwatch.py` shim (or `SDRWATCH_PROJECT_DIR`) to determine the project root for DB defaults. Override via environment variables if you relocate deployments or need to force the legacy script via `SDRWATCH_SCAN_EXEC=script`.
 
 ---
 

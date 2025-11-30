@@ -3,24 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np  # type: ignore
 
+from sdrwatch.baseline.model import BaselineContext
 from sdrwatch.detection.types import PersistentDetection
 from sdrwatch.util.time import utc_now_str
-
-
-@dataclass
-class BaselineContext:
-    id: int
-    name: str
-    freq_start_hz: int
-    freq_stop_hz: int
-    bin_hz: float
-    baseline_version: int
-    total_windows: int
 
 
 class Store:
@@ -179,7 +168,10 @@ class Store:
             (base_name, created_at, int(freq_start_hz), int(freq_stop_hz), float(bin_hz)),
         )
         self.con.commit()
-        baseline_id = int(cur.lastrowid)
+        lastrow = cur.lastrowid
+        if lastrow is None:
+            raise RuntimeError("Failed to retrieve lastrowid after inserting baseline")
+        baseline_id = int(lastrow)
         ctx = self.get_baseline(baseline_id)
         if ctx is None:
             raise RuntimeError("Failed to create baseline context")

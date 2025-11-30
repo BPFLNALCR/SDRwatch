@@ -187,7 +187,7 @@ Tables referenced by code/UI (column names are contract):
 * One-shot FM scan (optionally with a profile) tied to an active baseline (create/select the baseline via controller or web first):
 
   ```bash
-  python3 sdrwatch.py \
+  python3 -m sdrwatch.cli \
     --baseline-id 3 \
     --start 88e6 --stop 108e6 --step 1.8e6 \
     --samp-rate 2.4e6 --fft 4096 --avg 8 \
@@ -209,7 +209,7 @@ Tables referenced by code/UI (column names are contract):
 * Spur calibration sweep:
 
   ```bash
-  python3 sdrwatch.py --start 400e6 --stop 470e6 --step 2.4e6 \
+  python3 -m sdrwatch.cli --start 400e6 --stop 470e6 --step 2.4e6 \
     --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr --spur-calibration
   ```
 

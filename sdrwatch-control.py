@@ -22,6 +22,7 @@ completed scan.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import shlex
@@ -41,23 +42,49 @@ BASE_DIR = Path(os.environ.get("SDRWATCH_CONTROL_BASE", "/tmp/sdrwatch-control")
 STATE_PATH = BASE_DIR / "state.json"
 LOGS_DIR = BASE_DIR / "logs"
 LOCKS_DIR = BASE_DIR / "locks"
+SCANNER_MODULE = "sdrwatch.cli"
 
 # If your project locates scripts elsewhere, tweak these defaults:
 PYTHON_EXE = sys.executable or "python3"
 
 
-_SCRIPT_CACHE: Optional[Tuple[Path, Path]] = None  # (project_dir, script_path)
+_SCRIPT_CACHE: Optional[Tuple[Path, Optional[Path]]] = None  # (project_dir, script_path)
 _PROFILE_CACHE: Optional[Dict[str, Any]] = None
 _PROFILE_CACHE_TS: float = 0.0
 _PROFILE_CACHE_TTL = 30.0
 
 
-def resolve_scanner_paths(force_refresh: bool = False) -> Tuple[Path, Path]:
-    """Return (project_dir, sdrwatch_script) with automatic fallback discovery."""
+def _scanner_invocation(script_path: Optional[Path]) -> List[str]:
+    """Return the preferred python command for launching the scanner."""
+    exec_mode = (os.environ.get("SDRWATCH_SCAN_EXEC") or "module").lower()
+    if exec_mode == "script":
+        if not script_path:
+            raise FileNotFoundError("SDRWATCH_SCAN_EXEC=script requires sdrwatch.py to be present")
+        return [PYTHON_EXE, str(script_path)]
+
+    if exec_mode not in {"module", "auto"}:
+        exec_mode = "module"
+
+    if exec_mode == "module":
+        try:
+            importlib.import_module(SCANNER_MODULE)
+            return [PYTHON_EXE, "-m", SCANNER_MODULE]
+        except ModuleNotFoundError:
+            if script_path is None:
+                raise
+            # Fall through to script fallback if module missing
+
+    if script_path is None:
+        raise FileNotFoundError("Unable to locate scanner entrypoint (module missing and no sdrwatch.py shim)")
+    return [PYTHON_EXE, str(script_path)]
+
+
+def resolve_scanner_paths(force_refresh: bool = False) -> Tuple[Path, Optional[Path]]:
+    """Return (project_dir, optional sdrwatch.py path) with automatic fallback discovery."""
     global _SCRIPT_CACHE
     if not force_refresh and _SCRIPT_CACHE:
         project_dir, script_path = _SCRIPT_CACHE
-        if script_path.exists():
+        if script_path is None or script_path.exists():
             return project_dir, script_path
 
     candidates: List[Path] = []
@@ -96,8 +123,21 @@ def resolve_scanner_paths(force_refresh: bool = False) -> Tuple[Path, Path]:
         except OSError:
             continue
 
+    # Fallback: import the package to derive a project root even if sdrwatch.py is absent
+    try:
+        module = importlib.import_module("sdrwatch")
+        module_path = Path(module.__file__).resolve()
+        package_dir = module_path.parent
+        project_dir = package_dir.parent
+        shim_path = project_dir / "sdrwatch.py"
+        script_path = shim_path if shim_path.exists() else None
+        _SCRIPT_CACHE = (project_dir, script_path)
+        return project_dir, script_path
+    except Exception:
+        pass
+
     raise FileNotFoundError(
-        "Unable to locate sdrwatch.py. Set SDRWATCH_SCRIPT or keep it alongside sdrwatch-control.py."
+        "Unable to locate sdrwatch package or sdrwatch.py. Adjust PYTHONPATH or set SDRWATCH_PROJECT_DIR."
     )
 
 
@@ -108,7 +148,7 @@ def _fetch_profiles_payload(force_refresh: bool = False) -> Dict[str, Any]:
         return _PROFILE_CACHE
 
     project_dir, script_path = resolve_scanner_paths()
-    cmd = [PYTHON_EXE, str(script_path), "--list-profiles"]
+    cmd = _scanner_invocation(script_path) + ["--list-profiles"]
     popen_kwargs: Dict[str, Any] = {
         "capture_output": True,
         "text": True,
@@ -120,12 +160,12 @@ def _fetch_profiles_payload(force_refresh: bool = False) -> Dict[str, Any]:
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         stdout = (result.stdout or "").strip()
-        detail = stderr or stdout or "sdrwatch.py returned non-zero"
+        detail = stderr or stdout or "scanner CLI returned non-zero"
         raise RuntimeError(detail)
     try:
         payload = json.loads(result.stdout)
     except Exception as exc:
-        raise RuntimeError(f"invalid JSON from sdrwatch.py: {exc}")
+        raise RuntimeError(f"invalid JSON from scanner CLI: {exc}")
 
     _PROFILE_CACHE = payload
     _PROFILE_CACHE_TS = now
@@ -491,19 +531,19 @@ class JobManager:
         self._persist()
         return job
 
-    # Pass optional profile/spur_calibration/loop/repeat/duration/jsonl params through to sdrwatch.py.
+    # Pass optional profile/spur_calibration/loop/repeat/duration/jsonl params through to the scanner CLI.
     def _build_cmd(
         self,
         *,
-        script_path: Path,
+        script_path: Optional[Path],
         device_key: str,
         baseline_id: Optional[int],
         args: Dict[str, Any],
     ) -> List[str]:
-        """Translate a stable API dict into the concrete sdrwatch.py CLI."""
+        """Translate a stable API dict into the concrete scanner CLI."""
         if baseline_id is None:
             raise ValueError("baseline_id is required for scanner command")
-        cmd = [PYTHON_EXE, str(script_path), "--baseline-id", str(int(baseline_id))]
+        cmd = _scanner_invocation(script_path) + ["--baseline-id", str(int(baseline_id))]
         soapy_args_kv: Dict[str, Any] = {}
         # Respect explicit driver override from caller (e.g., 'rtlsdr_native')
         explicit_driver = str(args.get("driver", "")).strip() if args.get("driver") is not None else ""
@@ -919,7 +959,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="sdrwatch-control", description="Manage sdrwatch.py jobs across SDR devices")
+    p = argparse.ArgumentParser(prog="sdrwatch-control", description="Manage SDRwatch scanner jobs across SDR devices")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # discover
@@ -927,7 +967,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_discover)
 
     # start
-    s = sub.add_parser("start", help="Start a new sdrwatch.py job")
+    s = sub.add_parser("start", help="Start a new SDRwatch scanner job")
     s.add_argument("--device", required=True, help="Device key (e.g., rtl:0, hackrf:<serial>)")
     s.add_argument("--label", default=None, help="Human-friendly label for this job")
     s.add_argument("--baseline-id", type=int, required=True, help="Existing baseline id to associate with the scan")
@@ -958,7 +998,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-detection-width-hz", type=float, help="Clamp persistent detection widths to this absolute Hz span (0 disabled)")
 
     s.add_argument("--param", action="append", default=[], help="Extra k=v args to pass through (coerces numbers/bools)")
-    s.add_argument("--extra", nargs=argparse.REMAINDER, help="Raw extra args appended after '--' to sdrwatch.py")
+    s.add_argument("--extra", nargs=argparse.REMAINDER, help="Raw extra args appended after '--' to the scanner CLI")
     s.set_defaults(func=cmd_start)
 
     # list

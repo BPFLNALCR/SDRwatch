@@ -12,7 +12,7 @@ from sdrwatch.baseline.store import Store
 from sdrwatch.drivers.rtlsdr import RTLSDRSource
 from sdrwatch.drivers.soapy import SDRSource
 from sdrwatch.io.bandplan import Bandplan
-from sdrwatch.sweep.sweeper import run_sweep
+from sdrwatch.sweep.sweeper import Sweeper
 from sdrwatch.util.duration import parse_duration_to_seconds
 from sdrwatch.util.scan_logger import ScanLogger
 
@@ -26,6 +26,7 @@ class ScannerRunner:
         self.bandplan = Bandplan(args.bandplan)
         self.logger = ScanLogger.from_db_path(args.db, extra_targets=self._extra_targets())
         self.src = None
+        self.sweeper: Optional[Sweeper] = None
 
     def _extra_targets(self):
         jsonl_path = getattr(self.args, "jsonl", None)
@@ -136,6 +137,7 @@ class ScannerRunner:
         baseline_ctx = self._resolve_baseline()
         src = self._select_source()
         self.src = src
+        self.sweeper = Sweeper(self.args, self.store, self.bandplan, baseline_ctx, self.logger)
 
         duration_s, start_time, sweeps_remaining = self._termination_policy()
         sweep_seq = 1
@@ -143,7 +145,8 @@ class ScannerRunner:
             while True:
                 if duration_s is not None and (time.time() - start_time) >= duration_s:
                     break
-                run_sweep(self.args, self.store, self.bandplan, src, baseline_ctx, sweep_seq, self.logger)
+                assert self.sweeper is not None
+                self.sweeper.run(src, sweep_seq)
                 sweep_seq += 1
                 if duration_s is not None and (time.time() - start_time) >= duration_s:
                     break
