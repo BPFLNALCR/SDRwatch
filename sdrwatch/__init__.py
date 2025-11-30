@@ -1,0 +1,1 @@
+"""SDRwatch modular scanner package."""
