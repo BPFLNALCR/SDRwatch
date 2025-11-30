@@ -289,6 +289,12 @@
 {% block scripts %}
 <script>
 const PROFILE_DATA = {{ profile_list|tojson }};
+const PROFILE_MAP = Array.isArray(PROFILE_DATA)
+  ? PROFILE_DATA.reduce((acc, prof) => {
+      if (prof?.name) { acc[prof.name] = prof; }
+      return acc;
+    }, {})
+  : {};
 let BASELINE_DATA = {{ baseline_list|default([], true)|tojson }};
 let BASELINE_SUMMARIES = {{ baseline_summary_map|default({}, true)|tojson }};
 const TOKEN = localStorage.getItem("SDRWATCH_TOKEN") || "";
@@ -544,7 +550,7 @@ function updateProfileMeta(){
     profileMeta.textContent = 'Custom/manual parameters.';
     return;
   }
-  const prof = PROFILE_DATA.find(p => String(p.name) === selected);
+  const prof = PROFILE_MAP?.[selected];
   if(!prof){
     profileMeta.textContent = 'Custom/manual parameters.';
     return;
@@ -554,14 +560,72 @@ function updateProfileMeta(){
   const parts = [span];
   if(samp){ parts.push(`samp ${samp}`); }
   parts.push(`FFT ${prof.fft}`, `avg ${prof.avg}`);
+  if(prof.step_hz){ parts.push(`step ${(Number(prof.step_hz)/1e6).toFixed(2)} MHz`); }
   if(prof.gain_db !== undefined && prof.gain_db !== null){
     parts.push(`gain ${prof.gain_db} dB`);
+  }
+  if(prof.threshold_db !== undefined && prof.threshold_db !== null){
+    parts.push(`thr ${prof.threshold_db} dB`);
   }
   profileMeta.textContent = parts.join(' · ');
 }
 
+function setFieldValue(field, value){
+  if(value === undefined || value === null){ return; }
+  const el = f?.elements?.[field];
+  if(!el){ return; }
+  if(el.type === 'checkbox'){
+    el.checked = Boolean(value);
+    return;
+  }
+  el.value = typeof value === 'number' ? value.toString() : value;
+}
+
+function getProfileRecord(name){
+  if(!name){ return null; }
+  return PROFILE_MAP?.[name] || null;
+}
+
+function applyProfileDefaults(){
+  if(!profileSelect){ return; }
+  const prof = getProfileRecord(profileSelect.value);
+  if(!prof){ return; }
+  setFieldValue('start', prof.f_low_hz);
+  setFieldValue('stop', prof.f_high_hz);
+  setFieldValue('step', prof.step_hz);
+  setFieldValue('samp_rate', prof.samp_rate);
+  setFieldValue('fft', prof.fft);
+  setFieldValue('avg', prof.avg);
+  setFieldValue('gain', prof.gain_db);
+  setFieldValue('threshold_db', prof.threshold_db);
+  setFieldValue('guard_bins', prof.guard_bins);
+  setFieldValue('min_width_bins', prof.min_width_bins);
+  setFieldValue('cfar_train', prof.cfar_train);
+  setFieldValue('cfar_guard', prof.cfar_guard);
+  setFieldValue('cfar_quantile', prof.cfar_quantile);
+  setFieldValue('persistence_hit_ratio', prof.persistence_hit_ratio);
+  setFieldValue('persistence_min_seconds', prof.persistence_min_seconds);
+  setFieldValue('persistence_min_hits', prof.persistence_min_hits);
+  setFieldValue('persistence_min_windows', prof.persistence_min_windows);
+  setFieldValue('revisit_fft', prof.revisit_fft);
+  setFieldValue('revisit_avg', prof.revisit_avg);
+  setFieldValue('revisit_margin_hz', prof.revisit_margin_hz);
+  setFieldValue('revisit_max_bands', prof.revisit_max_bands);
+  setFieldValue('revisit_floor_threshold_db', prof.revisit_floor_threshold_db);
+  if(typeof prof.two_pass === 'boolean'){
+    setFieldValue('two_pass', prof.two_pass);
+  }
+}
+
 f.addEventListener('input', saveForm);
-profileSelect?.addEventListener('change', ()=>{ updateProfileMeta(); saveForm(); });
+profileSelect?.addEventListener('change', ()=>{
+  const selected = profileSelect.value?.trim();
+  if(selected){
+    applyProfileDefaults();
+  }
+  updateProfileMeta();
+  saveForm();
+});
 scanModeSelect?.addEventListener('change', saveForm);
 document.getElementById('resetBtn')?.addEventListener('click', ()=>{ localStorage.removeItem(FORM_STORAGE_KEY); location.reload(); });
 loadForm();
@@ -600,7 +664,7 @@ document.getElementById('refreshDevicesBtn')?.addEventListener('click', loadDevi
 function preset(k){
   f.samp_rate.value = '2.4e6'; f.fft.value = '4096'; f.avg.value = '8'; f.gain.value = f.gain.value || 'auto';
   if(k==='FULL'){ f.start.value='24e6'; f.stop.value='1766e6'; f.step.value='2.4e6'; }
-  if(k==='FM'){ f.start.value='88e6'; f.stop.value='108e6'; f.step.value='2.4e6'; }
+  if(k==='FM'){ f.start.value='88e6'; f.stop.value='108e6'; f.step.value='1.2e6'; }
   if(k==='VHF_AIR'){ f.start.value='118e6'; f.stop.value='137e6'; f.step.value='500e3'; }
   if(k==='UHF_MILAIR'){ f.start.value='225e6'; f.stop.value='400e6'; f.step.value='2.4e6'; }
   if(k==='2m'){ f.start.value='144e6'; f.stop.value='146e6'; f.step.value='1.2e6'; }

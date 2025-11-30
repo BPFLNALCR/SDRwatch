@@ -49,6 +49,7 @@ At its current stage of development, SDR-Watch is:
 - **🔔 Alerts & Outputs**:
   - Desktop notifications (`notify-send`) for new detections.
   - JSONL stream for integration with Grafana, Loki, ELK (each record now includes the window coverage ratio, observed duration, bandwidth estimate, and persistence mode used for gating).
+  - Enhanced Option A JSONL instrumentation logs `{cluster_reject, cluster_emit, persist_missing, revisit_apply}` events with SNR/width context so FM tuning sessions can be replayed without touching the SQLite DB.
 - **⚙️ Services Integration**: Systemd units for `sdrwatch-control` (API manager) and `sdrwatch-web` (dashboard).
   - Web UI now uses REST endpoints (`/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`) so multiple browser sessions stay in sync and the architecture can scale horizontally.
 
@@ -114,6 +115,10 @@ python3 sdrwatch.py --baseline-id 3 --start 88e6 --stop 108e6 --step 2.4e6 \
 ```
 
 The first pass runs today’s coarse sweep, tagging suspicious hits. The revisit pass then re-tunes each tag, expanding outward until both sides reach the noise floor so FM broadcast carriers, for example, are reported at their true 200 kHz width. Previously cataloged signals are only confirmed (no duplicate detections), while missing signals are timestamped and re-queued for future revisits.
+
+#### FM broadcast preset
+
+For repeatable FM-band validation sweeps, pass `--profile fm_broadcast`. The profile pins the range to 88–108 MHz, step size to 1.2 MHz overlap, FFT 8192, avg 10, gain 20 dB, threshold 9 dB, guard 2, min width 16 bins, and two-pass revisit defaults (32768 FFT, 200 kHz margin, 40 bands). It also relaxes persistence to hit-ratio 0.4 with single-window acceptance so long-lived stations are promoted immediately. The web control surface now auto-fills the same values whenever “fm_broadcast” is selected in the Profile dropdown, eliminating guess work between the GUI and CLI.
 
 ### Configurable persistence gates
 

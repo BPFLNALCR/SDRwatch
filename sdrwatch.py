@@ -135,6 +135,20 @@ class ScanProfile:
     min_width_bins: int
     guard_bins: int
     abs_power_floor_db: Optional[float] = None
+    step_hz: Optional[float] = None
+    cfar_train: Optional[int] = None
+    cfar_guard: Optional[int] = None
+    cfar_quantile: Optional[float] = None
+    persistence_hit_ratio: Optional[float] = None
+    persistence_min_seconds: Optional[float] = None
+    persistence_min_hits: Optional[int] = None
+    persistence_min_windows: Optional[int] = None
+    revisit_fft: Optional[int] = None
+    revisit_avg: Optional[int] = None
+    revisit_margin_hz: Optional[float] = None
+    revisit_max_bands: Optional[int] = None
+    revisit_floor_threshold_db: Optional[float] = None
+    two_pass: Optional[bool] = None
 
 
 def default_scan_profiles() -> Dict[str, ScanProfile]:
@@ -156,14 +170,28 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             name="fm_broadcast",
             f_low_hz=88_000_000,
             f_high_hz=108_000_000,
-            samp_rate=2.0e6,
-            fft=4096,
-            avg=6,
-            gain_db=12.0,
-            threshold_db=8.0,
-            min_width_bins=4,
-            guard_bins=1,
-            abs_power_floor_db=-90.0,
+            samp_rate=2.4e6,
+            fft=8192,
+            avg=10,
+            gain_db=20.0,
+            threshold_db=9.0,
+            min_width_bins=16,
+            guard_bins=2,
+            abs_power_floor_db=-92.0,
+            step_hz=1.2e6,
+            cfar_train=32,
+            cfar_guard=6,
+            cfar_quantile=0.68,
+            persistence_hit_ratio=0.4,
+            persistence_min_seconds=5.0,
+            persistence_min_hits=2,
+            persistence_min_windows=1,
+            revisit_fft=32768,
+            revisit_avg=4,
+            revisit_margin_hz=200_000.0,
+            revisit_max_bands=40,
+            revisit_floor_threshold_db=6.0,
+            two_pass=True,
         ),
         ScanProfile(
             name="ism_902",
@@ -199,6 +227,20 @@ def _emit_profiles_json() -> None:
                 "min_width_bins": prof.min_width_bins,
                 "guard_bins": prof.guard_bins,
                 "abs_power_floor_db": prof.abs_power_floor_db,
+                "step_hz": prof.step_hz,
+                "cfar_train": prof.cfar_train,
+                "cfar_guard": prof.cfar_guard,
+                "cfar_quantile": prof.cfar_quantile,
+                "persistence_hit_ratio": prof.persistence_hit_ratio,
+                "persistence_min_seconds": prof.persistence_min_seconds,
+                "persistence_min_hits": prof.persistence_min_hits,
+                "persistence_min_windows": prof.persistence_min_windows,
+                "revisit_fft": prof.revisit_fft,
+                "revisit_avg": prof.revisit_avg,
+                "revisit_margin_hz": prof.revisit_margin_hz,
+                "revisit_max_bands": prof.revisit_max_bands,
+                "revisit_floor_threshold_db": prof.revisit_floor_threshold_db,
+                "two_pass": prof.two_pass,
             }
             for prof in ordered
         ]
@@ -1117,10 +1159,15 @@ class DetectionEngine:
         self._revisit_tags: List[RevisitTag] = []
         self._tag_counter = 0
         self.logger = logger
+        self.profile_name = getattr(args, "profile", None)
         
     def _log(self, event: str, **fields: Any) -> None:
-        if self.logger:
-            self.logger.log(event, **fields)
+        if not self.logger:
+            return
+        payload = dict(fields)
+        if self.profile_name:
+            payload.setdefault("profile", self.profile_name)
+        self.logger.log(event, **payload)
 
     def ingest(self, window_idx: int, segments: List[Segment]) -> Tuple[int, int, int, int]:
         self._last_window_idx = max(self._last_window_idx, window_idx)
@@ -1231,6 +1278,7 @@ class DetectionEngine:
             return
         qualifies, reasons = self._cluster_gate_status(cluster)
         if not qualifies:
+            best_seg = cluster.best_seg
             self._log(
                 "cluster_reject",
                 baseline_id=self.baseline_ctx.id,
@@ -1240,6 +1288,10 @@ class DetectionEngine:
                 windows=len(cluster.windows),
                 window_ratio=self._cluster_window_ratio(cluster),
                 duration_s=self._cluster_duration_seconds(cluster),
+                snr_db=best_seg.snr_db,
+                peak_db=best_seg.peak_db,
+                noise_db=best_seg.noise_db,
+                min_width_hz=self.min_width_hz,
                 reasons=reasons,
             )
             return
@@ -1314,6 +1366,25 @@ class DetectionEngine:
         occ_ratio = self._lookup_occ_ratio(combined_seg.f_center_hz)
         is_new_flag = bool(is_new_detection or (occ_ratio is not None and occ_ratio < self.args.new_ema_occ))
 
+        self._log(
+            "cluster_emit",
+            baseline_id=self.baseline_ctx.id,
+            center_hz=combined_seg.f_center_hz,
+            width_hz=combined_seg.bandwidth_hz,
+            snr_db=combined_seg.snr_db,
+            peak_db=combined_seg.peak_db,
+            noise_db=combined_seg.noise_db,
+            confidence=confidence,
+            hits=cluster.hits,
+            windows=len(cluster.windows),
+            window_ratio=window_ratio,
+            duration_s=duration_seconds,
+            is_new=is_new_flag,
+            occ_ratio=occ_ratio,
+            service=svc,
+            region=reg,
+        )
+
         record = {
             "baseline_id": self.baseline_ctx.id,
             "time_utc": utc_now_str(),
@@ -1333,6 +1404,8 @@ class DetectionEngine:
             "duration_s": duration_seconds,
             "persistence_mode": self.persistence_mode,
         }
+        if self.profile_name:
+            record["profile"] = self.profile_name
         maybe_emit_jsonl(self.args.jsonl, record)
         if is_new_flag:
             body = f"{combined_seg.f_center_hz/1e6:.6f} MHz; SNR {combined_seg.snr_db:.1f} dB; {svc or 'Unknown'} {reg or ''}"
@@ -1518,6 +1591,13 @@ class DetectionEngine:
                 continue
             to_mark.append(det)
             det.missing_since_utc = det.missing_since_utc or missing_ts
+            self._log(
+                "persist_missing",
+                detection_id=det.id,
+                baseline_id=det.baseline_id,
+                center_hz=det.f_center_hz,
+                width_hz=max(det.f_high_hz - det.f_low_hz, 0),
+            )
             if self.two_pass_enabled:
                 self._schedule_revisit(
                     detection_id=det.id,
@@ -1562,6 +1642,14 @@ class DetectionEngine:
         self.store.begin()
         self.store.update_baseline_detection(det)
         self.store.commit()
+        self._log(
+            "revisit_apply",
+            action="confirmed",
+            tag_id=tag.tag_id,
+            detection_id=det.id,
+            center_hz=det.f_center_hz,
+            width_hz=max(det.f_high_hz - det.f_low_hz, 0),
+        )
 
     def apply_revisit_miss(self, tag: RevisitTag) -> None:
         if tag.detection_id is None:
@@ -1575,11 +1663,27 @@ class DetectionEngine:
             self.store.delete_baseline_detection(det.id, det.baseline_id)
             self.store.commit()
             self._persisted = [d for d in self._persisted if d.id != det.id]
+            self._log(
+                "revisit_apply",
+                action="pruned",
+                tag_id=tag.tag_id,
+                detection_id=det.id,
+                reason=tag.reason,
+                center_hz=det.f_center_hz,
+            )
             return
         det.missing_since_utc = det.missing_since_utc or timestamp
         self.store.begin()
         self.store.mark_detection_missing(det.id, det.baseline_id, timestamp)
         self.store.commit()
+        self._log(
+            "revisit_apply",
+            action="marked_missing",
+            tag_id=tag.tag_id,
+            detection_id=det.id,
+            reason=tag.reason,
+            center_hz=det.f_center_hz,
+        )
 
     def _prune_clusters(self, window_idx: int, force: bool = False):
         to_remove: List[DetectionCluster] = []
@@ -1876,12 +1980,40 @@ def _apply_scan_profile(args, parser: argparse.ArgumentParser):
         if attr not in args._cli_overrides:
             setattr(args, attr, value)
 
+    if prof.step_hz is not None:
+        maybe_set("step", prof.step_hz)
     maybe_set("samp_rate", prof.samp_rate)
     maybe_set("fft", prof.fft)
     maybe_set("avg", prof.avg)
     maybe_set("threshold_db", prof.threshold_db)
     maybe_set("guard_bins", prof.guard_bins)
     maybe_set("min_width_bins", prof.min_width_bins)
+    if prof.cfar_train is not None:
+        maybe_set("cfar_train", prof.cfar_train)
+    if prof.cfar_guard is not None:
+        maybe_set("cfar_guard", prof.cfar_guard)
+    if prof.cfar_quantile is not None:
+        maybe_set("cfar_quantile", prof.cfar_quantile)
+    if prof.persistence_hit_ratio is not None:
+        maybe_set("persistence_hit_ratio", prof.persistence_hit_ratio)
+    if prof.persistence_min_seconds is not None:
+        maybe_set("persistence_min_seconds", prof.persistence_min_seconds)
+    if prof.persistence_min_hits is not None:
+        maybe_set("persistence_min_hits", prof.persistence_min_hits)
+    if prof.persistence_min_windows is not None:
+        maybe_set("persistence_min_windows", prof.persistence_min_windows)
+    if prof.revisit_fft is not None:
+        maybe_set("revisit_fft", prof.revisit_fft)
+    if prof.revisit_avg is not None:
+        maybe_set("revisit_avg", prof.revisit_avg)
+    if prof.revisit_margin_hz is not None:
+        maybe_set("revisit_margin_hz", prof.revisit_margin_hz)
+    if prof.revisit_max_bands is not None:
+        maybe_set("revisit_max_bands", prof.revisit_max_bands)
+    if prof.revisit_floor_threshold_db is not None:
+        maybe_set("revisit_floor_threshold_db", prof.revisit_floor_threshold_db)
+    if prof.two_pass is not None:
+        maybe_set("two_pass", bool(prof.two_pass))
 
     if prof.abs_power_floor_db is not None:
         setattr(args, "abs_power_floor_db", prof.abs_power_floor_db)
