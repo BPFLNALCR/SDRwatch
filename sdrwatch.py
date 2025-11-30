@@ -2220,6 +2220,29 @@ def _run_revisit_pass(
     revisit_threshold = float(getattr(args, "revisit_floor_threshold_db", args.threshold_db))
     revisit_guard = int(getattr(args, "guard_bins", 1))
     revisit_min_width_bins = int(max(1, getattr(args, "min_width_bins", 2)))
+    raw_margin = getattr(args, "revisit_margin_hz", None)
+    if raw_margin is None or float(raw_margin) <= 0.0:
+        revisit_margin_hz = float(getattr(detection_engine, "revisit_margin_hz", 0.0))
+    else:
+        revisit_margin_hz = float(raw_margin)
+    revisit_params = {
+        "fft": revisit_fft,
+        "avg": revisit_avg,
+        "threshold_db": revisit_threshold,
+        "guard_bins": revisit_guard,
+        "min_width_bins": revisit_min_width_bins,
+        "margin_hz": revisit_margin_hz,
+        "samp_rate_hz": args.samp_rate,
+        "two_pass": bool(getattr(args, "two_pass", False)),
+        "max_bands": int(getattr(args, "revisit_max_bands", 0) or 0),
+    }
+    if logger:
+        logger.log(
+            "revisit_start",
+            baseline_id=detection_engine.baseline_ctx.id,
+            tag_count=len(tags),
+            revisit_params=revisit_params,
+        )
 
     for idx, tag in enumerate(tags, start=1):
         print(f"[revisit] tag={tag.tag_id} reason={tag.reason} center={tag.f_center_hz/1e6:.6f}MHz", flush=True)
