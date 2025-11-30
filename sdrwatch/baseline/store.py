@@ -213,6 +213,17 @@ class Store:
         self.con.commit()
         return int(row[0]) if row else 0
 
+    def set_baseline_bin(self, baseline_id: int, bin_hz: float) -> None:
+        """Persist a corrected bin_hz for legacy baselines."""
+
+        if bin_hz <= 0.0:
+            return
+        self.con.execute(
+            "UPDATE baselines SET bin_hz = ? WHERE id = ?",
+            (float(bin_hz), int(baseline_id)),
+        )
+        self.con.commit()
+
     def update_baseline_stats(
         self,
         baseline_id: int,

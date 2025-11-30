@@ -42,7 +42,7 @@ Treat the scanner’s baseline-oriented DB schema + CLI behavior as authoritativ
 * `SDRWATCH_CONTROL_BASE` (default `/tmp/sdrwatch-control/`) → `locks/`, `logs/`, and `state.json`.
 * SQLite default: `sdrwatch.db` (scan CLI flag `--db` or controller/job params can override).
 
-**Goal for contributors**: respect the modular split in [sdrwatch/architecture.md](../sdrwatch/architecture.md). Keep DSP modules pure, baseline modules stateful, the sweeper thin, and ensure controller/web remain adapters around the scanner CLI and SQLite contracts. make changes safe for long‑running service on Raspberry Pi OS **Trixie** + Pi 5 with RTL‑SDR by default, optional HackRF/SoapySDR, while keeping baseline persistence the primary unit of state.
+**Goal for contributors**: respect the modular split in [sdrwatch/architecture.md]. Keep DSP modules pure, baseline modules stateful, the sweeper thin, and ensure controller/web remain adapters around the scanner CLI and SQLite contracts. make changes safe for long‑running service on Raspberry Pi OS **Trixie** + Pi 5 with RTL‑SDR by default, optional HackRF/SoapySDR, while keeping baseline persistence the primary unit of state.
 
 ### ScanRequest JSON (web → controller)
 

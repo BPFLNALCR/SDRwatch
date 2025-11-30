@@ -138,9 +138,13 @@ class BaselinePersistence:
                 )
         if to_mark:
             self.store.begin()
-            for det in to_mark:
-                self.store.mark_detection_missing(det.id, det.baseline_id, missing_ts)
-            self.store.commit()
+            try:
+                for det in to_mark:
+                    self.store.mark_detection_missing(det.id, det.baseline_id, missing_ts)
+                self.store.commit()
+            except Exception:
+                self.store.rollback()
+                raise
         tags = self._filter_tags(self._revisit_tags) if self.two_pass_enabled else []
         self._revisit_tags = []
         self._log(
@@ -163,8 +167,12 @@ class BaselinePersistence:
         det.last_seen_utc = utc_now_str()
         det.missing_since_utc = None
         self.store.begin()
-        self.store.update_baseline_detection(det)
-        self.store.commit()
+        try:
+            self.store.update_baseline_detection(det)
+            self.store.commit()
+        except Exception:
+            self.store.rollback()
+            raise
         self._log(
             "revisit_apply",
             action="confirmed",
@@ -181,8 +189,12 @@ class BaselinePersistence:
         timestamp = utc_now_str()
         if tag.reason == "new":
             self.store.begin()
-            self.store.delete_baseline_detection(det.id, det.baseline_id)
-            self.store.commit()
+            try:
+                self.store.delete_baseline_detection(det.id, det.baseline_id)
+                self.store.commit()
+            except Exception:
+                self.store.rollback()
+                raise
             self._persisted = [d for d in self._persisted if d.id != det.id]
             self._log(
                 "revisit_apply",
@@ -195,8 +207,12 @@ class BaselinePersistence:
             return
         det.missing_since_utc = det.missing_since_utc or timestamp
         self.store.begin()
-        self.store.mark_detection_missing(det.id, det.baseline_id, timestamp)
-        self.store.commit()
+        try:
+            self.store.mark_detection_missing(det.id, det.baseline_id, timestamp)
+            self.store.commit()
+        except Exception:
+            self.store.rollback()
+            raise
         self._log(
             "revisit_apply",
             action="marked_missing",
@@ -212,10 +228,10 @@ class BaselinePersistence:
 
     def _upsert_detection(self, cluster: DetectionCluster, seg: Segment, confidence: float) -> bool:
         timestamp = utc_now_str()
-        match = self._match_persistent(seg)
-        cluster_center_hz = seg.f_center_hz
         self.store.begin()
         try:
+            match = self._match_persistent(seg)
+            cluster_center = seg.f_center_hz
             if match:
                 blended_center = self._blend_centers(match.f_center_hz, match.total_hits, cluster_center_hz, cluster.hits)
                 prev_width = max(float(match.f_high_hz - match.f_low_hz), self.bin_hz)
@@ -275,9 +291,11 @@ class BaselinePersistence:
                 is_new = True
                 if self.two_pass_enabled:
                     self._schedule_revisit(detection_id=detection_id, seg=seg, reason="new")
-        finally:
             self.store.commit()
-        return is_new
+            return is_new
+        except Exception:
+            self.store.rollback()
+            raise
 
     def _match_persistent(self, seg: Segment) -> Optional[PersistentDetection]:
         for det in self._persisted:
