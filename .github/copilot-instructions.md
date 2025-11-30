@@ -16,79 +16,96 @@ Treat the scanner’s baseline-oriented DB schema + CLI behavior as authoritativ
 
 ## 1) Big picture (runtime topology)
 
-**Authoritative script purposes (use these names in prompts/commits):**
+**Updated runtime stack (match the refactored package layout in `sdrwatch/`):**
 
-* **`sdrwatch.py` ("scanner")** — CLI tool that performs wideband sweeps tied to an active baseline, computes PSD/CFAR, updates **baseline tables** (`baselines`, `baseline_stats`, `baseline_detections`, `scan_updates`, `spur_map`), and can emit JSONL events that reference the baseline. Single-process, device-bound. Includes scan profiles, anomalous-window gating, spur calibration/suppression, and a DetectionEngine that now promotes persistence via baseline tracking.
+* **`python -m sdrwatch.cli` ("scanner CLI")** — Authoritative entrypoint that parses flags, applies scan profiles from `sdrwatch.io.profiles`, and hands execution to `sdrwatch.sweep.runner`. The legacy root-level `sdrwatch.py` now shims into this module and should be treated as deprecated.
 
-* **`sdrwatch-control.py` ("controller" / "manager")** — Long‑lived job manager. Discovers devices (serial/index/driver), enforces **file‑lock ownership** per device under `${SDRWATCH_CONTROL_BASE}/locks`, constructs the scanner command (`_build_cmd`) with the required `--baseline-id`, spawns and monitors scanner subprocesses, exposes an **HTTP API** for start/stop/list/health/baseline CRUD, and reaps stale locks.
+* **`sdrwatch.sweep.runner` ("sweeper/orchestrator")** — Binds drivers (`sdrwatch.drivers.*`), DSP (`sdrwatch.dsp.*`), detection (`sdrwatch.detection.*`), and baseline stores (`sdrwatch.baseline.*`). Every sweep is baseline-first: load the selected baseline, run PSD/CFAR, update `baseline_stats`, persist detections/scan updates, and optionally emit JSONL.
 
-* **`sdrwatch-web-simple.py` ("web" / "UI")** — Baseline-centric Flask front‑end. **Read‑only** queries to the SQLite DB (baseline tables + spur map). Proxies **control actions** (jobs/logs/devices/profiles/baselines) to the controller via RESTful endpoints pointing at `SDRWATCH_CONTROL_URL` with bearer auth. No direct device access. Treat the web layer as a thin REST client; avoid reintroducing stateful coupling.
+* **`sdrwatch-control.py` ("controller" / "manager")** — Long-lived job manager. Discovers SDR hardware, enforces `${SDRWATCH_CONTROL_BASE}/locks`, builds scanner commands (always including `--baseline-id`), and exposes the HTTP API for jobs/profiles/baselines/logs. It shells out to `python -m sdrwatch.cli` (not the shim) for each scan and re-resolves paths per job.
 
-* **Installer script (repo root, e.g., `install-sdrwatch.sh`)** — Provisioning helper for Raspberry Pi OS **Trixie**: installs apt deps (SoapySDR, plugins, Python build reqs), creates Python venv, installs Python deps, sets up directories (`/opt/sdrwatch`, logs, state), optionally installs/updates the systemd unit and env file.
+* **`sdrwatch-web-simple.py` ("web" / "UI")** — Baseline-centric Flask front end. Queries SQLite tables directly for dashboards while proxying all control-plane actions to the controller via REST with bearer auth. Never touch SDR hardware or DSP internals here.
 
-* **Bandplan CSVs (`bandplan_us_na.csv`, `bandplaneu.csv`)** — Data inputs loaded by the scanner to label detections. Header contract: `low_hz,high_hz,service,region,notes` (Hz units). Prefer adding rows over renaming headers.
+* **Support scripts & assets** — Installer (`install-sdrwatch.sh`), bandplan CSVs, optional migrations, and systemd unit definitions still behave as before but now reference the package entrypoint.
 
-* **Systemd unit (e.g., `sdrwatch.service`)** — Runs the controller or a configured scanner as a service on the Pi. Holds environment in `/etc/sdrwatch/env`. Logging via `journalctl -u sdrwatch`.
+**Colloquial → module mapping (use these names in prompts/commits):**
 
-* **Migrations folder (`migrations/`, optional)** — Idempotent SQL scripts plus a `schema_version` table to evolve DB schema when needed.
-
-**Colloquial → file mapping:**
-
-* *scanner* → `sdrwatch.py`
+* *scanner CLI* → `python -m sdrwatch.cli`
+* *sweeper* → `sdrwatch.sweep.runner` (and helpers under `sdrwatch/sweep/`)
+* *scanner shim* → `sdrwatch.py` (invoke only for legacy compatibility)
 * *controller/manager/daemon* → `sdrwatch-control.py`
 * *web/UI* → `sdrwatch-web-simple.py`
-* *installer* → `install-sdrwatch.sh` (exact name may differ; see repo root)
+* *installer* → `install-sdrwatch.sh`
 
 **State layout** (overridable via env):
 
-* `SDRWATCH_CONTROL_BASE` (default `/tmp/sdrwatch-control/`) → `locks/`, `logs/`, and `state.json` at the base.
-* Default DB file: `sdrwatch.db` (overridable with `--db`).
+* `SDRWATCH_CONTROL_BASE` (default `/tmp/sdrwatch-control/`) → `locks/`, `logs/`, and `state.json`.
+* SQLite default: `sdrwatch.db` (scan CLI flag `--db` or controller/job params can override).
 
-**Goal for contributors**: make changes safe for long‑running service on Raspberry Pi OS **Trixie** + Pi 5 with RTL‑SDR by default, optional HackRF/SoapySDR, while keeping baseline persistence the primary unit of state.
+**Goal for contributors**: respect the modular split in [sdrwatch/architecture.md](../sdrwatch/architecture.md). Keep DSP modules pure, baseline modules stateful, the sweeper thin, and ensure controller/web remain adapters around the scanner CLI and SQLite contracts. make changes safe for long‑running service on Raspberry Pi OS **Trixie** + Pi 5 with RTL‑SDR by default, optional HackRF/SoapySDR, while keeping baseline persistence the primary unit of state.
 
 ### ScanRequest JSON (web → controller)
 
 * Web posts to controller `/jobs` with payload `{ "device_key": "rtl:0", "label": "web", "baseline_id": 3, "params": { ... } }`.
-* `params` mirrors CLI flags: `start`, `stop`, `step`, `samp_rate`, `fft`, `avg`, `gain`, `threshold_db`, `cfar_*`, `loop`, `repeat`, `duration`, `sleep_between_sweeps`, `jsonl`, etc.
-* High-level toggles map directly to scanner flags: `params["profile"]` → `--profile`, `params["spur_calibration"]` → `--spur-calibration`. Controller must keep this translation 1:1; do not reimplement DSP logic elsewhere, and always pass the selected `baseline_id` through as `--baseline-id`.
-* Any optional hints (`soapy_args`, `extra_args`, `notify`) should pass straight through to `_build_cmd` without filtering.
+* `params` mirrors CLI flags surfaced by `sdrwatch.cli`: `start`, `stop`, `step`, `samp_rate`, `fft`, `avg`, `gain`, `threshold_db`, `cfar_*`, `loop`, `repeat`, `duration`, `sleep_between_sweeps`, `jsonl`, etc.
+* Toggles map 1:1 to CLI switches: `params["profile"]` → `--profile`, `params["spur_calibration"]` → `--spur-calibration`, `params["two_pass"]` → `--two-pass`, etc. Controller must only translate, never reinterpret DSP logic, and must always include the chosen `baseline_id` in `_build_cmd`.
+* Optional hints (`soapy_args`, `extra_args`, `notify`) flow straight to `_build_cmd` so the CLI sees the same argument surface area as local runs.
 
 ---
 
 ## 2) Key entrypoints & responsibilities
 
-* `sdrwatch.py`
+* `sdrwatch.cli`
 
-  * CLI parsing + scan profile application (`--profile`) with fixed gain, absolute power floors, baseline loader (`--baseline-id` required), and optional spur calibration mode.
-  * Sweep loop: tune → capture → PSD → CFAR/abs-floor filtering → anomalous-window gating → baseline EMA updates + occupancy tracking → persistence updates in `baseline_detections` and lightweight `scan_updates` rows.
-  * DetectionEngine clusters hits across windows, consults `spur_map`, computes `confidence`, and only promotes persistent, baseline-linked detections (JSONL emission mirrors `baseline_detections` and always includes `baseline_id`).
-  * Revisit confirmation runs `_constrain_revisit_segment` to clamp each follow-up span to `revisit_span_limit_hz` (profile default or `--revisit-span-limit-hz` override); FM profile now defaults to 420 kHz so closely spaced channels stay distinct while wider bands can opt in to larger caps.
+  * Parses CLI flags, applies `ScanProfile` presets from `sdrwatch.io.profiles`, enforces that a `baseline_id` or `latest` alias is supplied, and then calls `sdrwatch.sweep.runner.run_scan()`.
+  * Emits `--list-profiles` JSON directly from the profile module so the controller/web UI can stay in sync without bespoke serialization.
+
+* `sdrwatch.sweep` package
+
+  * `scheduler.py` converts CLI/profile settings into concrete sweep windows (including revisit queues and span clamps from `revisit_*` flags).
+  * `sweeper.py` / `runner.py` bind the driver, DSP, detection, and baseline persistence layers. Keep them orchestration-only: tune → capture → PSD → CFAR → clustering → baseline updates → DB writes → optional JSONL/logging.
+
+* `sdrwatch.drivers`
+
+  * `rtlsdr.py`, `soapy.py`, and any future drivers expose a shared interface (`open`, `tune`, `read_samples`, `set_gain`, etc.). The sweeper chooses the module at runtime per CLI options; do not reach into driver internals from other layers.
+
+* `sdrwatch.dsp`
+
+  * Houses FFT/windowing, CFAR, clustering, and noise estimation logic. These modules must remain pure/functional so they can be tested independently and reused by both coarse and revisit passes.
+
+* `sdrwatch.detection`
+
+  * `engine.py` translates DSP segments into detection records, handles spur suppression via `sdrwatch.baseline.spur`, computes `confidence`, and classifies NEW vs known vs quieted hits based on baseline stats.
+
+* `sdrwatch.baseline`
+
+  * `model.py`/`context.py` load baseline metadata; `stats.py` updates per-bin EMAs and occupancy; `persistence.py` maintains `baseline_detections`; `events.py` surfaces NEW/QUIETED/POWER_SHIFT notifications; `spur.py` records calibration sweeps into `spur_map`; `store.py` centralizes SQLite accessors.
+
+* `sdrwatch.io`
+
+  * `bandplan.py` maps detections to services/regions. `profiles.py` stores built-in scan presets. Future DB helpers or WAL tuning should live here rather than the CLI.
+
 * `sdrwatch-control.py`
 
-  * Device discovery (serial/index/driver).
-  * **Lock protocol**: file locks under `locks/` named by `device_key`.
-  * Job lifecycle: build command (`_build_cmd`) including `--baseline-id`, spawn, supervise, reap stale locks.
-  * Resolves `sdrwatch.py` via `resolve_scanner_paths()` every time a job starts so deployments under `/opt/sdrwatch`, symlinked releases, or manual runs keep working without restarting the daemon.
-  * HTTP API: RESTful start/stop/list jobs + log streaming, `/profiles` cache from `sdrwatch.py --list-profiles`, and `/baselines` CRUD that always enforce `baseline_id` presence when starting scans.
+  * Handles device discovery, lock enforcement, scanner process lifecycle, `/profiles` caching (by shelling out to `python -m sdrwatch.cli --list-profiles`), and `/baselines` CRUD that ensures every job includes a valid baseline id.
+
 * `sdrwatch-web-simple.py`
 
-  * Flask endpoints to read baseline tables (`baselines`, `baseline_stats`, `baseline_detections`, `scan_updates`, `spur_map`). Legacy scan pages should be deprecated rather than expanded.
-  * REST-first control layer: `/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`, `/ctl/devices`, `/profiles`, plus new `/baselines` passthroughs.
-  * Templates in `templates/`. Prefer server endpoints that act as stateless REST clients for the controller; UI scripts should call those REST endpoints, not flask internals.
-  * Control page renders a **baseline selector/creator** plus **profile dropdown** populated from controller `/profiles`, exposes a **mode selector** (“Normal scan” vs “Spur calibration”), and posts `baseline_id` + `params` so `profile`/`spur_calibration` flow through unchanged.
-  * Detections view surfaces `confidence`, a `spur?` badge for frequencies near spur_map bins, and “New/Known” status derived from baseline EMA occupancy (<0.2 = new). Keep these annotations data-driven; no DSP logic in the web layer.
+  * Flask views are thin REST clients for the controller and direct readers of SQLite baseline tables. UI templates highlight baseline health, persistent detections, and spur-map annotations without introducing DSP logic.
 
 ---
 
 ## 3) SQLite schema (do not silently change)
 
-Tables referenced by code/UI (column names are contract):
+Tables referenced by code/UI (column names are contract). Ownership lives in `sdrwatch.baseline.*` and `sdrwatch.io.store`, so adjust those modules if schema changes:
 
 * **`baselines`**: `id`, `name`, `created_at`, `location_lat`, `location_lon`, `sdr_serial`, `antenna`, `notes`, `freq_start_hz`, `freq_stop_hz`, `bin_hz`, `baseline_version`.
-* **`baseline_stats`**: `baseline_id`, `freq_hz` (or `bin_index` depending on migration), `noise_floor_ema`, `power_ema`, `occ_count`, `last_seen_utc`.
+* **`baseline_stats`**: `baseline_id`, `freq_hz` (or migration-specific `bin_index`), `noise_floor_ema`, `power_ema`, `occ_count`, `last_seen_utc`.
 * **`baseline_detections`**: `id`, `baseline_id`, `f_low_hz`, `f_high_hz`, `f_center_hz`, `first_seen_utc`, `last_seen_utc`, `total_hits`, `total_windows`, `confidence`.
 * **`scan_updates`**: `id`, `baseline_id`, `timestamp_utc`, `num_hits`, `num_segments`, `num_new_signals`.
-* **`spur_map`**: `bin_hz INTEGER PRIMARY KEY`, `mean_power_db REAL`, `hits INTEGER`, `last_seen_utc TEXT` (populated via `--spur-calibration`).
+* **`spur_map`**: `bin_hz INTEGER PRIMARY KEY`, `mean_power_db REAL`, `hits INTEGER`, `last_seen_utc TEXT` (populated via spur calibration mode).
+
+Baseline math should continue to flow through the context/persistence helpers rather than issuing ad-hoc SQL in new code.
 
 ---
 
@@ -96,8 +113,8 @@ Tables referenced by code/UI (column names are contract):
 
 * **Bandplan CSV** (header contract): `low_hz,high_hz,service,region,notes`.
 
-  * Add rows; avoid renaming headers. Unit is Hz.
-* **JSONL emit** (optional): one object per detection (must include the active `baseline_id` alongside the existing fields):
+  * `sdrwatch.io.bandplan.load_bandplan()` consumes these files and the detection engine expects Hz units. Add rows instead of renaming headers.
+* **JSONL emit** (optional): `sdrwatch.util.scan_logger` and sweeper helpers write one object per detection (must include the active `baseline_id` alongside the existing fields):
 
   ```json
   {
@@ -125,9 +142,9 @@ Tables referenced by code/UI (column names are contract):
 
 ## 5) Device drivers & discovery
 
-* Default path: **SoapySDR** (`--driver rtlsdr|hackrf|…`); fallback/native: `--driver rtlsdr_native`.
-* Discovery metadata is passed via `--soapy-args` (serial, index). The Controller converts device selection → CLI flags in `_build_cmd`.
-* Keep **optional imports** and clear error messages in CLI; do not hard-require SciPy/Soapy if pyrtlsdr path is chosen.
+* `sdrwatch.drivers.soapy` is the preferred path; `sdrwatch.drivers.rtlsdr` handles the native librtlsdr fallback when Soapy is unavailable. Future drivers should expose the same interface so the sweeper stays generic.
+* Discovery metadata comes from the controller (serial/index/driver) and is passed via `--driver` + `--soapy-args`. `_build_cmd` must not alter the meaning of these options—just forward them to the CLI.
+* Keep optional imports/lightweight dependency checks (`HAVE_SOAPY`, `HAVE_RTLSDR`) inside the driver modules. The CLI should emit actionable error messages instead of crashing when a backend is missing.
 
 ---
 
@@ -136,18 +153,17 @@ Tables referenced by code/UI (column names are contract):
 * Lock files: `${SDRWATCH_CONTROL_BASE}/locks/{device_key}.lock`.
 * Acquire: controller writes an owner token (job id). It may briefly write `pending` then update to the job id.
 * Release: controller deletes the file when the child exits; a background reaper and startup reconciliation clear stale locks.
-* Preserve: file naming, simple text owner content, stale-lock reaper behavior, and atomic create/delete semantics.
+* Preserve: file naming, simple text owner content, stale-lock reaper behavior, and atomic create/delete semantics. Do **not** move locking into the sweeper—this all belongs in the controller.
 
 ---
 
 ## 7) Performance & resource constraints (Pi 5, Trixie)
 
-* **FFT sizes** should fit memory; avoid ballooning arrays—prefer streaming windows.
-* Prefer **vectorized** numpy ops over Python loops.
-* Baseline EMA and occupancy updates must remain lightweight (array ops, avoid per-row commits).
-* Place temporary arrays in function scope (let GC free between sweeps).
-* CLI defaults should be conservative for RTL-SDR (2.4 MS/s, FFT≤4096, `avg` small).
-* When adding features, guard with `--flag` and keep defaults fast.
+* Respect the separation of concerns: keep heavy math inside `sdrwatch.dsp` (vectorized NumPy) and let `sdrwatch.sweep` orchestrate without copying large buffers.
+* FFT sizes must fit in Pi 5 memory; favor streaming Welch segments and reusing scratch arrays (`tmpdir` usage if needed) instead of allocating per window.
+* Baseline EMA/occupancy updates in `sdrwatch.baseline.stats` should stay batched (array ops, single transaction per sweep) to avoid DB thrash.
+* Guard feature experiments with CLI flags/profile settings so default scans remain RTL-SDR friendly (≈2.4 MS/s, FFT ≤4096, modest averages).
+* Revisit windows double FFT/avg by default—ensure revisit-specific overrides do not explode runtime or RAM.
 
 ---
 
