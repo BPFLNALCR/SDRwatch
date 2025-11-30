@@ -31,12 +31,52 @@ def _select_revisit_segment(tag: RevisitTag, segments: List[Segment]) -> Optiona
     return None
 
 
+def _segment_shape_kwargs_from_args(args) -> Dict[str, Any]:
+    def _clean_float(attr: str, default: float) -> float:
+        val = getattr(args, attr, None)
+        if val in (None, ""):
+            return default
+        try:
+            return float(val)
+        except Exception:
+            return default
+
+    def _clean_int(attr: str, default: int) -> int:
+        val = getattr(args, attr, None)
+        if val in (None, ""):
+            return default
+        try:
+            return int(val)
+        except Exception:
+            return default
+
+    raw_drop = getattr(args, "bandshape_drop_db", None)
+    try:
+        drop_val = float(raw_drop) if raw_drop not in (None, "") else None
+    except Exception:
+        drop_val = None
+
+    return {
+        "bandshape_mode": str(getattr(args, "bandshape_mode", "minus6db") or "minus6db"),
+        "bandshape_drop_db": drop_val,
+        "bandshape_window_bins": max(3, _clean_int("bandshape_window_bins", 24)),
+        "bandshape_curvature_db": _clean_float("bandshape_curvature_db", 3.0),
+        "bandshape_min_prominence_db": _clean_float("bandshape_min_prominence_db", 1.0),
+        "bandshape_polyfit_bins": max(3, _clean_int("bandshape_polyfit_bins", 10)),
+        "split_peak_drop_db": _clean_float("split_peak_drop_db", 4.0),
+        "split_noise_margin_db": _clean_float("split_noise_margin_db", 1.5),
+        "split_min_valley_bins": max(1, _clean_int("split_min_valley_bins", 2)),
+        "split_min_peak_prominence_db": _clean_float("split_min_peak_prominence_db", 2.0),
+    }
+
+
 def _run_revisit_pass(
     args,
     src,
     detection_engine: DetectionEngine,
     tags: List[RevisitTag],
     logger: Optional[ScanLogger] = None,
+    segment_shape_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, int]:
     stats = {"total": len(tags), "confirmed": 0, "false_positive": 0}
     if not tags:
@@ -70,6 +110,8 @@ def _run_revisit_pass(
             tag_count=len(tags),
             revisit_params=revisit_params,
         )
+
+    segment_shape_kwargs = segment_shape_kwargs or _segment_shape_kwargs_from_args(args)
 
     for tag in tags:
         print(f"[revisit] tag={tag.tag_id} reason={tag.reason} center={tag.f_center_hz/1e6:.6f}MHz", flush=True)
@@ -108,6 +150,7 @@ def _run_revisit_pass(
             cfar_quantile=args.cfar_quantile,
             cfar_alpha_db=args.cfar_alpha_db,
             abs_power_floor_db=getattr(args, "abs_power_floor_db", None),
+            **segment_shape_kwargs,
         )
         match = _select_revisit_segment(tag, segs)
         if match:
@@ -210,6 +253,7 @@ class Sweeper:
         bin_hz = float(args.samp_rate) / float(args.fft) if args.fft else float(args.samp_rate)
         stats_updater = BaselineStatsUpdater(store, baseline_ctx, sweep_bin_hz=bin_hz)
         event_writer = BaselineEventWriter(store, baseline_ctx, logger)
+        segment_shape_kwargs = _segment_shape_kwargs_from_args(args)
         if args.spur_calibration:
             detection_engine: Optional[DetectionEngine] = None
         else:
@@ -270,6 +314,7 @@ class Sweeper:
                     cfar_quantile=args.cfar_quantile,
                     cfar_alpha_db=args.cfar_alpha_db,
                     abs_power_floor_db=getattr(args, "abs_power_floor_db", None),
+                    **segment_shape_kwargs,
                 )
 
                 if logger:
@@ -350,6 +395,7 @@ class Sweeper:
                     detection_engine,
                     revisit_tags,
                     logger,
+                    segment_shape_kwargs=segment_shape_kwargs,
                 )
                 total_revisits += revisit_stats.get("total", 0)
                 total_revisit_confirmed += revisit_stats.get("confirmed", 0)

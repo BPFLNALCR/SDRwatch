@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from sdrwatch.baseline.store import BaselineContext, Store
 from sdrwatch.detection.types import DetectionCluster, PersistentDetection, RevisitTag, Segment
@@ -16,6 +16,18 @@ from sdrwatch.util.time import utc_now_str
 class PersistResult:
     is_new: bool
     occ_ratio: Optional[float]
+
+
+@dataclass
+class EdgeCounters:
+    expand: int = 0
+    shrink: int = 0
+
+
+@dataclass
+class ExtentHysteresisState:
+    left: EdgeCounters = field(default_factory=EdgeCounters)
+    right: EdgeCounters = field(default_factory=EdgeCounters)
 
 
 class BaselinePersistence:
@@ -44,6 +56,11 @@ class BaselinePersistence:
         self.center_match_hz = float(center_match_hz)
         self.max_detection_width_ratio = float(max_detection_width_ratio)
         self.max_detection_width_hz = float(max_detection_width_hz)
+        self.min_detection_width_hz = float(
+            getattr(args, "min_detection_width_hz", max(self.bin_hz, 1.0)) or max(self.bin_hz, 1.0)
+        )
+        self.width_ema_alpha = float(getattr(args, "width_ema_alpha", 0.25) or 0.25)
+        self.width_outlier_ratio = float(getattr(args, "width_outlier_ratio", 4.0) or 4.0)
         self.logger = logger
         self.profile_name = getattr(args, "profile", None)
         self.jsonl_path = getattr(args, "jsonl", None)
@@ -51,10 +68,13 @@ class BaselinePersistence:
         self.two_pass_enabled = bool(getattr(args, "two_pass", False))
         self.revisit_margin_hz = float(revisit_margin_hz)
         self.revisit_span_limit_hz = float(revisit_span_limit_hz)
+        self.extent_expand_hysteresis = max(1, int(getattr(args, "extent_expand_hysteresis", 2) or 2))
+        self.extent_shrink_hysteresis = max(1, int(getattr(args, "extent_shrink_hysteresis", 3) or 3))
         self._persisted: List[PersistentDetection] = store.load_baseline_detections(baseline_ctx.id)
         self._seen_persistent: set[int] = set()
         self._revisit_tags: List[RevisitTag] = []
         self._tag_counter = 0
+        self._extent_state: Dict[int, ExtentHysteresisState] = {det.id: ExtentHysteresisState() for det in self._persisted}
 
     # -----------------
     # Public interface
@@ -196,6 +216,7 @@ class BaselinePersistence:
                 self.store.rollback()
                 raise
             self._persisted = [d for d in self._persisted if d.id != det.id]
+            self._extent_state.pop(det.id, None)
             self._log(
                 "revisit_apply",
                 action="pruned",
@@ -241,11 +262,7 @@ class BaselinePersistence:
                 )
                 prev_width = max(float(match.f_high_hz - match.f_low_hz), self.bin_hz)
                 cluster_width = max(float(cluster.f_high_hz - cluster.f_low_hz), self.bin_hz)
-                alpha = 0.25
-                target_width = prev_width + alpha * (cluster_width - prev_width)
-                width_cap = self.max_detection_width_hz
-                if width_cap > 0.0 and target_width > width_cap:
-                    target_width = width_cap
+                target_width = self._blend_width_ema(prev_width, cluster_width)
                 half = target_width / 2.0
                 new_low = int(round(blended_center - half))
                 new_high = int(round(blended_center + half))
@@ -254,10 +271,11 @@ class BaselinePersistence:
                 new_low = max(new_low, baseline_low)
                 new_high = min(new_high, baseline_high)
                 if new_high <= new_low:
-                    min_width = int(max(1.0, self.bin_hz))
+                    min_width = int(max(1.0, self.min_detection_width_hz))
                     new_high = min(baseline_high, new_low + min_width)
                     if new_high <= new_low:
                         new_low = max(baseline_low, new_high - min_width)
+                new_low, new_high = self._apply_extent_hysteresis(match, new_low, new_high)
                 match.f_low_hz = new_low
                 match.f_high_hz = new_high
                 match.f_center_hz = blended_center
@@ -293,6 +311,7 @@ class BaselinePersistence:
                 )
                 self._persisted.append(new_det)
                 self._seen_persistent.add(detection_id)
+                self._extent_state[detection_id] = ExtentHysteresisState()
                 is_new = True
                 if self.two_pass_enabled:
                     self._schedule_revisit(detection_id=detection_id, seg=seg, reason="new")
@@ -479,6 +498,91 @@ class BaselinePersistence:
         wa = max(1, int(weight_a))
         wb = max(1, int(weight_b))
         return int(round((center_a * wa + center_b * wb) / float(wa + wb)))
+
+    def _extent_state_for(self, det_id: int) -> ExtentHysteresisState:
+        return self._extent_state.setdefault(det_id, ExtentHysteresisState())
+
+    def _apply_extent_hysteresis(self, det: PersistentDetection, proposed_low: int, proposed_high: int) -> Tuple[int, int]:
+        state = self._extent_state_for(det.id)
+        epsilon = max(1, int(round(self.bin_hz)))
+        low = self._update_edge_with_hysteresis(
+            state.left,
+            det.f_low_hz,
+            proposed_low,
+            epsilon,
+            self.extent_expand_hysteresis,
+            self.extent_shrink_hysteresis,
+            direction="left",
+        )
+        high = self._update_edge_with_hysteresis(
+            state.right,
+            det.f_high_hz,
+            proposed_high,
+            epsilon,
+            self.extent_expand_hysteresis,
+            self.extent_shrink_hysteresis,
+            direction="right",
+        )
+        low = max(low, self.baseline_ctx.freq_start_hz)
+        high = min(high, self.baseline_ctx.freq_stop_hz)
+        if high <= low:
+            high = min(self.baseline_ctx.freq_stop_hz, low + epsilon)
+        return low, high
+
+    def _blend_width_ema(self, prev_width: float, measured_width: float) -> float:
+        if prev_width <= 0.0:
+            prev_width = max(self.min_detection_width_hz, measured_width)
+        measurement = max(measured_width, self.min_detection_width_hz)
+        outlier_ratio = float(self.width_outlier_ratio)
+        if prev_width > 0.0 and outlier_ratio > 0.0:
+            ratio = measurement / prev_width
+            if ratio > outlier_ratio or ratio < (1.0 / outlier_ratio):
+                measurement = prev_width
+        alpha = float(min(max(self.width_ema_alpha, 0.01), 1.0))
+        blended = prev_width + alpha * (measurement - prev_width)
+        blended = max(blended, self.min_detection_width_hz)
+        if self.max_detection_width_hz > 0.0 and blended > self.max_detection_width_hz:
+            blended = self.max_detection_width_hz
+        return blended
+
+    @staticmethod
+    def _update_edge_with_hysteresis(
+        counters: EdgeCounters,
+        current: int,
+        proposed: int,
+        epsilon: int,
+        expand_threshold: int,
+        shrink_threshold: int,
+        *,
+        direction: str,
+    ) -> int:
+        updated = current
+        if direction == "left":
+            expand_condition = proposed < current - epsilon
+            shrink_condition = proposed > current + epsilon
+        else:
+            expand_condition = proposed > current + epsilon
+            shrink_condition = proposed < current - epsilon
+
+        if expand_condition:
+            counters.expand += 1
+            if counters.expand >= expand_threshold:
+                updated = proposed
+                counters.expand = 0
+                counters.shrink = 0
+        else:
+            counters.expand = 0
+
+        if shrink_condition:
+            counters.shrink += 1
+            if counters.shrink >= shrink_threshold:
+                updated = proposed
+                counters.shrink = 0
+                counters.expand = 0
+        else:
+            counters.shrink = 0
+
+        return updated
 
     def _emit_jsonl(self, record: dict) -> None:
         path = self.jsonl_path
