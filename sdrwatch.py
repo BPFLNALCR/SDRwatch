@@ -151,6 +151,9 @@ class ScanProfile:
     two_pass: Optional[bool] = None
     bandwidth_pad_hz: Optional[float] = None
     min_emit_bandwidth_hz: Optional[float] = None
+    confidence_hit_normalizer: Optional[float] = None
+    confidence_duration_norm: Optional[float] = None
+    confidence_bias: Optional[float] = None
 
 
 def default_scan_profiles() -> Dict[str, ScanProfile]:
@@ -196,6 +199,9 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             two_pass=True,
             bandwidth_pad_hz=60_000.0,
             min_emit_bandwidth_hz=180_000.0,
+            confidence_hit_normalizer=2.0,
+            confidence_duration_norm=2.0,
+            confidence_bias=0.05,
         ),
         ScanProfile(
             name="ism_902",
@@ -247,6 +253,9 @@ def _emit_profiles_json() -> None:
                 "two_pass": prof.two_pass,
                 "bandwidth_pad_hz": prof.bandwidth_pad_hz,
                 "min_emit_bandwidth_hz": prof.min_emit_bandwidth_hz,
+                "confidence_hit_normalizer": prof.confidence_hit_normalizer,
+                "confidence_duration_norm": prof.confidence_duration_norm,
+                "confidence_bias": prof.confidence_bias,
             }
             for prof in ordered
         ]
@@ -1168,6 +1177,12 @@ class DetectionEngine:
         self.profile_name = getattr(args, "profile", None)
         self.bandwidth_pad_hz = max(0.0, float(getattr(args, "bandwidth_pad_hz", 0.0) or 0.0))
         self.min_emit_bandwidth_hz = max(0.0, float(getattr(args, "min_emit_bandwidth_hz", 0.0) or 0.0))
+        raw_hit_norm = getattr(args, "confidence_hit_normalizer", None)
+        raw_duration_norm = getattr(args, "confidence_duration_norm", None)
+        raw_bias = getattr(args, "confidence_bias", None)
+        self.conf_hit_normalizer = max(1.0, float(raw_hit_norm if raw_hit_norm not in (None, 0) else 6.0))
+        self.conf_duration_norm = max(1.0, float(raw_duration_norm if raw_duration_norm not in (None, 0) else 8.0))
+        self.confidence_bias = float(raw_bias if raw_bias is not None else 0.0)
         
     def _log(self, event: str, **fields: Any) -> None:
         if not self.logger:
@@ -1741,16 +1756,17 @@ class DetectionEngine:
     def _compute_confidence(self, cluster: DetectionCluster) -> float:
         best_seg = cluster.best_seg
         snr_component = float(np.clip(best_seg.snr_db / 30.0, 0.0, 1.0))
-        hit_component = float(np.clip(cluster.hits / 6.0, 0.0, 1.0))
+        hit_component = float(np.clip(cluster.hits / self.conf_hit_normalizer, 0.0, 1.0))
         span_windows = max(cluster.last_window - cluster.first_window + 1, 1)
         persistence_component = float(np.clip(len(cluster.windows) / span_windows, 0.0, 1.0))
-        duration_component = float(np.clip(span_windows / 8.0, 0.0, 1.0))
+        duration_component = float(np.clip(span_windows / self.conf_duration_norm, 0.0, 1.0))
         raw_score = (
             0.45 * snr_component
             + 0.25 * hit_component
             + 0.2 * persistence_component
             + 0.1 * duration_component
         )
+        raw_score += self.confidence_bias
         penalty = self._spur_confidence_penalty(cluster)
         return float(np.clip(raw_score - penalty, 0.0, 1.0))
 
@@ -2045,6 +2061,12 @@ def _apply_scan_profile(args, parser: argparse.ArgumentParser):
         setattr(args, "bandwidth_pad_hz", float(prof.bandwidth_pad_hz))
     if prof.min_emit_bandwidth_hz is not None:
         setattr(args, "min_emit_bandwidth_hz", float(prof.min_emit_bandwidth_hz))
+    if prof.confidence_hit_normalizer is not None:
+        setattr(args, "confidence_hit_normalizer", float(prof.confidence_hit_normalizer))
+    if prof.confidence_duration_norm is not None:
+        setattr(args, "confidence_duration_norm", float(prof.confidence_duration_norm))
+    if prof.confidence_bias is not None:
+        setattr(args, "confidence_bias", float(prof.confidence_bias))
 
     if prof.abs_power_floor_db is not None:
         setattr(args, "abs_power_floor_db", prof.abs_power_floor_db)
@@ -2142,6 +2164,11 @@ def _do_one_sweep(
             "persistence_min_seconds": getattr(args, "persistence_min_seconds", None),
             "persistence_min_hits": getattr(args, "persistence_min_hits", None),
             "persistence_min_windows": getattr(args, "persistence_min_windows", None),
+            "bandwidth_pad_hz": getattr(args, "bandwidth_pad_hz", None),
+            "min_emit_bandwidth_hz": getattr(args, "min_emit_bandwidth_hz", None),
+            "confidence_hit_normalizer": getattr(args, "confidence_hit_normalizer", None),
+            "confidence_duration_norm": getattr(args, "confidence_duration_norm", None),
+            "confidence_bias": getattr(args, "confidence_bias", None),
         }
         logger.start_sweep(
             sweep_seq,
