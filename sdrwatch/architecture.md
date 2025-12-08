@@ -14,14 +14,11 @@ SDRwatch is a modular spectrum-monitoring system that performs:
 8. **Control daemon** for job lifecycle
 9. **Web UI** for visualization and tactical summaries
 
-Currently this logic is tightly coupled in a single large script.
-The refactor aims to separate SDRwatch into well-defined subsystems with clean interfaces.
-
 ---
 
 # **High-Level Architecture**
 
-SDRwatch will be organized into these major components:
+SDRwatch is organized into these major components:
 
 ```
 sdrwatch/
@@ -290,8 +287,6 @@ Thin wrapper around Sweeper:
 
 ## **9. Control Daemon (`sdrwatch-control.py`)**
 
-**(Already works well; minimal change needed)**
-
 Responsibilities:
 
 * Job lifecycle
@@ -314,8 +309,6 @@ Responsibilities:
 * Query database
 * Hit control daemon API
 * No coupling to scanner internals
-
-After refactor, the DB schema remains consistent, so the web layer should need **zero** changes beyond file paths.
 
 ---
 
@@ -352,33 +345,5 @@ After refactor, the DB schema remains consistent, so the web layer should need *
 
 6. **Compatibility with current DB schema**:
    No database changes required for now.
-
----
-
-# **Refactor Plan Summary**
-
-### **Phase 1 — Structural split**
-
-* Break up the monolithic script into modules without any logic change.
-
-### **Phase 2 — Isolate DSP**
-
-* Extract FFT, windowing, CFAR, clustering, noise modeling.
-
-### **Phase 3 — Consolidate baseline**
-
-* Move all baseline logic (stats, persistent signals, spur, events) into `baseline/`.
-
-### **Phase 4 — Rewrite the sweeper**
-
-* Build a small orchestration engine that calls into subsystems.
-
-### **Phase 5 — Update CLI**
-
-* Replace the current direct invocation with `sdrwatch.cli`.
-
-### **Phase 6 — Validate control + web**
-
-* Minimal path updates, no functional refactors needed.
 
 ---
