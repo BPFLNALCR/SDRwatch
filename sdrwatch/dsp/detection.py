@@ -131,6 +131,10 @@ def detect_segments(
     split_noise_margin_db: float = 1.5,
     split_min_valley_bins: int = 2,
     split_min_peak_prominence_db: float = 2.0,
+    center_mode: str = "midpoint",
+    centroid_span_hz: float = 240_000.0,
+    centroid_drop_db: float = 20.0,
+    centroid_floor_margin_db: float = 2.0,
 ) -> Tuple[List[Segment], np.ndarray, np.ndarray]:
     """Detect contiguous energy segments from a PSD in dB."""
     psd_db = np.asarray(psd_db).astype(np.float64)
@@ -155,6 +159,55 @@ def detect_segments(
     else:
         bin_hz = 0.0
     gap_bins = max(1, int(round(bandwidth_gap_hz / max(bin_hz, 1.0)))) if bin_hz > 0 else max(1, min_width_bins)
+
+    def _centroid_center_hz(
+        *,
+        peak_idx: int,
+        peak_db: float,
+        freq_axis: np.ndarray,
+        psd: np.ndarray,
+        noise: np.ndarray,
+        span_hz: float,
+        drop_db: float,
+        floor_margin_db: float,
+    ) -> float:
+        if freq_axis.size == 0:
+            return float(freq_axis.reshape(-1)[0]) if freq_axis.size else 0.0
+        diffs_local = np.diff(freq_axis)
+        bin_hz_local = float(np.median(diffs_local)) if diffs_local.size else 0.0
+        if bin_hz_local <= 0.0:
+            return float(freq_axis[int(np.clip(peak_idx, 0, max(freq_axis.size - 1, 0)))])
+        span_hz = max(float(span_hz), bin_hz_local)
+        half_bins = int(max(1, round((span_hz / 2.0) / bin_hz_local)))
+        start = max(0, int(peak_idx) - half_bins)
+        stop = min(psd.size, int(peak_idx) + half_bins + 1)
+        if stop <= start:
+            return float(freq_axis[int(np.clip(peak_idx, 0, max(freq_axis.size - 1, 0)))])
+        win_psd = np.asarray(psd[start:stop], dtype=np.float64)
+        win_noise = np.asarray(noise[start:stop], dtype=np.float64)
+        win_freq = np.asarray(freq_axis[start:stop], dtype=np.float64)
+        # Mask bins that plausibly belong to the signal lobe.
+        floor_thr = win_noise + float(max(0.0, floor_margin_db))
+        peak_thr = float(peak_db) - float(max(0.0, drop_db))
+        thr = np.maximum(floor_thr, peak_thr)
+        mask = win_psd >= thr
+        if not np.any(mask):
+            # Fallback: if everything is below the combined threshold, still try a
+            # floor-based mask, else revert to the peak bin frequency.
+            mask = win_psd >= floor_thr
+        if not np.any(mask):
+            return float(freq_axis[int(np.clip(peak_idx, 0, max(freq_axis.size - 1, 0)))])
+        sel_psd = win_psd[mask]
+        sel_noise = win_noise[mask]
+        sel_freq = win_freq[mask]
+        # Weight by linearized positive excess above noise.
+        excess_db = np.maximum(sel_psd - sel_noise, 0.0)
+        weights = np.power(10.0, excess_db / 10.0)
+        wsum = float(np.sum(weights))
+        if not np.isfinite(wsum) or wsum <= 0.0:
+            return float(freq_axis[int(np.clip(peak_idx, 0, max(freq_axis.size - 1, 0)))])
+        return float(np.sum(sel_freq * weights) / wsum)
+
 
     segs: List[Segment] = []
     i = 0
@@ -238,7 +291,22 @@ def detect_segments(
                             bandwidth_hz = fallback_bw
                         else:
                             bandwidth_hz = max(float(est_bw), fallback_bw if fallback_bw > 0 else 0.0)
-                    f_center = float((f_low + f_high) / 2.0)
+                    resolved_center_mode = str(center_mode or "midpoint").strip().lower()
+                    if resolved_center_mode == "centroid":
+                        f_center = _centroid_center_hz(
+                            peak_idx=peak_idx,
+                            peak_db=peak_db,
+                            freq_axis=freqs_hz,
+                            psd=psd_db,
+                            noise=noise_for_snr_db,
+                            span_hz=float(centroid_span_hz),
+                            drop_db=float(centroid_drop_db),
+                            floor_margin_db=float(centroid_floor_margin_db),
+                        )
+                    elif resolved_center_mode == "peak":
+                        f_center = float(freqs_hz[peak_idx])
+                    else:  # midpoint
+                        f_center = float((f_low + f_high) / 2.0)
                     segs.append(
                         Segment(
                             f_low_hz=int(round(f_low)),

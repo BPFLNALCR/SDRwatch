@@ -42,6 +42,10 @@ class ScanProfile:
     cluster_merge_hz: Optional[float] = None
     max_detection_width_ratio: Optional[float] = None
     max_detection_width_hz: Optional[float] = None
+    segment_center_mode: Optional[str] = None
+    segment_centroid_span_hz: Optional[float] = None
+    segment_centroid_drop_db: Optional[float] = None
+    segment_centroid_floor_margin_db: Optional[float] = None
 
 
 def default_scan_profiles() -> Dict[str, ScanProfile]:
@@ -68,7 +72,9 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             avg=10,
             gain_db=20.0,
             threshold_db=6.0,
-            min_width_bins=12,
+            # FM stations can present as narrow peaks (pilot/edges) on some sweeps;
+            # keep min width low enough to avoid rejecting strong carriers.
+            min_width_bins=5,
             guard_bins=3,
             abs_power_floor_db=-92.0,
             step_hz=1.2e6,
@@ -94,6 +100,12 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             cluster_merge_hz=12_000.0,
             max_detection_width_ratio=2.5,
             max_detection_width_hz=270_000.0,
+            # Use a power-weighted centroid over a wider masked region to reduce
+            # center drift and avoid collapsing adjacent low-power carriers.
+            segment_center_mode="centroid",
+            segment_centroid_span_hz=240_000.0,
+            segment_centroid_drop_db=20.0,
+            segment_centroid_floor_margin_db=2.0,
         ),
         ScanProfile(
             name="ism_902",
@@ -154,6 +166,10 @@ def serialize_profiles() -> Dict[str, Any]:
                 "cluster_merge_hz": prof.cluster_merge_hz,
                 "max_detection_width_ratio": prof.max_detection_width_ratio,
                 "max_detection_width_hz": prof.max_detection_width_hz,
+                "segment_center_mode": prof.segment_center_mode,
+                "segment_centroid_span_hz": prof.segment_centroid_span_hz,
+                "segment_centroid_drop_db": prof.segment_centroid_drop_db,
+                "segment_centroid_floor_margin_db": prof.segment_centroid_floor_margin_db,
             }
             for prof in ordered
         ]

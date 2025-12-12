@@ -58,6 +58,10 @@ def _segment_shape_kwargs_from_args(args) -> Dict[str, Any]:
         drop_val = None
 
     return {
+        "center_mode": str(getattr(args, "segment_center_mode", "midpoint") or "midpoint"),
+        "centroid_span_hz": _clean_float("segment_centroid_span_hz", 240_000.0),
+        "centroid_drop_db": _clean_float("segment_centroid_drop_db", 20.0),
+        "centroid_floor_margin_db": _clean_float("segment_centroid_floor_margin_db", 2.0),
         "bandshape_mode": str(getattr(args, "bandshape_mode", "minus6db") or "minus6db"),
         "bandshape_drop_db": drop_val,
         "bandshape_window_bins": max(3, _clean_int("bandshape_window_bins", 24)),
@@ -237,6 +241,10 @@ class Sweeper:
             "cluster_merge_hz": getattr(args, "cluster_merge_hz", None),
             "max_detection_width_ratio": getattr(args, "max_detection_width_ratio", None),
             "max_detection_width_hz": getattr(args, "max_detection_width_hz", None),
+            "segment_center_mode": getattr(args, "segment_center_mode", None),
+            "segment_centroid_span_hz": getattr(args, "segment_centroid_span_hz", None),
+            "segment_centroid_drop_db": getattr(args, "segment_centroid_drop_db", None),
+            "segment_centroid_floor_margin_db": getattr(args, "segment_centroid_floor_margin_db", None),
         }
 
     def run(self, src, sweep_seq: int) -> None:
