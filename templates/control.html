@@ -637,6 +637,16 @@ profileSelect?.addEventListener('change', ()=>{
 scanModeSelect?.addEventListener('change', saveForm);
 document.getElementById('resetBtn')?.addEventListener('click', ()=>{ localStorage.removeItem(FORM_STORAGE_KEY); location.reload(); });
 loadForm();
+// If a profile is already selected (e.g., restored from localStorage),
+// sync the visible form fields to that profile's defaults so the submitted
+// params don't accidentally override the profile in the scanner.
+if(profileSelect?.value){
+  const prof = getProfileRecord(profileSelect.value);
+  if(prof){
+    applyProfileDefaults();
+    saveForm();
+  }
+}
 updateProfileMeta();
 
 // Devices
@@ -680,10 +690,27 @@ function preset(k){
     } else {
       f.threshold_db.value = '6';
       f.guard_bins.value = '3';
-      f.min_width_bins.value = '12';
+      f.min_width_bins.value = '5';
       f.cluster_merge_hz.value = '12000';
       f.max_detection_width_ratio.value = '2.5';
       f.max_detection_width_hz.value = '270000';
+      // Keep fallback in sync with the built-in fm_broadcast profile.
+      f.cfar.value = 'os';
+      f.cfar_train.value = '32';
+      f.cfar_guard.value = '6';
+      f.cfar_quantile.value = '0.6';
+      f.persistence_mode.value = 'hits';
+      f.persistence_hit_ratio.value = '0.25';
+      f.persistence_min_seconds.value = '2.0';
+      f.persistence_min_hits.value = '1';
+      f.persistence_min_windows.value = '1';
+      f.two_pass.checked = true;
+      f.revisit_fft.value = '32768';
+      f.revisit_avg.value = '4';
+      f.revisit_margin_hz.value = '200000';
+      f.revisit_span_limit_hz.value = '420000';
+      f.revisit_max_bands.value = '40';
+      f.revisit_floor_threshold_db.value = '6.0';
       f.fft.value = '8192';
       f.avg.value = '10';
     }

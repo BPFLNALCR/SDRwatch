@@ -580,6 +580,8 @@ class JobManager:
             "fft": "--fft",
             "avg": "--avg",
             "threshold_db": "--threshold-db",
+            "guard_bins": "--guard-bins",
+            "min_width_bins": "--min-width-bins",
             "sleep_between_sweeps": "--sleep-between-sweeps",
             "latitude": "--latitude",
             "longitude": "--longitude",
@@ -590,6 +592,10 @@ class JobManager:
             "cluster_merge_hz": "--cluster-merge-hz",
             "max_detection_width_ratio": "--max-detection-width-ratio",
             "max_detection_width_hz": "--max-detection-width-hz",
+            "cfar_train": "--cfar-train",
+            "cfar_guard": "--cfar-guard",
+            "cfar_quantile": "--cfar-quantile",
+            "cfar_alpha_db": "--cfar-alpha-db",
             "revisit_fft": "--revisit-fft",
             "revisit_avg": "--revisit-avg",
             "revisit_margin_hz": "--revisit-margin-hz",
@@ -618,6 +624,10 @@ class JobManager:
         if args.get("persistence_mode"):
             cmd += ["--persistence-mode", str(args["persistence_mode"])]
 
+        # CFAR mode is a simple string flag (off/os/ca)
+        if args.get("cfar"):
+            cmd += ["--cfar", str(args["cfar"])]
+
         # Loop/repeat flags
         if args.get("loop"):
             cmd.append("--loop")
@@ -637,8 +647,7 @@ class JobManager:
             cmd.append("--two-pass")
 
         # Booleans
-        if args.get("use_baseline"):
-            cmd += ["--use-baseline"]
+        # (keep list in sync with scanner CLI flags)
 
         # Soapy device selection hints
         if args.get("soapy_args"):
