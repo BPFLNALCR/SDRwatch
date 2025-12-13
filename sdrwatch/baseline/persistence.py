@@ -181,8 +181,27 @@ class BaselinePersistence:
         if det is None:
             return
         seg = self._constrain_revisit_segment(det, seg)
-        det.f_low_hz = min(det.f_low_hz, seg.f_low_hz)
-        det.f_high_hz = max(det.f_high_hz, seg.f_high_hz)
+        # Revisit confirmations should not permanently "ratchet" extents wider via
+        # min/max unioning. Use the same width-EMA + hysteresis logic as coarse
+        # persistence so widths can converge and stay bounded.
+        prev_width = max(float(det.f_high_hz - det.f_low_hz), self.bin_hz)
+        measured_width = max(float(seg.f_high_hz - seg.f_low_hz), self.bin_hz)
+        target_width = self._blend_width_ema(prev_width, measured_width)
+        half = target_width / 2.0
+        proposed_low = int(round(float(seg.f_center_hz) - half))
+        proposed_high = int(round(float(seg.f_center_hz) + half))
+        baseline_low = self.baseline_ctx.freq_start_hz
+        baseline_high = self.baseline_ctx.freq_stop_hz
+        proposed_low = max(proposed_low, baseline_low)
+        proposed_high = min(proposed_high, baseline_high)
+        if proposed_high <= proposed_low:
+            min_width = int(max(1.0, self.min_detection_width_hz))
+            proposed_high = min(baseline_high, proposed_low + min_width)
+            if proposed_high <= proposed_low:
+                proposed_low = max(baseline_low, proposed_high - min_width)
+        new_low, new_high = self._apply_extent_hysteresis(det, proposed_low, proposed_high)
+        det.f_low_hz = new_low
+        det.f_high_hz = new_high
         det.f_center_hz = int(seg.f_center_hz)
         det.last_seen_utc = utc_now_str()
         det.missing_since_utc = None
@@ -323,9 +342,25 @@ class BaselinePersistence:
 
     def _match_persistent(self, seg: Segment) -> Optional[PersistentDetection]:
         for det in self._persisted:
+            # Use an effective span for overlap checks. If a stored persistent
+            # detection has become too wide (e.g., from historical settings),
+            # treating it as an "overlap" region can cause it to absorb unrelated
+            # signals. When a max width is configured, cap the span used for
+            # matching around the stored center.
+            det_low = det.f_low_hz
+            det_high = det.f_high_hz
+            if self.max_detection_width_hz > 0.0:
+                max_w = float(self.max_detection_width_hz)
+                det_w = float(det_high - det_low)
+                if det_w > max_w:
+                    half = max_w / 2.0
+                    det_low = int(round(float(det.f_center_hz) - half))
+                    det_high = int(round(float(det.f_center_hz) + half))
+                    det_low = max(det_low, self.baseline_ctx.freq_start_hz)
+                    det_high = min(det_high, self.baseline_ctx.freq_stop_hz)
             spans_overlap = not (
-                seg.f_high_hz < (det.f_low_hz - self.freq_merge_hz)
-                or seg.f_low_hz > (det.f_high_hz + self.freq_merge_hz)
+                seg.f_high_hz < (det_low - self.freq_merge_hz)
+                or seg.f_low_hz > (det_high + self.freq_merge_hz)
             )
             center_close = abs(seg.f_center_hz - det.f_center_hz) <= self.center_match_hz
             if spans_overlap or center_close:

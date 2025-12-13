@@ -205,12 +205,27 @@ class DetectionEngine:
         return int(round(cluster.center_weight_sum / cluster.center_weight_total))
 
     def _shape_emit_span(self, center_hz: int, raw_low: int, raw_high: int) -> Tuple[int, int]:
+        # Ensure the emitted center is within the active baseline span.
+        # When centroiding spans beyond the scan edges, the raw center can land
+        # slightly outside the configured sweep range; clamping avoids emitting
+        # out-of-band centers with nonsensical low/high bounds.
+        center_hz = int(
+            min(
+                max(int(center_hz), int(self.baseline_ctx.freq_start_hz)),
+                int(self.baseline_ctx.freq_stop_hz),
+            )
+        )
         width = max(float(raw_high - raw_low), self.bin_hz)
         if self.bandwidth_pad_hz > 0.0:
             width += self.bandwidth_pad_hz * 2.0
         min_emit = self.min_emit_bandwidth_hz
         if min_emit > 0.0 and width < min_emit:
             width = min_emit
+
+        # Apply a hard cap to the emitted span if configured. This prevents
+        # runaway widths when clusters drift/chain across adjacent segments.
+        if self.max_detection_width_hz > 0.0 and width > self.max_detection_width_hz:
+            width = self.max_detection_width_hz
         half = width / 2.0
         low = int(round(center_hz - half))
         high = int(round(center_hz + half))

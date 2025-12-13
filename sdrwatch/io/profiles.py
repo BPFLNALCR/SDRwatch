@@ -91,8 +91,12 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             revisit_max_bands=40,
             revisit_floor_threshold_db=6.0,
             two_pass=True,
-            bandwidth_pad_hz=60_000.0,
-            min_emit_bandwidth_hz=180_000.0,
+            # Bandwidth shaping: FM stations are ~200 kHz, but our thresholded
+            # segments can be much narrower (pilot/edges). Padding helps avoid
+            # overly-tiny spans, while keeping the minimum modest prevents
+            # ballooning into wide overlaps that can merge adjacent stations.
+            bandwidth_pad_hz=30_000.0,
+            min_emit_bandwidth_hz=120_000.0,
             confidence_hit_normalizer=2.0,
             confidence_duration_norm=2.0,
             confidence_bias=0.05,
