@@ -85,6 +85,7 @@ class BaselinePersistence:
         *,
         cluster: DetectionCluster,
         combined_seg: Segment,
+        emit_seg: Optional[Segment] = None,
         confidence: float,
         window_ratio: float,
         duration_seconds: float,
@@ -97,16 +98,17 @@ class BaselinePersistence:
         occ_ratio = self._lookup_occ_ratio(combined_seg.f_center_hz)
         occ_threshold = float(getattr(self.args, "new_ema_occ", 0.02) or 0.02)
         is_new_flag = bool(is_new_detection or (occ_ratio is not None and occ_ratio < occ_threshold))
+        emit_seg = emit_seg or combined_seg
         record = {
             "baseline_id": self.baseline_ctx.id,
             "time_utc": utc_now_str(),
-            "f_center_hz": combined_seg.f_center_hz,
-            "f_low_hz": combined_seg.f_low_hz,
-            "f_high_hz": combined_seg.f_high_hz,
-            "bandwidth_hz": combined_seg.bandwidth_hz,
-            "peak_db": combined_seg.peak_db,
-            "noise_db": combined_seg.noise_db,
-            "snr_db": combined_seg.snr_db,
+            "f_center_hz": emit_seg.f_center_hz,
+            "f_low_hz": emit_seg.f_low_hz,
+            "f_high_hz": emit_seg.f_high_hz,
+            "bandwidth_hz": emit_seg.bandwidth_hz,
+            "peak_db": emit_seg.peak_db,
+            "noise_db": emit_seg.noise_db,
+            "snr_db": emit_seg.snr_db,
             "service": service,
             "region": region,
             "notes": notes,
@@ -571,7 +573,9 @@ class BaselinePersistence:
         outlier_ratio = float(self.width_outlier_ratio)
         if prev_width > 0.0 and outlier_ratio > 0.0:
             ratio = measurement / prev_width
-            if ratio > outlier_ratio or ratio < (1.0 / outlier_ratio):
+            # Reject only large *expansion* outliers. Shrink outliers are allowed
+            # so oversized persisted spans can converge back down over time.
+            if ratio > outlier_ratio:
                 measurement = prev_width
         alpha = float(min(max(self.width_ema_alpha, 0.01), 1.0))
         blended = prev_width + alpha * (measurement - prev_width)

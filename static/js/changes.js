@@ -96,7 +96,8 @@
     const summary = escapeHtml(event.summary || '—');
     const details = escapeHtml(event.details || '');
     const freq = formatNumber(event.f_center_hz ? event.f_center_hz / 1e6 : null, 3);
-    const bandwidth = formatNumber(event.bandwidth_hz ? event.bandwidth_hz / 1e3 : null, 0);
+    const bwHz = (event.bandwidth_hz_display != null) ? event.bandwidth_hz_display : event.bandwidth_hz;
+    const bandwidth = formatNumber(bwHz ? bwHz / 1e3 : null, 0);
     const confidenceValue = Number.isFinite(Number(event.confidence)) ? Number(event.confidence) : null;
     const deltaValue = Number.isFinite(Number(event.delta_db)) ? Number(event.delta_db) : null;
     const downtimeValue = Number.isFinite(Number(event.downtime_minutes)) ? Number(event.downtime_minutes) : null;

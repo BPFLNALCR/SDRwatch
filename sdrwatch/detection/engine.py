@@ -56,6 +56,13 @@ class DetectionEngine:
             freq_merge_val = max(self.bin_hz * 2.0, 25_000.0)
         self.freq_merge_hz = float(freq_merge_val)
         self.center_match_hz = max(self.bin_hz * 2.0, self.freq_merge_hz / 2.0)
+        raw_center_match = getattr(args, "center_match_hz", None)
+        try:
+            center_match_override = float(raw_center_match) if raw_center_match not in (None, "") else None
+        except Exception:
+            center_match_override = None
+        if center_match_override is not None and center_match_override > 0.0:
+            self.center_match_hz = float(center_match_override)
         raw_mode = str(getattr(args, "persistence_mode", "hits") or "hits").lower()
         self.persistence_mode = raw_mode if raw_mode in {"hits", "duration", "both"} else "hits"
         raw_ratio = getattr(args, "persistence_hit_ratio", 0.0)
@@ -98,8 +105,27 @@ class DetectionEngine:
         self.revisit_span_limit_hz = max(0.0, span_limit)
         self.logger = logger
         self.profile_name = getattr(args, "profile", None)
-        self.bandwidth_pad_hz = max(0.0, float(getattr(args, "bandwidth_pad_hz", 0.0) or 0.0))
-        self.min_emit_bandwidth_hz = max(0.0, float(getattr(args, "min_emit_bandwidth_hz", 0.0) or 0.0))
+        # Span shaping is split into:
+        # - match span: what is persisted/matched in baseline_detections
+        # - display span: what is emitted/logged for humans
+        legacy_pad = float(getattr(args, "bandwidth_pad_hz", 0.0) or 0.0)
+        legacy_min = float(getattr(args, "min_emit_bandwidth_hz", 0.0) or 0.0)
+        self.match_bandwidth_pad_hz = max(
+            0.0,
+            float(getattr(args, "match_bandwidth_pad_hz", None) or legacy_pad or 0.0),
+        )
+        self.min_match_bandwidth_hz = max(
+            0.0,
+            float(getattr(args, "min_match_bandwidth_hz", None) or legacy_min or 0.0),
+        )
+        self.display_bandwidth_pad_hz = max(
+            0.0,
+            float(getattr(args, "display_bandwidth_pad_hz", None) or legacy_pad or 0.0),
+        )
+        self.min_display_bandwidth_hz = max(
+            0.0,
+            float(getattr(args, "min_display_bandwidth_hz", None) or legacy_min or 0.0),
+        )
         raw_hit_norm = getattr(args, "confidence_hit_normalizer", None)
         raw_duration_norm = getattr(args, "confidence_duration_norm", None)
         raw_bias = getattr(args, "confidence_bias", None)
@@ -204,7 +230,15 @@ class DetectionEngine:
             return int((cluster.f_low_hz + cluster.f_high_hz) / 2)
         return int(round(cluster.center_weight_sum / cluster.center_weight_total))
 
-    def _shape_emit_span(self, center_hz: int, raw_low: int, raw_high: int) -> Tuple[int, int]:
+    def _shape_span(
+        self,
+        center_hz: int,
+        raw_low: int,
+        raw_high: int,
+        *,
+        pad_hz: float,
+        min_bw_hz: float,
+    ) -> Tuple[int, int]:
         # Ensure the emitted center is within the active baseline span.
         # When centroiding spans beyond the scan edges, the raw center can land
         # slightly outside the configured sweep range; clamping avoids emitting
@@ -216,11 +250,10 @@ class DetectionEngine:
             )
         )
         width = max(float(raw_high - raw_low), self.bin_hz)
-        if self.bandwidth_pad_hz > 0.0:
-            width += self.bandwidth_pad_hz * 2.0
-        min_emit = self.min_emit_bandwidth_hz
-        if min_emit > 0.0 and width < min_emit:
-            width = min_emit
+        if pad_hz > 0.0:
+            width += float(pad_hz) * 2.0
+        if min_bw_hz > 0.0 and width < float(min_bw_hz):
+            width = float(min_bw_hz)
 
         # Apply a hard cap to the emitted span if configured. This prevents
         # runaway widths when clusters drift/chain across adjacent segments.
@@ -234,6 +267,24 @@ class DetectionEngine:
         if high <= low:
             high = low + int(max(1.0, self.bin_hz))
         return low, high
+
+    def _shape_match_span(self, center_hz: int, raw_low: int, raw_high: int) -> Tuple[int, int]:
+        return self._shape_span(
+            center_hz,
+            raw_low,
+            raw_high,
+            pad_hz=self.match_bandwidth_pad_hz,
+            min_bw_hz=self.min_match_bandwidth_hz,
+        )
+
+    def _shape_display_span(self, center_hz: int, raw_low: int, raw_high: int) -> Tuple[int, int]:
+        return self._shape_span(
+            center_hz,
+            raw_low,
+            raw_high,
+            pad_hz=self.display_bandwidth_pad_hz,
+            min_bw_hz=self.min_display_bandwidth_hz,
+        )
 
     def _cluster_window_ratio(self, cluster: DetectionCluster) -> float:
         span_windows = max(cluster.last_window - cluster.first_window + 1, 1)
@@ -340,32 +391,56 @@ class DetectionEngine:
         cluster_center_hz = self._cluster_center_hz(cluster)
         window_ratio = self._cluster_window_ratio(cluster)
         duration_seconds = self._cluster_duration_seconds(cluster)
-        emit_low, emit_high = self._shape_emit_span(cluster_center_hz, cluster.f_low_hz, cluster.f_high_hz)
-        cluster.f_low_hz = emit_low
-        cluster.f_high_hz = emit_high
-        span_width = max(float(cluster.f_high_hz - cluster.f_low_hz), float(best_seg.bandwidth_hz), self.bin_hz)
-        combined_seg = Segment(
-            f_low_hz=cluster.f_low_hz,
-            f_high_hz=cluster.f_high_hz,
+        raw_low = int(cluster.f_low_hz)
+        raw_high = int(cluster.f_high_hz)
+
+        match_low, match_high = self._shape_match_span(cluster_center_hz, raw_low, raw_high)
+        display_low, display_high = self._shape_display_span(cluster_center_hz, raw_low, raw_high)
+
+        match_width = max(float(match_high - match_low), float(best_seg.bandwidth_hz), self.bin_hz)
+        display_width = max(float(display_high - display_low), float(best_seg.bandwidth_hz), self.bin_hz)
+
+        match_seg = Segment(
+            f_low_hz=match_low,
+            f_high_hz=match_high,
             f_center_hz=cluster_center_hz,
             peak_db=best_seg.peak_db,
             noise_db=best_seg.noise_db,
             snr_db=best_seg.snr_db,
-            bandwidth_hz=span_width,
+            bandwidth_hz=match_width,
         )
-        svc, reg, note = self.bandplan.lookup(combined_seg.f_center_hz)
+        display_seg = Segment(
+            f_low_hz=display_low,
+            f_high_hz=display_high,
+            f_center_hz=cluster_center_hz,
+            peak_db=best_seg.peak_db,
+            noise_db=best_seg.noise_db,
+            snr_db=best_seg.snr_db,
+            bandwidth_hz=display_width,
+        )
+        svc, reg, note = self.bandplan.lookup(cluster_center_hz)
 
-        persist_result = self.persistence.persist_detection(
-            cluster=cluster,
-            combined_seg=combined_seg,
-            confidence=confidence,
-            window_ratio=window_ratio,
-            duration_seconds=duration_seconds,
-            persistence_mode=self.persistence_mode,
-            service=svc,
-            region=reg,
-            notes=note,
-        )
+        # Persist using the match span, but emit/log using the display span.
+        # Important: keep the live cluster extent tight so emitted clusters do
+        # not absorb neighbors in subsequent windows.
+        try:
+            cluster.f_low_hz = match_low
+            cluster.f_high_hz = match_high
+            persist_result = self.persistence.persist_detection(
+                cluster=cluster,
+                combined_seg=match_seg,
+                emit_seg=display_seg,
+                confidence=confidence,
+                window_ratio=window_ratio,
+                duration_seconds=duration_seconds,
+                persistence_mode=self.persistence_mode,
+                service=svc,
+                region=reg,
+                notes=note,
+            )
+        finally:
+            cluster.f_low_hz = raw_low
+            cluster.f_high_hz = raw_high
         self._pending_emits += 1
         if persist_result.is_new:
             self._pending_new_signals += 1
@@ -376,11 +451,11 @@ class DetectionEngine:
         self._log(
             "cluster_emit",
             baseline_id=self.baseline_ctx.id,
-            center_hz=combined_seg.f_center_hz,
-            width_hz=combined_seg.bandwidth_hz,
-            snr_db=combined_seg.snr_db,
-            peak_db=combined_seg.peak_db,
-            noise_db=combined_seg.noise_db,
+            center_hz=display_seg.f_center_hz,
+            width_hz=display_seg.bandwidth_hz,
+            snr_db=display_seg.snr_db,
+            peak_db=display_seg.peak_db,
+            noise_db=display_seg.noise_db,
             confidence=confidence,
             hits=cluster.hits,
             windows=len(cluster.windows),

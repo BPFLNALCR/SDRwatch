@@ -20,8 +20,9 @@
       {% if event.f_center_hz is not none %}
         <span>Center {{ '%.3f'|format(event.f_center_hz / 1e6) }} MHz</span>
       {% endif %}
-      {% if event.bandwidth_hz %}
-        <span>BW {{ '%.0f'|format(event.bandwidth_hz / 1e3) }} kHz</span>
+      {% set bw_value = event.bandwidth_hz_display if event.bandwidth_hz_display is defined and event.bandwidth_hz_display is not none else event.bandwidth_hz %}
+      {% if bw_value %}
+        <span>BW {{ '%.0f'|format(bw_value / 1e3) }} kHz</span>
       {% endif %}
       {% if event.confidence is not none %}
         <span>Confidence {{ '%.2f'|format(event.confidence) }}</span>

@@ -35,6 +35,14 @@ class ScanProfile:
     two_pass: Optional[bool] = None
     bandwidth_pad_hz: Optional[float] = None
     min_emit_bandwidth_hz: Optional[float] = None
+    # Matching vs display span shaping:
+    # - match_* controls what gets persisted/matched in baseline_detections
+    # - display_* controls what gets emitted/logged for humans/UI
+    match_bandwidth_pad_hz: Optional[float] = None
+    min_match_bandwidth_hz: Optional[float] = None
+    display_bandwidth_pad_hz: Optional[float] = None
+    min_display_bandwidth_hz: Optional[float] = None
+    center_match_hz: Optional[float] = None
     confidence_hit_normalizer: Optional[float] = None
     confidence_duration_norm: Optional[float] = None
     confidence_bias: Optional[float] = None
@@ -95,8 +103,17 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             # segments can be much narrower (pilot/edges). Padding helps avoid
             # overly-tiny spans, while keeping the minimum modest prevents
             # ballooning into wide overlaps that can merge adjacent stations.
+            # Display span (humans): show a nominal FM-ish bandwidth.
             bandwidth_pad_hz=30_000.0,
-            min_emit_bandwidth_hz=120_000.0,
+            min_emit_bandwidth_hz=200_000.0,
+            display_bandwidth_pad_hz=30_000.0,
+            min_display_bandwidth_hz=200_000.0,
+            # Match span (persistence): keep tighter so nearby channels don't
+            # get overlap-matched into one persistent detection.
+            match_bandwidth_pad_hz=10_000.0,
+            min_match_bandwidth_hz=80_000.0,
+            # Allow reasonable centroid drift without requiring huge spans.
+            center_match_hz=60_000.0,
             confidence_hit_normalizer=2.0,
             confidence_duration_norm=2.0,
             confidence_bias=0.05,
@@ -163,6 +180,11 @@ def serialize_profiles() -> Dict[str, Any]:
                 "two_pass": prof.two_pass,
                 "bandwidth_pad_hz": prof.bandwidth_pad_hz,
                 "min_emit_bandwidth_hz": prof.min_emit_bandwidth_hz,
+                "match_bandwidth_pad_hz": prof.match_bandwidth_pad_hz,
+                "min_match_bandwidth_hz": prof.min_match_bandwidth_hz,
+                "display_bandwidth_pad_hz": prof.display_bandwidth_pad_hz,
+                "min_display_bandwidth_hz": prof.min_display_bandwidth_hz,
+                "center_match_hz": prof.center_match_hz,
                 "confidence_hit_normalizer": prof.confidence_hit_normalizer,
                 "confidence_duration_norm": prof.confidence_duration_norm,
                 "confidence_bias": prof.confidence_bias,

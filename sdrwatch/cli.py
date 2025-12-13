@@ -296,12 +296,18 @@ def _apply_scan_profile(args: argparse.Namespace, parser: argparse.ArgumentParse
     maybe_set("revisit_span_limit_hz", profile.revisit_span_limit_hz)
     maybe_set("two_pass", profile.two_pass)
     maybe_set("cluster_merge_hz", profile.cluster_merge_hz)
+    maybe_set("center_match_hz", getattr(profile, "center_match_hz", None))
     maybe_set("max_detection_width_ratio", profile.max_detection_width_ratio)
     maybe_set("max_detection_width_hz", profile.max_detection_width_hz)
     maybe_set("segment_center_mode", profile.segment_center_mode)
     maybe_set("segment_centroid_span_hz", profile.segment_centroid_span_hz)
     maybe_set("segment_centroid_drop_db", profile.segment_centroid_drop_db)
     maybe_set("segment_centroid_floor_margin_db", profile.segment_centroid_floor_margin_db)
+
+    maybe_set("match_bandwidth_pad_hz", getattr(profile, "match_bandwidth_pad_hz", None))
+    maybe_set("min_match_bandwidth_hz", getattr(profile, "min_match_bandwidth_hz", None))
+    maybe_set("display_bandwidth_pad_hz", getattr(profile, "display_bandwidth_pad_hz", None))
+    maybe_set("min_display_bandwidth_hz", getattr(profile, "min_display_bandwidth_hz", None))
 
     if profile.bandwidth_pad_hz is not None:
         setattr(args, "bandwidth_pad_hz", profile.bandwidth_pad_hz)

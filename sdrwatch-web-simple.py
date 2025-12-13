@@ -1367,11 +1367,19 @@ def create_app(db_path: str) -> Flask:
                     bandwidth = max(0.0, float(bandwidth))
                 except Exception:
                     bandwidth = None
+
+            display_bandwidth = compute_display_bandwidth_hz(
+                baseline_row=baseline_row,
+                f_low_hz=f_low,
+                f_high_hz=f_high,
+                bandwidth_hz=bandwidth,
+            )
             active_payload.append(
                 {
                     "id": row.get("id"),
                     "f_center_hz": center,
                     "bandwidth_hz": bandwidth,
+                    "bandwidth_hz_display": display_bandwidth,
                     "confidence": row.get("confidence"),
                     "last_seen_utc": row.get("last_seen_utc"),
                     "first_seen_utc": row.get("first_seen_utc"),
@@ -1898,6 +1906,49 @@ def create_app(db_path: str) -> Flask:
             return None
         return width / 1e3
 
+    def baseline_looks_like_fm(baseline_row: Optional[Dict[str, Any]]) -> bool:
+        if not baseline_row:
+            return False
+        try:
+            start = float(baseline_row.get("freq_start_hz") or 0.0)
+            stop = float(baseline_row.get("freq_stop_hz") or 0.0)
+        except Exception:
+            return False
+        if not (stop > start > 0):
+            return False
+        # Heuristic: baseline spans (most of) the FM broadcast band.
+        return start <= 88.5e6 and stop >= 107.5e6
+
+    def compute_display_bandwidth_hz(
+        *,
+        baseline_row: Optional[Dict[str, Any]],
+        f_low_hz: Optional[float],
+        f_high_hz: Optional[float],
+        bandwidth_hz: Optional[float],
+    ) -> Optional[float]:
+        width = bandwidth_hz
+        if width is None and f_low_hz is not None and f_high_hz is not None:
+            try:
+                width = max(0.0, float(f_high_hz) - float(f_low_hz))
+            except Exception:
+                width = None
+        if width is None:
+            return None
+        try:
+            width = float(width)
+        except Exception:
+            return None
+        if width <= 0:
+            return None
+
+        if baseline_looks_like_fm(baseline_row):
+            # Mirror the FM profile's *display* shaping without affecting persistence.
+            display_pad_hz = 30_000.0
+            min_display_bw_hz = 200_000.0
+            return max(min_display_bw_hz, width + 2.0 * display_pad_hz)
+
+        return width
+
     def format_confidence_value(value: Any) -> Optional[float]:
         if value in (None, ""):
             return None
@@ -1915,7 +1966,10 @@ def create_app(db_path: str) -> Flask:
         freq_display = f"{freq_label} MHz" if freq_label != "—" else "—"
         time_label = format_change_time_label(event.get("time_utc"))
         if etype == "NEW_SIGNAL":
-            bw = format_bandwidth_khz(event.get("bandwidth_hz"))
+            bw_value = event.get("bandwidth_hz_display")
+            if bw_value in (None, ""):
+                bw_value = event.get("bandwidth_hz")
+            bw = format_bandwidth_khz(bw_value)
             bw_label = f" (+{bw:.0f} kHz)" if bw is not None else ""
             conf = format_confidence_value(event.get("confidence"))
             conf_label = f"{conf:.2f}" if conf is not None else "—"
@@ -2018,11 +2072,18 @@ def create_app(db_path: str) -> Flask:
                         bandwidth = max(0.0, float(f_high) - float(f_low))
                     except Exception:
                         bandwidth = None
+                display_bandwidth = compute_display_bandwidth_hz(
+                    baseline_row=baseline_row,
+                    f_low_hz=float(f_low) if f_low is not None else None,
+                    f_high_hz=float(f_high) if f_high is not None else None,
+                    bandwidth_hz=bandwidth,
+                )
                 event = {
                     "type": "NEW_SIGNAL",
                     "time_utc": row.get("first_seen_utc"),
                     "f_center_hz": row.get("f_center_hz"),
                     "bandwidth_hz": bandwidth,
+                    "bandwidth_hz_display": display_bandwidth,
                     "confidence": row.get("confidence"),
                     "details": "First seen relative to baseline.",
                     "detection_id": row.get("id"),
@@ -2066,6 +2127,12 @@ def create_app(db_path: str) -> Flask:
                         bandwidth = max(0.0, float(f_high) - float(f_low))
                     except Exception:
                         bandwidth = None
+                display_bandwidth = compute_display_bandwidth_hz(
+                    baseline_row=baseline_row,
+                    f_low_hz=float(f_low) if f_low is not None else None,
+                    f_high_hz=float(f_high) if f_high is not None else None,
+                    bandwidth_hz=bandwidth,
+                )
                 last_seen = row.get("last_seen_utc")
                 downtime_minutes = None
                 last_seen_dt = parse_ts_utc(last_seen)
@@ -2079,6 +2146,7 @@ def create_app(db_path: str) -> Flask:
                     "time_utc": last_seen,
                     "f_center_hz": row.get("f_center_hz"),
                     "bandwidth_hz": bandwidth,
+                    "bandwidth_hz_display": display_bandwidth,
                     "confidence": row.get("confidence"),
                     "details": details,
                     "detection_id": row.get("id"),
