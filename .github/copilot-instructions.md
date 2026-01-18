@@ -4,6 +4,64 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
 
 ---
 
+## 0) UNIX Programming Principles (Design Constraints)
+
+This codebase follows the principles of UNIX programming. When making design or implementation decisions, prefer clarity, modularity, composability, and diagnosability over cleverness or premature optimization. Deviations are acceptable only when justified by measured requirements.
+
+### Core Principles
+
+1. **Modularity** — Design software as small, well-defined modules with single responsibilities and explicit interfaces. Avoid hidden coupling.
+
+2. **Readability** — Optimize code for human understanding first. Use clear naming, straightforward control flow, and consistent structure. Avoid clever or opaque constructs.
+
+3. **Composition** — Prefer building behavior by composing smaller components (pipelines, adapters, orchestrators) rather than monolithic implementations.
+
+4. **Mechanism vs. Policy** — Separate capabilities (mechanisms) from decisions (policy). Do not hard-code policy where configuration or higher-level orchestration is appropriate.
+
+5. **Simplicity** — Implement the simplest solution that correctly solves the current problem. Avoid unnecessary abstraction or speculative generality.
+
+6. **Smallness** — Keep functions, modules, and services small enough to be fully understood, tested, and replaced. Split components that grow beyond clear conceptual bounds.
+
+7. **Transparency** — Make program behavior observable and inspectable. Prefer explicit state, clear logging, and traceable data flow over implicit or "magical" behavior.
+
+8. **Robustness** — Assume imperfect inputs and partial failure. Validate boundaries, handle errors explicitly, and fail safely rather than silently.
+
+9. **Data over Logic** — Prefer expressing complexity in data structures, schemas, and configuration rather than in deeply nested control logic.
+
+10. **Familiarity** — Build on established conventions and user expectations (CLI behavior, exit codes, file formats, terminology). Do not invent new conventions without strong justification.
+
+11. **Minimal Output** — Avoid unnecessary output. Default output should be intentional, stable, and machine-parsable when appropriate. Separate human-facing verbosity from programmatic output.
+
+12. **Diagnosable Failure** — When failures occur, emit clear, actionable error messages and meaningful exit codes. Failures should be easy to locate and reason about.
+
+13. **Developer Time > Machine Time** — Prioritize maintainability and correctness over micro-optimizations. Optimize only when performance constraints are measured and demonstrated.
+
+14. **Automation over Repetition** — When patterns repeat, prefer code generation, templates, or declarative definitions over manual duplication.
+
+15. **Prototyping First** — Prototype to discover constraints and validate assumptions before polishing or optimizing. Expect early implementations to be revised or discarded.
+
+16. **Flexibility and Openness** — Design components to be reusable and interoperable. Prefer standard interfaces, configuration-driven behavior, and loose coupling.
+
+17. **Extensibility** — Design programs and protocols with future extension in mind. Support versioning, optional fields, and backward-compatible evolution.
+
+### Guidance for AI Assistants
+
+When trade-offs arise:
+1. Prefer **correctness and diagnosability**
+2. Then **clarity and modularity**
+3. Then **performance**, only when required by evidence
+
+Avoid introducing complexity that cannot be clearly justified or observed at runtime. Never swallow exceptions silently—always log or emit structured errors.
+
+### Concrete Implementation Standards
+
+* **Logging**: Use `sdrwatch.util.logging` for structured logging. Prefer `logger.exception()` in except blocks over silent `pass`.
+* **Exit Codes**: Use `sdrwatch.util.exit_codes.ExitCode` constants for meaningful process exit codes.
+* **Error Emission**: Use `ScanLogger.emit_error()` for structured JSONL error events alongside Python logging.
+* **Observability**: Debug endpoints at `/api/debug/*` expose health, DB stats, config, and errors. The `/debug` page provides a developer dashboard.
+
+---
+
 ## Layered runtime model (baseline-oriented scanner ↔ controller ↔ web)
 
 * **Scanner (`sdrwatch.py`)** owns SDR/DSP loops and now operates in a **baseline-first** flow: every scan is tied to an active baseline (`--baseline-id`). Each sweep loads the baseline, runs PSD/CFAR, updates **baseline EMAs/occupancy**, persists detections into `baseline_detections`, writes lightweight `scan_updates`, and handles spur calibration into `spur_map`. It still exports built-in profiles via `--list-profiles` and can emit JSONL per detection tagged with `baseline_id`.
@@ -106,7 +164,7 @@ Tables referenced by code/UI (column names are contract). Ownership lives in `sd
 * **`baseline_snapshot`**: `baseline_id`, `total_windows`, `persistent_detections`, `last_detection_utc`, `last_update_utc`, `recent_new_signals`, `updated_at`.
 * **`baseline_band_summary`**: `baseline_id`, `band_index`, `f_low_hz`, `f_high_hz`, `persistent_signals`, `recent_new_signals`, `occupied_fraction`, `avg_noise_db`, `avg_power_db`, `last_updated_utc`.
 * **`baseline_summary_meta`**: `baseline_id`, `band_count`, `band_width_hz`, `recent_minutes`, `occ_threshold`, `updated_at`.
-* **`scan_updates`**: `id`, `baseline_id`, `timestamp_utc`, `num_hits`, `num_segments`, `num_new_signals`, `num_revisits`, `num_confirmed`, `num_false_positive`.
+* **`scan_updates`**: `id`, `baseline_id`, `timestamp_utc`, `num_hits`, `num_segments`, `num_new_signals`, `num_revisits`, `num_confirmed`, `num_false_positive`, `duration_ms`.
 * **`spur_map`**: `bin_hz INTEGER PRIMARY KEY`, `mean_power_db REAL`, `hits INTEGER`, `last_seen_utc TEXT` (populated via spur calibration mode).
 
 Baseline math should continue to flow through the context/persistence helpers rather than issuing ad-hoc SQL in new code.
@@ -283,8 +341,16 @@ Baseline math should continue to flow through the context/persistence helpers ra
 
 ## 14) Observability
 
-* Optional: add timing around capture→PSD→DB if needed (no `duration_ms` field in `scan_updates` currently).
-* Optional: Prometheus **textfile** writer with a few gauges/counters (scans/sec, detections/sec, db_commit_ms).
+* **Structured logging**: Use `sdrwatch.util.logging` module with `get_logger(__name__)`. Supports console + optional JSON file output. Level controlled via `SDRWATCH_DEBUG=1` or `SDRWATCH_LOG_LEVEL`.
+* **Sweep timing**: `scan_updates.duration_ms` records per-sweep latency. Displayed in the `/debug` dashboard with sparkline visualization.
+* **Error tracking**: `ScanLogger.emit_error()` writes structured error events to JSONL. Web UI captures exceptions in a ring buffer exposed at `/api/debug/errors`.
+* **Debug endpoints** (web UI):
+  * `GET /api/debug/health` — DB connectivity, controller reachability, WAL size
+  * `GET /api/debug/db-stats` — Table row counts, recent scan timing
+  * `GET /api/debug/config` — Runtime environment and constants
+  * `GET /api/debug/errors` — Recent captured exceptions
+  * `GET /debug` — Developer dashboard page
+* Optional: Prometheus **textfile** writer with gauges/counters (scans/sec, detections/sec, db_commit_ms).
 * Consider exporting baseline health metrics (age, number of persistent detections, recent NEW events) for dashboards.
 * Debug logging toggled by `--verbose` and/or `SDRWATCH_DEBUG=1`.
 
