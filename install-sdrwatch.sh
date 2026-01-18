@@ -25,8 +25,9 @@ VENV_DIR="${PROJECT_DIR}/.venv"
 PYTHON_BIN="${VENV_DIR}/bin/python3"
 PIP_BIN="${VENV_DIR}/bin/pip"
 
-WEB_DASH="${PROJECT_DIR}/sdrwatch-web-simple.py"      # dash
-WEB_UNDERSCORE="${PROJECT_DIR}/sdrwatch_web_simple.py" # underscore (services default)
+WEB_SCRIPT="${PROJECT_DIR}/sdrwatch-web.py"            # new modular entry point
+WEB_LEGACY_DASH="${PROJECT_DIR}/sdrwatch-web-simple.py" # legacy (deprecated)
+WEB_LEGACY_UNDERSCORE="${PROJECT_DIR}/sdrwatch_web_simple.py" # legacy underscore
 CONTROL_PY="${PROJECT_DIR}/sdrwatch-control.py"
 SCANNER_MODULE="${SCANNER_MODULE:-sdrwatch.cli}"
 
@@ -188,11 +189,18 @@ log "Installing Python packages from $REQS_FILE"
 $PIP_BIN install -r "$REQS_FILE"
 
 # -----------------------------
-# Filename compatibility (underscore vs dash)
+# Filename compatibility (legacy names → new entry point)
 # -----------------------------
-if [ -f "$WEB_DASH" ] && [ ! -e "$WEB_UNDERSCORE" ]; then
-  log "Creating compatibility symlink: $(basename "$WEB_UNDERSCORE") → $(basename "$WEB_DASH")"
-  ln -s "$(basename "$WEB_DASH")" "$WEB_UNDERSCORE"
+if [ -f "$WEB_SCRIPT" ]; then
+  # Create legacy symlinks for backward compatibility
+  if [ ! -e "$WEB_LEGACY_DASH" ]; then
+    log "Creating compatibility symlink: $(basename "$WEB_LEGACY_DASH") → $(basename "$WEB_SCRIPT")"
+    ln -sf "$(basename "$WEB_SCRIPT")" "$WEB_LEGACY_DASH"
+  fi
+  if [ ! -e "$WEB_LEGACY_UNDERSCORE" ]; then
+    log "Creating compatibility symlink: $(basename "$WEB_LEGACY_UNDERSCORE") → $(basename "$WEB_SCRIPT")"
+    ln -sf "$(basename "$WEB_SCRIPT")" "$WEB_LEGACY_UNDERSCORE"
+  fi
 fi
 
 # -----------------------------
@@ -215,6 +223,11 @@ try:
     print('[check] pyrtlsdr import: OK')
 except Exception as e:
     print(f'[check] pyrtlsdr: {e}')
+try:
+    from sdrwatch_web import create_app
+    print('[check] sdrwatch_web package: OK')
+except Exception as e:
+    print(f'[check] sdrwatch_web: {e}')
 PY
 
 log "Verifying SDR CLIs…"
@@ -354,7 +367,7 @@ ExecStart=/bin/bash -lc 'cd "$SDRWATCH_PROJECT_DIR" && \
   SDRWATCH_CONTROL_URL="http://$SDRWATCH_CONTROL_HOST:$SDRWATCH_CONTROL_PORT" \
   SDRWATCH_CONTROL_TOKEN="$SDRWATCH_CONTROL_TOKEN" \
   SDRWATCH_TOKEN="$SDRWATCH_TOKEN" \
-  exec "$SDRWATCH_VENV_BIN"/python3 sdrwatch_web_simple.py --db "$SDRWATCH_DB" --host "$SDRWATCH_WEB_HOST" --port "$SDRWATCH_WEB_PORT"'
+  exec "$SDRWATCH_VENV_BIN"/python3 sdrwatch-web.py --db "$SDRWATCH_DB" --host "$SDRWATCH_WEB_HOST" --port "$SDRWATCH_WEB_PORT"'
 Restart=on-failure
 RestartSec=2
 StandardOutput=journal

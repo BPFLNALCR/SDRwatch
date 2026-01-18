@@ -29,13 +29,13 @@ def create_app(db_path: str) -> Flask:
     # ------------------------------------------------------------------
     # App-level state
     # ------------------------------------------------------------------
-    app._db_path = db_path
-    app._db_error = None
-    app._con = None
-    app._has_confidence_column = None
-    app._table_columns_cache = {}
-    app._table_exists_cache = {}
-    app._ctl = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
+    app.config["DB_PATH"] = db_path
+    app.config["DB_ERROR"] = None
+    app.config["DB_CONNECTION"] = None
+    app.config["HAS_CONFIDENCE_COLUMN"] = None
+    app.config["TABLE_COLUMNS_CACHE"] = {}
+    app.config["TABLE_EXISTS_CACHE"] = {}
+    app.config["CONTROLLER_CLIENT"] = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
 
     # ------------------------------------------------------------------
     # DB lifecycle helpers (attached to app for shared use)
@@ -55,32 +55,34 @@ def create_app(db_path: str) -> Flask:
 
     def _ensure_con() -> Optional[sqlite3.Connection]:
         """Lazy-open and cache the read-only DB connection."""
-        if app._con is not None:
-            return app._con
+        if app.config["DB_CONNECTION"] is not None:
+            return app.config["DB_CONNECTION"]
         try:
-            app._con = _open_db_ro(app._db_path)
-            app._db_error = None
-            app._has_confidence_column = None
+            app.config["DB_CONNECTION"] = _open_db_ro(app.config["DB_PATH"])
+            app.config["DB_ERROR"] = None
+            app.config["HAS_CONFIDENCE_COLUMN"] = None
         except Exception as exc:
-            app._con = None
-            app._db_error = str(exc)
-            app._has_confidence_column = None
-        return app._con
+            app.config["DB_CONNECTION"] = None
+            app.config["DB_ERROR"] = str(exc)
+            app.config["HAS_CONFIDENCE_COLUMN"] = None
+        return app.config["DB_CONNECTION"]
 
     def _reset_con() -> None:
         """Close and discard the cached DB connection."""
-        if app._con is not None:
+        if app.config["DB_CONNECTION"] is not None:
             try:
-                app._con.close()
+                app.config["DB_CONNECTION"].close()
             except Exception:
                 pass
-        app._con = None
-        app._table_columns_cache = {}
-        app._table_exists_cache = {}
+        app.config["DB_CONNECTION"] = None
+        app.config["TABLE_COLUMNS_CACHE"] = {}
+        app.config["TABLE_EXISTS_CACHE"] = {}
 
-    # Attach helpers for external access
-    app._ensure_con = _ensure_con
-    app._reset_con = _reset_con
+    # Attach helpers for external access via extensions dict
+    if "sdrwatch_helpers" not in app.extensions:
+        app.extensions["sdrwatch_helpers"] = {}
+    app.extensions["sdrwatch_helpers"]["ensure_con"] = _ensure_con
+    app.extensions["sdrwatch_helpers"]["reset_con"] = _reset_con
 
     # Attempt initial connection (tolerates failure)
     _ensure_con()
@@ -88,8 +90,8 @@ def create_app(db_path: str) -> Flask:
     # ------------------------------------------------------------------
     # Error ring buffer (exposed via api_debug blueprint)
     # ------------------------------------------------------------------
-    app._error_ring = []
-    app._error_ring_max = 100
+    app.config["ERROR_RING"] = []
+    app.config["ERROR_RING_MAX"] = 100
 
     # ------------------------------------------------------------------
     # Request timing middleware
@@ -97,12 +99,12 @@ def create_app(db_path: str) -> Flask:
 
     @app.before_request
     def log_request_start():
-        request._start_time = perf_counter()
+        g.start_time = perf_counter()
 
     @app.after_request
     def log_request_end(response):
-        if hasattr(request, "_start_time"):
-            duration_ms = (perf_counter() - request._start_time) * 1000
+        if hasattr(g, "start_time"):
+            duration_ms = (perf_counter() - g.start_time) * 1000
             # Log slow requests (>500ms) or errors at debug level
             if duration_ms > 500 or response.status_code >= 400:
                 app.logger.debug(
@@ -130,9 +132,9 @@ def create_app(db_path: str) -> Flask:
             "type": type(exc).__name__,
             "traceback": tb.format_exc(),
         }
-        app._error_ring.append(entry)
-        while len(app._error_ring) > app._error_ring_max:
-            app._error_ring.pop(0)
+        app.config["ERROR_RING"].append(entry)
+        while len(app.config["ERROR_RING"]) > app.config["ERROR_RING_MAX"]:
+            app.config["ERROR_RING"].pop(0)
         # Re-raise to let Flask handle normally
         raise exc
 

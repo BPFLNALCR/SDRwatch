@@ -10,7 +10,7 @@ import os
 import sqlite3
 from typing import Any, Dict, Optional, Set, Tuple
 
-from flask import Flask, current_app
+from flask import Flask, current_app, g
 
 
 def open_db_ro(path: str) -> sqlite3.Connection:
@@ -55,12 +55,12 @@ def init_db(app: Flask, db_path: str) -> None:
         app: Flask application instance.
         db_path: Path to the SQLite database file.
     """
-    app._db_path = db_path
-    app._db_error = None
-    app._con = None
-    app._has_confidence_column = None
-    app._table_columns_cache = {}
-    app._table_exists_cache = {}
+    app.config['SDRWATCH_DB_PATH'] = db_path
+    app.config['SDRWATCH_DB_ERROR'] = None
+    app.config['SDRWATCH_DB_CON'] = None
+    app.config['SDRWATCH_DB_HAS_CONFIDENCE'] = None
+    app.config['SDRWATCH_DB_COLUMNS_CACHE'] = {}
+    app.config['SDRWATCH_DB_EXISTS_CACHE'] = {}
 
     # Attempt initial connection (tolerates failure if DB is missing)
     _ensure_con(app)
@@ -68,29 +68,29 @@ def init_db(app: Flask, db_path: str) -> None:
 
 def _ensure_con(app: Flask) -> Optional[sqlite3.Connection]:
     """Lazy-open the read-only connection, caching on success."""
-    if app._con is not None:
-        return app._con
+    if app.config.get('SDRWATCH_DB_CON') is not None:
+        return app.config['SDRWATCH_DB_CON']
     try:
-        app._con = open_db_ro(app._db_path)
-        app._db_error = None
-        app._has_confidence_column = None
+        app.config['SDRWATCH_DB_CON'] = open_db_ro(app.config['SDRWATCH_DB_PATH'])
+        app.config['SDRWATCH_DB_ERROR'] = None
+        app.config['SDRWATCH_DB_HAS_CONFIDENCE'] = None
     except Exception as exc:
-        app._con = None
-        app._db_error = str(exc)
-        app._has_confidence_column = None
-    return app._con
+        app.config['SDRWATCH_DB_CON'] = None
+        app.config['SDRWATCH_DB_ERROR'] = str(exc)
+        app.config['SDRWATCH_DB_HAS_CONFIDENCE'] = None
+    return app.config['SDRWATCH_DB_CON']
 
 
 def reset_ro_connection(app: Flask) -> None:
     """Close and reset the cached read-only connection."""
-    if app._con is not None:
+    if app.config.get('SDRWATCH_DB_CON') is not None:
         try:
-            app._con.close()
+            app.config['SDRWATCH_DB_CON'].close()
         except Exception:
             pass
-    app._con = None
-    app._table_columns_cache = {}
-    app._table_exists_cache = {}
+    app.config['SDRWATCH_DB_CON'] = None
+    app.config['SDRWATCH_DB_COLUMNS_CACHE'] = {}
+    app.config['SDRWATCH_DB_EXISTS_CACHE'] = {}
 
 
 def get_con() -> sqlite3.Connection:
@@ -103,8 +103,7 @@ def get_con() -> sqlite3.Connection:
     Returns:
         Active sqlite3.Connection instance.
     """
-    app = current_app._get_current_object()
-    connection = _ensure_con(app)
+    connection = _ensure_con(current_app)
     if connection is None:
         raise RuntimeError("database connection unavailable")
     return connection
@@ -112,8 +111,7 @@ def get_con() -> sqlite3.Connection:
 
 def get_con_optional() -> Optional[sqlite3.Connection]:
     """Get the current connection, or None if unavailable."""
-    app = current_app._get_current_object()
-    return _ensure_con(app)
+    return _ensure_con(current_app)
 
 
 def table_columns(table_name: str) -> Set[str]:
@@ -126,13 +124,12 @@ def table_columns(table_name: str) -> Set[str]:
     Returns:
         Set of lowercase column names.
     """
-    app = current_app._get_current_object()
-    cache = app._table_columns_cache
+    cache = current_app.config['SDRWATCH_DB_COLUMNS_CACHE']
     key = table_name.lower()
     if key in cache:
         return cache[key]
 
-    connection = _ensure_con(app)
+    connection = _ensure_con(current_app)
     columns: Set[str] = set()
     if connection is None:
         cache[key] = columns
@@ -162,8 +159,7 @@ def table_exists(table_name: str) -> bool:
     Returns:
         True if the table exists.
     """
-    app = current_app._get_current_object()
-    cache = app._table_exists_cache
+    cache = current_app.config['SDRWATCH_DB_EXISTS_CACHE']
     key = table_name.lower()
     if key in cache:
         return cache[key]
@@ -197,12 +193,11 @@ def db_state() -> Tuple[str, str]:
         - "waiting": Database exists but is not yet initialized
         - "unavailable": Database could not be opened
     """
-    app = current_app._get_current_object()
-    connection = _ensure_con(app)
+    connection = _ensure_con(current_app)
     if connection is None:
         return (
             "unavailable",
-            app._db_error or "Database file could not be opened in read-only mode.",
+            current_app.config.get('SDRWATCH_DB_ERROR') or "Database file could not be opened in read-only mode.",
         )
     try:
         cur = connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -221,8 +216,8 @@ def db_state() -> Tuple[str, str]:
             return ("ready", "")
         return ("waiting", "")
     except sqlite3.OperationalError as exc:
-        app._con = None
-        app._db_error = str(exc)
+        current_app.config['SDRWATCH_DB_CON'] = None
+        current_app.config['SDRWATCH_DB_ERROR'] = str(exc)
         return (
             "waiting",
             f"Database not initialized yet ({exc}). Start a scan to populate it.",
@@ -240,31 +235,29 @@ def db_waiting_context(state: str, message: str) -> Dict[str, Any]:
     Returns:
         Dict suitable for passing to templates.
     """
-    app = current_app._get_current_object()
     return {
         "db_status": state,
         "db_status_message": message,
-        "db_path": app._db_path,
+        "db_path": current_app.config.get('SDRWATCH_DB_PATH'),
     }
 
 
 def detections_have_confidence() -> bool:
     """Check if the detections table has a confidence column (cached)."""
-    app = current_app._get_current_object()
-    cached = app._has_confidence_column
+    cached = current_app.config.get('SDRWATCH_DB_HAS_CONFIDENCE')
     if cached is not None:
         return bool(cached)
 
-    connection = _ensure_con(app)
+    connection = _ensure_con(current_app)
     if connection is None:
-        app._has_confidence_column = False
+        app.config['SDRWATCH_DB_HAS_CONFIDENCE'] = False
         return False
 
     try:
         cur = connection.execute("PRAGMA table_info(detections)")
         rows = cur.fetchall()
     except sqlite3.OperationalError:
-        app._has_confidence_column = False
+        current_app.config['SDRWATCH_DB_HAS_CONFIDENCE'] = False
         return False
 
     has_col = False
@@ -274,5 +267,5 @@ def detections_have_confidence() -> bool:
             has_col = True
             break
 
-    app._has_confidence_column = has_col
+    current_app.config['SDRWATCH_DB_HAS_CONFIDENCE'] = has_col
     return has_col

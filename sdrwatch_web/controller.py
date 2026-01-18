@@ -170,8 +170,7 @@ def get_controller() -> ControllerClient:
     Returns:
         ControllerClient instance stored on the app.
     """
-    app = current_app._get_current_object()
-    return app._ctl
+    return current_app.extensions['sdrwatch_controller']
 
 
 def init_controller(app) -> None:
@@ -181,7 +180,9 @@ def init_controller(app) -> None:
     Args:
         app: Flask application instance.
     """
-    app._ctl = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
+    if not hasattr(app, 'extensions'):
+        app.extensions = {}
+    app.extensions['sdrwatch_controller'] = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
 
 
 def controller_active_job() -> Optional[Dict[str, Any]]:

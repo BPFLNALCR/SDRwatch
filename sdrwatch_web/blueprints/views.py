@@ -85,7 +85,6 @@ def dashboard():
         return render_template("dashboard.html", **context)
 
     con = get_con()
-    app = current_app._get_current_object()
 
     def safe_table_count(table: str) -> int:
         if not table_exists(table):
@@ -379,7 +378,7 @@ def dashboard():
         confidence_available=confidence_available,
         db_status="ready",
         db_status_message="",
-        db_path=app._db_path,
+        db_path=current_app.config.get("DB_PATH", ""),
         tactical_config=tactical_config,
         baselines=baselines,
         baseline_summaries=baseline_summary_data,
@@ -415,12 +414,11 @@ def dashboard():
 @bp.get("/control")
 def control():
     """Scan control panel page."""
-    app = current_app._get_current_object()
     baseline_list = controller_baselines()
     summaries = baseline_summary_map()
     return render_template(
         "control.html",
-        db_path=app._db_path,
+        db_path=current_app.config.get("DB_PATH", ""),
         profiles=controller_profiles(),
         baselines=baseline_list,
         baseline_summaries=summaries,
@@ -435,13 +433,12 @@ def control():
 @bp.route("/live")
 def live():
     """Live scan visualization page."""
-    app = current_app._get_current_object()
     state, state_message = db_state()
     return render_template(
         "live.html",
         db_status=state,
         db_status_message=state_message,
-        db_path=app._db_path,
+        db_path=current_app.config.get("DB_PATH", ""),
     )
 
 
@@ -558,7 +555,6 @@ def changes():
 @bp.route("/spur-map")
 def spur_map():
     """Spur calibration map page."""
-    app = current_app._get_current_object()
     state, state_message = db_state()
 
     if state != "ready":
@@ -584,7 +580,7 @@ def spur_map():
         spur_entries=rows,
         db_status="ready",
         db_status_message="",
-        db_path=app._db_path,
+        db_path=current_app.config.get("DB_PATH", ""),
         format_ts_label=format_ts_label,
     )
 

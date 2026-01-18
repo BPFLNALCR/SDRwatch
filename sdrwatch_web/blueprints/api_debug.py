@@ -87,7 +87,7 @@ def clear_error_ring() -> None:
 def api_debug_health():
     """Health check endpoint: DB connectivity, controller reachability, WAL size."""
     require_auth()
-    app = current_app._get_current_object()
+    app = current_app
 
     health: Dict[str, Any] = {
         "status": "ok",
@@ -111,11 +111,13 @@ def api_debug_health():
 
     # Check WAL size
     try:
-        db_dir = os.path.dirname(os.path.abspath(app._db_path))
-        db_name = os.path.basename(app._db_path)
-        wal_path = os.path.join(db_dir, db_name + "-wal")
-        if os.path.exists(wal_path):
-            health["wal_size_bytes"] = os.path.getsize(wal_path)
+        db_path = app.config.get("DATABASE_PATH")
+        if db_path:
+            db_dir = os.path.dirname(os.path.abspath(db_path))
+            db_name = os.path.basename(db_path)
+            wal_path = os.path.join(db_dir, db_name + "-wal")
+            if os.path.exists(wal_path):
+                health["wal_size_bytes"] = os.path.getsize(wal_path)
     except Exception:
         pass
 
@@ -214,7 +216,7 @@ def api_debug_db_stats():
 def api_debug_config():
     """Runtime configuration: environment variables and constants."""
     require_auth()
-    app = current_app._get_current_object()
+    app = current_app
 
     config: Dict[str, Any] = {
         "env": {
@@ -237,7 +239,7 @@ def api_debug_config():
             "BAND_SUMMARY_MAX_BANDS": BAND_SUMMARY_MAX_BANDS,
             "BAND_SUMMARY_TARGET_WIDTH_HZ": BAND_SUMMARY_TARGET_WIDTH_HZ,
         },
-        "db_path": app._db_path,
+        "db_path": app.config.get("DATABASE_PATH"),
     }
     return jsonify(config)
 
@@ -267,5 +269,5 @@ def api_debug_errors():
 def debug_page():
     """Debug dashboard page."""
     require_auth()
-    app = current_app._get_current_object()
-    return render_template("debug.html", db_path=app._db_path)
+    app = current_app
+    return render_template("debug.html", db_path=app.config.get("DATABASE_PATH"))
