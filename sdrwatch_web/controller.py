@@ -170,7 +170,10 @@ def get_controller() -> ControllerClient:
     Returns:
         ControllerClient instance stored on the app.
     """
-    return current_app.extensions['sdrwatch_controller']
+    # Check extensions first (set by init_controller), fall back to config
+    if hasattr(current_app, 'extensions') and 'sdrwatch_controller' in current_app.extensions:
+        return current_app.extensions['sdrwatch_controller']
+    return current_app.config['CONTROLLER_CLIENT']
 
 
 def init_controller(app) -> None:
