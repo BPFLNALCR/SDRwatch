@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
 import numpy as np  # type: ignore
 
 from sdrwatch.baseline.events import BaselineEventWriter
+from sdrwatch.util.logging import get_logger
+
+_log = get_logger(__name__)
 from sdrwatch.baseline.spur import SpurCalibrationTracker
 from sdrwatch.baseline.stats import BaselineStatsUpdater
 from sdrwatch.baseline.store import BaselineContext, Store
@@ -119,13 +123,15 @@ def _run_revisit_pass(
     segment_shape_kwargs = segment_shape_kwargs or _segment_shape_kwargs_from_args(args)
 
     for tag in tags:
-        print(f"[revisit] tag={tag.tag_id} reason={tag.reason} center={tag.f_center_hz/1e6:.6f}MHz", flush=True)
+        _log.debug("revisit tag=%s reason=%s center=%.6fMHz", tag.tag_id, tag.reason, tag.f_center_hz / 1e6)
         try:
             src.tune(tag.f_center_hz)
             _ = src.read(int(revisit_fft))
             samples = src.read(int(revisit_fft * revisit_avg))
         except Exception as exc:
-            print(f"[revisit] tag={tag.tag_id} tune_error={exc}", file=sys.stderr)
+            _log.warning("revisit tag=%s tune_error: %s", tag.tag_id, exc)
+            if logger:
+                logger.emit_error("revisit_tune", str(exc), exc_info=exc, tag_id=tag.tag_id)
             detection_engine.apply_revisit_miss(tag)
             if tag.reason == "new":
                 stats["false_positive"] += 1
@@ -294,11 +300,18 @@ class Sweeper:
         total_revisit_confirmed = 0
         total_revisit_false = 0
         window_count = 0
+        sweep_start_time = time.perf_counter()
 
         try:
-            print(
-                f"[scan] begin sweep baseline={baseline_ctx.id} range={args.start/1e6:.3f}-{args.stop/1e6:.3f} MHz step={args.step/1e6:.3f} samp_rate={args.samp_rate/1e6:.3f} fft={args.fft} avg={args.avg}",
-                flush=True,
+            _log.info(
+                "begin sweep baseline=%d range=%.3f-%.3fMHz step=%.3f samp_rate=%.3f fft=%d avg=%d",
+                baseline_ctx.id,
+                args.start / 1e6,
+                args.stop / 1e6,
+                args.step / 1e6,
+                args.samp_rate / 1e6,
+                args.fft,
+                args.avg,
             )
             for window in scheduler:
                 center = window.center_hz
@@ -373,23 +386,18 @@ class Sweeper:
                 total_promoted += promoted
                 total_new_signals += new_signals
 
-                fields = [
-                    f"center_hz={center:.1f}",
-                    f"det_count={len(segs)}",
-                    f"mean_db={mean_psd_db:.1f}",
-                    f"p90_db={p90_psd_db:.1f}",
-                    f"anomalous={1 if is_anom else 0}",
-                ]
-                if detection_engine:
-                    fields.extend(
-                        [
-                            f"accepted={accepted_hits}",
-                            f"promoted={promoted}",
-                            f"new_sig={new_signals}",
-                            f"spur_masked={spur_ignored}",
-                        ]
-                    )
-                print(f"[scan] window {' '.join(fields)}", flush=True)
+                _log.debug(
+                    "window center_hz=%.1f det_count=%d mean_db=%.1f p90_db=%.1f anomalous=%d accepted=%d promoted=%d new_sig=%d spur_masked=%d",
+                    center,
+                    len(segs),
+                    mean_psd_db,
+                    p90_psd_db,
+                    1 if is_anom else 0,
+                    accepted_hits,
+                    promoted,
+                    new_signals,
+                    spur_ignored,
+                )
 
             revisit_tags: List[RevisitTag] = []
             if detection_engine:
@@ -416,13 +424,11 @@ class Sweeper:
                 if flushed:
                     total_promoted += flushed
                     total_new_signals += new_flush
-                    print(
-                        f"[scan] sweep baseline={baseline_ctx.id} flushed pending detections={flushed}",
-                        flush=True,
-                    )
+                    _log.debug("sweep baseline=%d flushed pending detections=%d", baseline_ctx.id, flushed)
             if args.spur_calibration and spur_tracker is not None:
                 spur_tracker.persist(store, window_count)
             stats_updater.update_span((min(args.start, args.stop), max(args.start, args.stop)))
+            sweep_duration_ms = (time.perf_counter() - sweep_start_time) * 1000.0
             event_writer.record_scan_summary(
                 hits=total_hits,
                 segments=total_segments,
@@ -431,15 +437,21 @@ class Sweeper:
                 revisits_total=total_revisits,
                 revisits_confirmed=total_revisit_confirmed,
                 revisits_false_positive=total_revisit_false,
+                duration_ms=sweep_duration_ms,
             )
             try:
                 band_summary_cfg = BandSummaryConfig.from_env()
                 store.refresh_band_summary(baseline_ctx, config=band_summary_cfg)
             except Exception as exc:
-                print(f"[baseline] band summary refresh failed: {exc}", file=sys.stderr)
-            print(
-                f"[scan] end sweep baseline={baseline_ctx.id} hits={total_hits} promoted={total_promoted} new={total_new_signals}",
-                flush=True,
+                _log.exception("band summary refresh failed")
+                if logger:
+                    logger.emit_error("band_summary", str(exc), exc_info=exc, baseline_id=baseline_ctx.id)
+            _log.info(
+                "end sweep baseline=%d hits=%d promoted=%d new=%d",
+                baseline_ctx.id,
+                total_hits,
+                total_promoted,
+                total_new_signals,
             )
 
 

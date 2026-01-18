@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import numpy as np
+import numpy as np # type: ignore
 
 
 def robust_noise_floor_db(psd_db: np.ndarray) -> float:

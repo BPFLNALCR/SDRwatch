@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+
+{% block head %}
+<style>
+  .debug-panel { margin-bottom: 1.5rem; }
+  .debug-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background: rgba(255,255,255,0.05);
+    border-radius: 0.75rem 0.75rem 0 0;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-bottom: none;
+    cursor: pointer;
+    user-select: none;
+  }
+  .debug-panel-header:hover { background: rgba(255,255,255,0.08); }
+  .debug-panel-header h2 { font-size: 1rem; font-weight: 600; margin: 0; }
+  .debug-panel-content {
+    padding: 1rem;
+    background: rgba(255,255,255,0.03);
+    border-radius: 0 0 0.75rem 0.75rem;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-top: none;
+  }
+  .debug-panel-content.collapsed { display: none; }
+  .toggle-icon { transition: transform 0.2s; }
+  .toggle-icon.collapsed { transform: rotate(-90deg); }
+  .status-badge { display: inline-flex; padding: 0.25rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; }
+  .status-ok { background: #16a34a; color: #f0fdf4; }
+  .status-degraded { background: #f59e0b; color: #451a03; }
+  .status-error { background: #ef4444; color: #fef2f2; }
+  .table-debug { width: 100%; font-size: 0.85rem; border-collapse: collapse; }
+  .table-debug th, .table-debug td { padding: 0.5rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }
+  .table-debug th { color: #94a3b8; font-weight: 500; }
+  .config-value { font-family: ui-monospace, monospace; color: #67e8f9; }
+  .error-entry { margin-bottom: 1rem; padding: 0.75rem; background: rgba(239,68,68,0.1); border-radius: 0.5rem; border: 1px solid rgba(239,68,68,0.3); }
+  .error-entry-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+  .error-timestamp { font-size: 0.75rem; color: #94a3b8; }
+  .error-type { color: #fca5a5; font-weight: 600; }
+  .error-message { color: #fef2f2; margin-bottom: 0.5rem; }
+  .error-traceback { font-family: ui-monospace, monospace; font-size: 0.7rem; color: #94a3b8; white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: rgba(0,0,0,0.3); padding: 0.5rem; border-radius: 0.25rem; }
+  .refresh-btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background: #0284c7; color: white; border-radius: 0.5rem; border: none; cursor: pointer; font-size: 0.85rem; }
+  .refresh-btn:hover { background: #0369a1; }
+  .no-data { color: #64748b; font-style: italic; }
+  .sparkline { display: flex; align-items: flex-end; gap: 2px; height: 30px; }
+  .sparkline-bar { width: 8px; background: #0ea5e9; border-radius: 2px; min-height: 2px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+  <h1 class="text-2xl font-bold">🔧 Debug Panel</h1>
+  <button class="refresh-btn" onclick="refreshAll()">
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+    Refresh All
+  </button>
+</div>
+
+<!-- Health Panel -->
+<div class="debug-panel">
+  <div class="debug-panel-header" onclick="togglePanel(this)">
+    <h2>❤️ Health</h2>
+    <span class="toggle-icon">▼</span>
+  </div>
+  <div class="debug-panel-content" id="health-content">
+    <div class="muted">Loading...</div>
+  </div>
+</div>
+
+<!-- DB Stats Panel -->
+<div class="debug-panel">
+  <div class="debug-panel-header" onclick="togglePanel(this)">
+    <h2>🗄️ Database Statistics</h2>
+    <span class="toggle-icon">▼</span>
+  </div>
+  <div class="debug-panel-content" id="db-stats-content">
+    <div class="muted">Loading...</div>
+  </div>
+</div>
+
+<!-- Config Panel -->
+<div class="debug-panel">
+  <div class="debug-panel-header" onclick="togglePanel(this)">
+    <h2>⚙️ Configuration</h2>
+    <span class="toggle-icon">▼</span>
+  </div>
+  <div class="debug-panel-content" id="config-content">
+    <div class="muted">Loading...</div>
+  </div>
+</div>
+
+<!-- Errors Panel -->
+<div class="debug-panel">
+  <div class="debug-panel-header" onclick="togglePanel(this)">
+    <h2>🚨 Recent Errors</h2>
+    <span class="toggle-icon">▼</span>
+  </div>
+  <div class="debug-panel-content" id="errors-content">
+    <div class="muted">Loading...</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function togglePanel(header) {
+  const content = header.nextElementSibling;
+  const icon = header.querySelector('.toggle-icon');
+  content.classList.toggle('collapsed');
+  icon.classList.toggle('collapsed');
+}
+
+function getAuthHeaders() {
+  const token = localStorage.getItem('sdrwatch_token') || '';
+  return token ? { 'Authorization': 'Bearer ' + token } : {};
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url, { headers: getAuthHeaders() });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function statusBadge(status) {
+  const cls = status === 'ok' ? 'status-ok' : status === 'degraded' ? 'status-degraded' : 'status-error';
+  return `<span class="status-badge ${cls}">${status.toUpperCase()}</span>`;
+}
+
+async function loadHealth() {
+  const el = document.getElementById('health-content');
+  try {
+    const data = await fetchJson('/api/debug/health');
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;">
+        <div class="stat">
+          <div class="muted">Status</div>
+          <div style="margin-top:0.5rem">${statusBadge(data.status)}</div>
+        </div>
+        <div class="stat">
+          <div class="muted">Database</div>
+          <div style="margin-top:0.5rem;color:#67e8f9">${data.db}</div>
+        </div>
+        <div class="stat">
+          <div class="muted">Controller</div>
+          <div style="margin-top:0.5rem;color:#67e8f9">${data.controller}</div>
+        </div>
+        <div class="stat">
+          <div class="muted">WAL Size</div>
+          <div style="margin-top:0.5rem;color:#67e8f9">${data.wal_size_bytes != null ? (data.wal_size_bytes / 1024).toFixed(1) + ' KB' : 'N/A'}</div>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div class="error-message">Failed to load: ${e.message}</div>`;
+  }
+}
+
+async function loadDbStats() {
+  const el = document.getElementById('db-stats-content');
+  try {
+    const data = await fetchJson('/api/debug/db-stats');
+    const tables = data.tables || {};
+    const scans = data.recent_scans || [];
+
+    let tableRows = Object.entries(tables).map(([name, count]) =>
+      `<tr><td>${name}</td><td style="text-align:right">${count != null ? count.toLocaleString() : '<span class="no-data">N/A</span>'}</td></tr>`
+    ).join('');
+
+    let scanRows = scans.slice(0, 10).map(s =>
+      `<tr>
+        <td>${s.id}</td>
+        <td>${s.baseline_id}</td>
+        <td>${s.timestamp_utc}</td>
+        <td>${s.num_hits}</td>
+        <td>${s.num_segments}</td>
+        <td>${s.num_new_signals}</td>
+        <td>${s.duration_ms != null ? s.duration_ms.toFixed(0) + ' ms' : '-'}</td>
+      </tr>`
+    ).join('');
+
+    // Sparkline for recent scan timing
+    const durations = scans.filter(s => s.duration_ms != null).map(s => s.duration_ms).slice(0, 20);
+    const maxDur = Math.max(...durations, 1);
+    const sparklineBars = durations.map(d =>
+      `<div class="sparkline-bar" style="height:${Math.max(2, (d / maxDur) * 30)}px" title="${d.toFixed(0)} ms"></div>`
+    ).join('');
+
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 2fr;gap:2rem">
+        <div>
+          <h3 class="section-title">Table Row Counts</h3>
+          <table class="table-debug">
+            <thead><tr><th>Table</th><th style="text-align:right">Rows</th></tr></thead>
+            <tbody>${tableRows}</tbody>
+          </table>
+        </div>
+        <div>
+          <h3 class="section-title">Recent Scans (last 10)</h3>
+          ${durations.length > 0 ? `<div style="margin-bottom:1rem"><div class="muted" style="font-size:0.75rem;margin-bottom:0.25rem">Sweep duration (ms)</div><div class="sparkline">${sparklineBars}</div></div>` : ''}
+          <table class="table-debug">
+            <thead><tr><th>ID</th><th>Baseline</th><th>Timestamp</th><th>Hits</th><th>Segs</th><th>New</th><th>Duration</th></tr></thead>
+            <tbody>${scanRows || '<tr><td colspan="7" class="no-data">No recent scans</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div class="error-message">Failed to load: ${e.message}</div>`;
+  }
+}
+
+async function loadConfig() {
+  const el = document.getElementById('config-content');
+  try {
+    const data = await fetchJson('/api/debug/config');
+    const env = data.env || {};
+    const constants = data.constants || {};
+
+    let envRows = Object.entries(env).map(([k, v]) =>
+      `<tr><td>${k}</td><td class="config-value">${v}</td></tr>`
+    ).join('');
+
+    let constRows = Object.entries(constants).map(([k, v]) =>
+      `<tr><td>${k}</td><td class="config-value">${typeof v === 'number' ? v.toLocaleString() : v}</td></tr>`
+    ).join('');
+
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:2rem">
+        <div>
+          <h3 class="section-title">Environment Variables</h3>
+          <table class="table-debug">
+            <tbody>${envRows}</tbody>
+          </table>
+        </div>
+        <div>
+          <h3 class="section-title">Runtime Constants</h3>
+          <table class="table-debug">
+            <tbody>${constRows}</tbody>
+          </table>
+        </div>
+      </div>
+      <div style="margin-top:1rem">
+        <span class="muted">Database path:</span> <span class="config-value">${data.db_path || 'N/A'}</span>
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div class="error-message">Failed to load: ${e.message}</div>`;
+  }
+}
+
+async function loadErrors() {
+  const el = document.getElementById('errors-content');
+  try {
+    const data = await fetchJson('/api/debug/errors?limit=20');
+    const errors = data.errors || [];
+
+    if (errors.length === 0) {
+      el.innerHTML = `<div class="no-data">No errors captured. That's good! 🎉</div>`;
+      return;
+    }
+
+    el.innerHTML = errors.map(e => `
+      <div class="error-entry">
+        <div class="error-entry-header">
+          <span class="error-type">${e.type}: ${e.method} ${e.path}</span>
+          <span class="error-timestamp">${e.ts}</span>
+        </div>
+        <div class="error-message">${e.error}</div>
+        <details>
+          <summary style="cursor:pointer;font-size:0.75rem;color:#94a3b8">Show traceback</summary>
+          <pre class="error-traceback">${e.traceback}</pre>
+        </details>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = `<div class="error-message">Failed to load: ${e.message}</div>`;
+  }
+}
+
+function refreshAll() {
+  loadHealth();
+  loadDbStats();
+  loadConfig();
+  loadErrors();
+}
+
+// Initial load
+document.addEventListener('DOMContentLoaded', refreshAll);
+
+// Auto-refresh every 30 seconds
+setInterval(refreshAll, 30000);
+</script>
+{% endblock %}

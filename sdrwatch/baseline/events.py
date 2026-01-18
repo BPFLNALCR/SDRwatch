@@ -28,6 +28,7 @@ class BaselineEventWriter:
         revisits_total: int,
         revisits_confirmed: int,
         revisits_false_positive: int,
+        duration_ms: Optional[float] = None,
     ) -> None:
         timestamp = utc_now_str()
         self.store.begin()
@@ -40,6 +41,7 @@ class BaselineEventWriter:
             num_revisits=revisits_total,
             num_confirmed=revisits_confirmed,
             num_false_positive=revisits_false_positive,
+            duration_ms=duration_ms,
         )
         self.store.commit()
         try:
@@ -62,4 +64,5 @@ class BaselineEventWriter:
                 revisits_total=revisits_total,
                 revisits_confirmed=revisits_confirmed,
                 revisits_false_positive=revisits_false_positive,
+                duration_ms=duration_ms,
             )

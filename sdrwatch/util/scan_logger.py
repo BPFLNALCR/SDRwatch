@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any, List, Optional, Set
 
@@ -73,5 +75,34 @@ class ScanLogger:
             try:
                 with target.open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps(record) + "\n")
-            except Exception:
+            except Exception as exc:
+                # Emit to stderr as last resort; avoid silent failure
+                print(f"[scan_logger] write failed to {target}: {exc}", file=sys.stderr)
                 continue
+
+    def emit_error(
+        self,
+        error_type: str,
+        message: str,
+        *,
+        exc_info: Optional[BaseException] = None,
+        **extra: Any,
+    ) -> None:
+        """Emit a structured error event to the JSONL log.
+
+        Args:
+            error_type: Category of error (e.g., "driver_tune", "db_write", "cfar").
+            message: Human-readable description.
+            exc_info: Optional exception instance to extract traceback from.
+            **extra: Additional context fields.
+        """
+        fields: dict[str, Any] = {
+            "error_type": error_type,
+            "message": message,
+            **extra,
+        }
+        if exc_info is not None:
+            fields["traceback"] = "".join(
+                traceback.format_exception(type(exc_info), exc_info, exc_info.__traceback__)
+            )
+        self.log("error", **fields)

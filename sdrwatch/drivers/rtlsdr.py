@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-import numpy as np
+import numpy as np # type: ignore
+
+from sdrwatch.util.logging import get_logger
+
+_log = get_logger(__name__)
 
 try:  # pragma: no cover - optional dependency
     from rtlsdr import RtlSdr  # type: ignore
@@ -43,4 +47,4 @@ class RTLSDRSource:
         try:
             self.dev.close()
         except Exception:
-            pass
+            _log.debug("rtlsdr close error (ignored)", exc_info=True)

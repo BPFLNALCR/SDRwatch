@@ -14,7 +14,10 @@ from sdrwatch.drivers.soapy import SDRSource
 from sdrwatch.io.bandplan import Bandplan
 from sdrwatch.sweep.sweeper import Sweeper
 from sdrwatch.util.duration import parse_duration_to_seconds
+from sdrwatch.util.logging import get_logger
 from sdrwatch.util.scan_logger import ScanLogger
+
+_log = get_logger(__name__)
 
 
 class ScannerRunner:
@@ -53,10 +56,7 @@ class ScannerRunner:
         if baseline_ctx.bin_hz <= 0.0 and bin_hint > 0.0:
             self.store.set_baseline_bin(baseline_ctx.id, bin_hint)
             baseline_ctx.bin_hz = bin_hint
-            print(
-                f"[baseline] repaired bin_hz to {bin_hint:.1f} Hz based on current sweep",
-                flush=True,
-            )
+            _log.info("repaired baseline bin_hz to %.1f Hz based on current sweep", bin_hint)
         if baseline_ctx.freq_start_hz <= 0:
             baseline_ctx.freq_start_hz = planned_start
         if planned_stop > baseline_ctx.freq_stop_hz:
@@ -65,9 +65,12 @@ class ScannerRunner:
             span_text = f"{baseline_ctx.freq_start_hz/1e6:.3f}-{baseline_ctx.freq_stop_hz/1e6:.3f} MHz"
         else:
             span_text = "auto (pending scans)"
-        print(
-            f"[baseline] using id={baseline_ctx.id} name='{baseline_ctx.name}' span={span_text} bin={baseline_ctx.bin_hz:.1f} Hz",
-            flush=True,
+        _log.info(
+            "using baseline id=%d name='%s' span=%s bin=%.1f Hz",
+            baseline_ctx.id,
+            baseline_ctx.name,
+            span_text,
+            baseline_ctx.bin_hz,
         )
         return baseline_ctx
 
@@ -164,13 +167,13 @@ class ScannerRunner:
                 if self.args.sleep_between_sweeps > 0:
                     time.sleep(self.args.sleep_between_sweeps)
         except KeyboardInterrupt:
-            pass
+            _log.info("scan interrupted by user")
         finally:
             try:
                 if getattr(src, "close", None):
                     src.close()
             except Exception:
-                pass
+                _log.debug("error closing SDR source (ignored)", exc_info=True)
 
 
 def run_scan(args) -> None:

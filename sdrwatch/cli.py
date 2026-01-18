@@ -14,14 +14,44 @@ from sdrwatch.drivers.soapy import HAVE_SOAPY
 from sdrwatch.io.profiles import default_scan_profiles, serialize_profiles
 from sdrwatch.sweep.runner import run_scan
 from sdrwatch.util.duration import parse_duration_to_seconds
+from sdrwatch.util.exit_codes import ExitCode
+from sdrwatch.util.logging import configure_logging, get_logger
+
+_log = get_logger(__name__)
 
 
-def run(args: argparse.Namespace) -> None:
-    """Top-level CLI dispatcher that delegates execution to sweep.runner."""
+def run(args: argparse.Namespace) -> int:
+    """Top-level CLI dispatcher that delegates execution to sweep.runner.
+
+    Returns an exit code from ExitCode.
+    """
     if getattr(args, "list_profiles", False):
         _emit_profiles_json()
-        return
-    run_scan(args)
+        return ExitCode.SUCCESS
+
+    # Configure logging based on verbosity or environment
+    log_level = "DEBUG" if os.environ.get("SDRWATCH_DEBUG", "").strip() in ("1", "true", "yes") else "INFO"
+    configure_logging(level=log_level)
+
+    try:
+        run_scan(args)
+        return ExitCode.SUCCESS
+    except KeyboardInterrupt:
+        _log.info("interrupted by user")
+        return ExitCode.SUCCESS
+    except RuntimeError as exc:
+        msg = str(exc).lower()
+        if "baseline" in msg and ("not found" in msg or "does not exist" in msg):
+            _log.error("baseline not found: %s", exc)
+            return ExitCode.BASELINE_NOT_FOUND
+        if "device" in msg or "sdr" in msg or "rtlsdr" in msg or "soapy" in msg:
+            _log.error("device unavailable: %s", exc)
+            return ExitCode.DEVICE_UNAVAILABLE
+        _log.exception("runtime error")
+        return ExitCode.GENERAL_ERROR
+    except Exception:
+        _log.exception("unexpected error")
+        return ExitCode.GENERAL_ERROR
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -258,9 +288,11 @@ def _apply_scan_profile(args: argparse.Namespace, parser: argparse.ArgumentParse
     requested_low = min(args.start, args.stop)
     requested_high = max(args.start, args.stop)
     if requested_low < profile.f_low_hz or requested_high > profile.f_high_hz:
-        print(
-            f"[profile] Requested span {requested_low/1e6:.3f}-{requested_high/1e6:.3f} MHz outside profile '{profile.name}' band, skipping profile defaults.",
-            file=sys.stderr,
+        _log.warning(
+            "requested span %.3f-%.3fMHz outside profile '%s' band, skipping profile defaults",
+            requested_low / 1e6,
+            requested_high / 1e6,
+            profile.name,
         )
         return
 
@@ -325,13 +357,14 @@ def _apply_scan_profile(args: argparse.Namespace, parser: argparse.ArgumentParse
     gain_override = "gain" in overrides and not (isinstance(getattr(args, "gain"), str) and getattr(args, "gain").lower() == "auto")
     if not gain_override:
         if isinstance(getattr(args, "gain"), str) and getattr(args, "gain").lower() == "auto":
-            print(
-                f"[profile] Overriding auto gain with fixed {profile.gain_db:.1f} dB from profile '{profile.name}'.",
-                file=sys.stderr,
+            _log.info(
+                "overriding auto gain with fixed %.1fdB from profile '%s'",
+                profile.gain_db,
+                profile.name,
             )
         setattr(args, "gain", float(profile.gain_db))
 
-    print(f"[profile] Applied profile '{profile.name}'", flush=True)
+    _log.info("applied profile '%s'", profile.name)
 
 
 def _emit_profiles_json() -> None:
@@ -340,4 +373,4 @@ def _emit_profiles_json() -> None:
 
 
 if __name__ == "__main__":
-    run(parse_args())
+    sys.exit(run(parse_args()))

@@ -5,7 +5,11 @@ from __future__ import annotations
 import time
 from typing import Dict, List, Optional
 
-import numpy as np
+import numpy as np # type: ignore
+
+from sdrwatch.util.logging import get_logger
+
+_log = get_logger(__name__)
 
 try:  # pragma: no cover - optional dependency
     import SoapySDR  # type: ignore
@@ -34,7 +38,7 @@ class SDRSource:
             try:
                 self.dev.setGainMode(SOAPY_SDR_RX, 0, True)
             except Exception:
-                pass
+                _log.debug("setGainMode auto not supported", exc_info=True)
         else:
             self.dev.setGain(SOAPY_SDR_RX, 0, float(gain))
         self.stream = self.dev.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
@@ -69,4 +73,4 @@ class SDRSource:
             self.dev.deactivateStream(self.stream)
             self.dev.closeStream(self.stream)
         except Exception:
-            pass
+            _log.debug("soapy close error (ignored)", exc_info=True)

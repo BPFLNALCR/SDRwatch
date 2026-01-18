@@ -158,6 +158,7 @@ class Store:
         self._ensure_column("scan_updates", "num_revisits", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("scan_updates", "num_confirmed", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("scan_updates", "num_false_positive", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("scan_updates", "duration_ms", "REAL")
         self._migrate_baseline_stats()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -534,15 +535,17 @@ class Store:
         num_revisits: int = 0,
         num_confirmed: int = 0,
         num_false_positive: int = 0,
+        duration_ms: Optional[float] = None,
     ) -> None:
         self.con.execute(
             """
             INSERT INTO scan_updates(
                 baseline_id, timestamp_utc,
                 num_hits, num_segments, num_new_signals,
-                num_revisits, num_confirmed, num_false_positive
+                num_revisits, num_confirmed, num_false_positive,
+                duration_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(baseline_id),
@@ -553,6 +556,7 @@ class Store:
                 int(num_revisits),
                 int(num_confirmed),
                 int(num_false_positive),
+                float(duration_ms) if duration_ms is not None else None,
             ),
         )
 

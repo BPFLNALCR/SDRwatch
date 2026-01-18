@@ -2202,7 +2202,11 @@ def create_app(db_path: str) -> Flask:
                         freq_hz = None
                 elif row.get("bin_index") is not None and bin_hz > 0:
                     try:
-                        freq_hz = freq_start + float(row.get("bin_index")) * bin_hz
+                        bin_index_val = row.get("bin_index")
+                        if bin_index_val is not None:
+                            freq_hz = freq_start + float(bin_index_val) * bin_hz
+                        else:
+                            freq_hz = None
                     except Exception:
                         freq_hz = None
                 if freq_hz is None:
@@ -2732,8 +2736,10 @@ def create_app(db_path: str) -> Flask:
         selected_baseline_id_int: Optional[int] = None
         if selected_baseline and selected_baseline.get('id') is not None:
             try:
-                selected_baseline_id_int = int(selected_baseline.get('id'))
-                selected_baseline_id = str(selected_baseline_id_int)
+                raw_id_value = selected_baseline.get('id')
+                if raw_id_value is not None:
+                    selected_baseline_id_int = int(float(str(raw_id_value)))
+                    selected_baseline_id = str(selected_baseline_id_int)
             except Exception:
                 selected_baseline_id_int = None
                 selected_baseline_id = ""
@@ -3282,6 +3288,195 @@ def create_app(db_path: str) -> Flask:
             return jsonify({"windows": []})
         windows = windows[-limit:]
         return jsonify({"windows": windows})
+
+    # ================================
+    # Debug/Observability Endpoints
+    # ================================
+
+    # In-memory ring buffer for recent errors (captured by before_request/after_request)
+    _error_ring: List[Dict[str, Any]] = []
+    _error_ring_max = 100
+
+    @app.before_request
+    def log_request_start():
+        from time import perf_counter
+        request._start_time = perf_counter()
+
+    @app.after_request
+    def log_request_end(response):
+        if hasattr(request, '_start_time'):
+            from time import perf_counter
+            duration_ms = (perf_counter() - request._start_time) * 1000
+            # Only log slow requests (>500ms) or errors at debug level
+            if duration_ms > 500 or response.status_code >= 400:
+                app.logger.debug(
+                    "%s %s -> %d (%.1fms)",
+                    request.method, request.path, response.status_code, duration_ms
+                )
+        return response
+
+    @app.errorhandler(Exception)
+    def capture_error_to_ring(exc):
+        import traceback as tb
+        from datetime import datetime, timezone
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "path": request.path,
+            "method": request.method,
+            "error": str(exc),
+            "type": type(exc).__name__,
+            "traceback": tb.format_exc(),
+        }
+        _error_ring.append(entry)
+        while len(_error_ring) > _error_ring_max:
+            _error_ring.pop(0)
+        # Re-raise to let Flask handle it normally
+        raise exc
+
+    @app.get('/api/debug/health')
+    def api_debug_health():
+        """Health check endpoint: DB connectivity, controller reachability, WAL size."""
+        require_auth()
+        health: Dict[str, Any] = {
+            "status": "ok",
+            "db": "unknown",
+            "controller": "unknown",
+            "wal_size_bytes": None,
+        }
+        # Check DB
+        try:
+            connection = _ensure_con()
+            if connection is not None:
+                connection.execute("SELECT 1")
+                health["db"] = "connected"
+            else:
+                health["db"] = "disconnected"
+                health["status"] = "degraded"
+        except Exception as exc:
+            health["db"] = f"error: {exc}"
+            health["status"] = "degraded"
+
+        # Check WAL size
+        try:
+            db_dir = os.path.dirname(os.path.abspath(app._db_path))
+            db_name = os.path.basename(app._db_path)
+            wal_path = os.path.join(db_dir, db_name + "-wal")
+            if os.path.exists(wal_path):
+                health["wal_size_bytes"] = os.path.getsize(wal_path)
+        except Exception:
+            pass
+
+        # Check controller
+        try:
+            jobs = app._ctl.list_jobs()
+            health["controller"] = "reachable"
+        except Exception as exc:
+            health["controller"] = f"error: {exc}"
+            health["status"] = "degraded"
+
+        return jsonify(health)
+
+    @app.get('/api/debug/db-stats')
+    def api_debug_db_stats():
+        """Database statistics: table row counts, recent scan_updates timing."""
+        require_auth()
+        stats: Dict[str, Any] = {
+            "tables": {},
+            "recent_scans": [],
+        }
+        try:
+            connection = _ensure_con()
+            if connection is None:
+                return jsonify({"error": "db unavailable"}), 503
+
+            # Table row counts
+            tables = ["baselines", "baseline_detections", "baseline_noise", "baseline_occupancy",
+                      "scan_updates", "spur_map", "baseline_band_summary", "baseline_snapshot"]
+            for table in tables:
+                try:
+                    row = q1(connection, f"SELECT COUNT(*) AS cnt FROM {table}")
+                    stats["tables"][table] = int(row.get("cnt", 0)) if row else 0
+                except sqlite3.OperationalError:
+                    stats["tables"][table] = None  # Table doesn't exist
+
+            # Recent scan_updates (last 20)
+            try:
+                rows = qa(
+                    connection,
+                    """
+                    SELECT id, baseline_id, timestamp_utc, num_hits, num_segments,
+                           num_new_signals, num_revisits, num_confirmed, num_false_positive,
+                           duration_ms
+                    FROM scan_updates
+                    ORDER BY id DESC
+                    LIMIT 20
+                    """
+                )
+                stats["recent_scans"] = rows
+            except sqlite3.OperationalError:
+                # duration_ms column might not exist yet
+                try:
+                    rows = qa(
+                        connection,
+                        """
+                        SELECT id, baseline_id, timestamp_utc, num_hits, num_segments,
+                               num_new_signals, num_revisits, num_confirmed, num_false_positive
+                        FROM scan_updates
+                        ORDER BY id DESC
+                        LIMIT 20
+                        """
+                    )
+                    stats["recent_scans"] = rows
+                except sqlite3.OperationalError:
+                    stats["recent_scans"] = []
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+        return jsonify(stats)
+
+    @app.get('/api/debug/config')
+    def api_debug_config():
+        """Runtime configuration: environment variables and constants."""
+        require_auth()
+        config: Dict[str, Any] = {
+            "env": {
+                "SDRWATCH_CONTROL_URL": CONTROL_URL,
+                "SDRWATCH_CONTROL_TOKEN": "***" if CONTROL_TOKEN else "(not set)",
+                "SDRWATCH_TOKEN": "***" if API_TOKEN else "(not set)",
+                "SDRWATCH_DEBUG": os.environ.get("SDRWATCH_DEBUG", "(not set)"),
+                "SDRWATCH_LOG_LEVEL": os.environ.get("SDRWATCH_LOG_LEVEL", "(not set)"),
+            },
+            "constants": {
+                "TACTICAL_RECENT_MINUTES": TACTICAL_RECENT_MINUTES,
+                "ACTIVE_SIGNAL_WINDOW_MINUTES": ACTIVE_SIGNAL_WINDOW_MINUTES,
+                "HOTSPOT_BUCKET_COUNT": HOTSPOT_BUCKET_COUNT,
+                "CHANGE_WINDOW_MINUTES": CHANGE_WINDOW_MINUTES,
+                "NEW_SIGNAL_WINDOW_MINUTES": NEW_SIGNAL_WINDOW_MINUTES,
+                "POWER_SHIFT_THRESHOLD_DB": POWER_SHIFT_THRESHOLD_DB,
+                "QUIETED_TIMEOUT_MINUTES": QUIETED_TIMEOUT_MINUTES,
+                "QUIETED_MIN_WINDOWS": QUIETED_MIN_WINDOWS,
+                "CHANGE_EVENT_LIMIT": CHANGE_EVENT_LIMIT,
+                "BAND_SUMMARY_MAX_BANDS": BAND_SUMMARY_MAX_BANDS,
+                "BAND_SUMMARY_TARGET_WIDTH_HZ": BAND_SUMMARY_TARGET_WIDTH_HZ,
+            },
+            "db_path": app._db_path,
+        }
+        return jsonify(config)
+
+    @app.get('/api/debug/errors')
+    def api_debug_errors():
+        """Recent captured errors from the ring buffer."""
+        require_auth()
+        limit = request.args.get('limit', type=int) or 50
+        limit = max(1, min(limit, _error_ring_max))
+        errors = list(reversed(_error_ring[-limit:]))
+        return jsonify({"errors": errors, "total_captured": len(_error_ring)})
+
+    @app.get('/debug')
+    def debug_page():
+        """Debug dashboard page."""
+        require_auth()
+        return render_template("debug.html", db_path=app._db_path)
 
     return app
 
