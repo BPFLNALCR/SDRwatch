@@ -124,8 +124,14 @@
             {% endif %}
             {% if signal.baseline_occupancy %}
             <div>
-              <div class="text-slate-400">Occupancy</div>
+              <div class="text-slate-400">Duty Cycle</div>
+              {% if signal.baseline_occupancy.observed_ms > 0 %}
+              <div class="font-medium">{{ (signal.baseline_occupancy.duty_cycle * 100)|round(1) }}%</div>
+              <div class="text-xs text-slate-500">{{ (signal.baseline_occupancy.occupied_ms / 1000)|round(1) }}s / {{ (signal.baseline_occupancy.observed_ms / 1000)|round(1) }}s</div>
+              {% else %}
               <div class="font-medium">{{ (signal.baseline_occupancy.occ_ratio * 100)|round(1) }}%</div>
+              <div class="text-xs text-slate-500">{{ signal.baseline_occupancy.occ_count }} / {{ signal.baseline_occupancy.baseline_windows }} windows</div>
+              {% endif %}
             </div>
             <div>
               <div class="text-slate-400">Hit Count</div>

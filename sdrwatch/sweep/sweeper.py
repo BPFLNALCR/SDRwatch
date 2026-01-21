@@ -321,6 +321,8 @@ class Sweeper:
                 nsamps = int(args.fft * args.avg)
                 _ = src.read(int(args.fft))
                 samples = src.read(nsamps)
+                # Calculate dwell time: samples / sample_rate = seconds, * 1000 = ms
+                window_dwell_ms = (float(nsamps) / float(args.samp_rate)) * 1000.0
                 baseband_f, psd_db = compute_psd_db(samples, args.samp_rate, args.fft, args.avg)
                 rf_freqs = baseband_f + center
 
@@ -375,7 +377,7 @@ class Sweeper:
                         occ_mask_cfar if (args.cfar and args.cfar != "off") else (psd_db > dynamic),
                         dtype=bool,
                     )
-                    stats_updater.update_window(rf_freqs, psd_db, noise_per_bin_db, occupied_mask)
+                    stats_updater.update_window(rf_freqs, psd_db, noise_per_bin_db, occupied_mask, dwell_ms=window_dwell_ms)
 
                     if spur_tracker is not None:
                         spur_tracker.observe(segs)

@@ -42,7 +42,8 @@ class Store:
                 freq_stop_hz INTEGER NOT NULL,
                 bin_hz REAL NOT NULL,
                 baseline_version INTEGER NOT NULL DEFAULT 1,
-                total_windows INTEGER NOT NULL DEFAULT 0
+                total_windows INTEGER NOT NULL DEFAULT 0,
+                total_observed_ms INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -65,6 +66,8 @@ class Store:
                 bin_index INTEGER NOT NULL,
                 occ_count INTEGER NOT NULL,
                 last_seen_utc TEXT NOT NULL,
+                observed_ms INTEGER NOT NULL DEFAULT 0,
+                occupied_ms INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (baseline_id, bin_index)
             )
             """
@@ -166,6 +169,9 @@ class Store:
         self._ensure_column("scan_updates", "num_false_positive", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("scan_updates", "duration_ms", "REAL")
         self._ensure_column("baselines", "bandplan_path", "TEXT")
+        self._ensure_column("baselines", "total_observed_ms", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("baseline_occupancy", "observed_ms", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("baseline_occupancy", "occupied_ms", "INTEGER NOT NULL DEFAULT 0")
         self._migrate_baseline_stats()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -264,7 +270,7 @@ class Store:
         cur = self.con.cursor()
         cur.execute(
             """
-            SELECT id, name, freq_start_hz, freq_stop_hz, bin_hz, baseline_version, total_windows
+            SELECT id, name, freq_start_hz, freq_stop_hz, bin_hz, baseline_version, total_windows, total_observed_ms
             FROM baselines WHERE id = ?
             """,
             (int(baseline_id),),
@@ -280,6 +286,7 @@ class Store:
             bin_hz=float(row[4]),
             baseline_version=int(row[5]),
             total_windows=int(row[6] or 0),
+            total_observed_ms=int(row[7] or 0),
         )
 
     def create_baseline(
@@ -346,6 +353,22 @@ class Store:
         self.con.commit()
         return int(row[0]) if row else 0
 
+    def increment_baseline_observed_ms(self, baseline_id: int, delta_ms: float) -> int:
+        """Increment total_observed_ms for a baseline and return updated value."""
+        cur = self.con.cursor()
+        cur.execute(
+            """
+            UPDATE baselines
+            SET total_observed_ms = COALESCE(total_observed_ms, 0) + ?
+            WHERE id = ?
+            RETURNING total_observed_ms
+            """,
+            (int(round(max(0.0, delta_ms))), int(baseline_id)),
+        )
+        row = cur.fetchone()
+        self.con.commit()
+        return int(row[0]) if row else 0
+
     def set_baseline_bin(self, baseline_id: int, bin_hz: float) -> None:
         """Persist a corrected bin_hz for legacy baselines."""
 
@@ -378,8 +401,10 @@ class Store:
         occupied_mask: np.ndarray,
         timestamp_utc: str,
         ema_alpha: float = 0.2,
+        dwell_ms: float = 0.0,
     ) -> None:
         cur = self.con.cursor()
+        dwell_ms_int = max(0, int(round(dwell_ms)))
         for idx, noise_db, power_db_val, occupied in zip(bin_indices, noise_floor_db, power_db, occupied_mask):
             idx_int = int(idx)
             noise_row = cur.execute(
@@ -416,32 +441,35 @@ class Store:
                 )
 
             occ_increment = 1 if bool(occupied) else 0
+            occupied_ms_inc = dwell_ms_int if bool(occupied) else 0
             occ_row = cur.execute(
                 """
-                SELECT occ_count FROM baseline_occupancy
+                SELECT occ_count, observed_ms, occupied_ms FROM baseline_occupancy
                 WHERE baseline_id = ? AND bin_index = ?
                 """,
                 (int(baseline_id), idx_int),
             ).fetchone()
             if occ_row:
                 occ_count = int(occ_row[0] or 0) + occ_increment
+                observed_ms = int(occ_row[1] or 0) + dwell_ms_int
+                occupied_ms = int(occ_row[2] or 0) + occupied_ms_inc
                 cur.execute(
                     """
                     UPDATE baseline_occupancy
-                    SET occ_count = ?, last_seen_utc = ?
+                    SET occ_count = ?, last_seen_utc = ?, observed_ms = ?, occupied_ms = ?
                     WHERE baseline_id = ? AND bin_index = ?
                     """,
-                    (occ_count, timestamp_utc, int(baseline_id), idx_int),
+                    (occ_count, timestamp_utc, observed_ms, occupied_ms, int(baseline_id), idx_int),
                 )
             else:
                 cur.execute(
                     """
                     INSERT INTO baseline_occupancy(
-                        baseline_id, bin_index, occ_count, last_seen_utc
+                        baseline_id, bin_index, occ_count, last_seen_utc, observed_ms, occupied_ms
                     )
-                    VALUES (?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (int(baseline_id), idx_int, occ_increment, timestamp_utc),
+                    (int(baseline_id), idx_int, occ_increment, timestamp_utc, dwell_ms_int, occupied_ms_inc),
                 )
         self.con.commit()
 
@@ -641,6 +669,37 @@ class Store:
         if not row:
             return None
         occ_count = int(row[0] or 0)
+        cur.execute("SELECT total_windows FROM baselines WHERE id = ?", (int(baseline_id),))
+        total_row = cur.fetchone()
+        total_windows = int(total_row[0] or 0) if total_row else 0
+        if total_windows <= 0:
+            return None
+        return float(occ_count) / float(total_windows)
+
+    def baseline_duty_cycle(self, baseline_id: int, bin_index: int) -> Optional[float]:
+        """Return time-based duty cycle (occupied_ms / observed_ms) for a bin.
+        
+        Falls back to window-based occ_ratio if time data is not yet available.
+        This provides a more accurate duty cycle measurement that accounts for
+        varying window dwell times.
+        """
+        cur = self.con.cursor()
+        cur.execute(
+            "SELECT observed_ms, occupied_ms, occ_count FROM baseline_occupancy WHERE baseline_id = ? AND bin_index = ?",
+            (int(baseline_id), int(bin_index)),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        observed_ms = int(row[0] or 0)
+        occupied_ms = int(row[1] or 0)
+        occ_count = int(row[2] or 0)
+        
+        # If we have time-based data, use it for accurate duty cycle
+        if observed_ms > 0:
+            return float(occupied_ms) / float(observed_ms)
+        
+        # Fall back to window-based ratio if no time data yet
         cur.execute("SELECT total_windows FROM baselines WHERE id = ?", (int(baseline_id),))
         total_row = cur.fetchone()
         total_windows = int(total_row[0] or 0) if total_row else 0

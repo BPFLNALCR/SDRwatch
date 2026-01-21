@@ -16,6 +16,7 @@ class BaselineModel:
     bin_hz: float
     baseline_version: int
     total_windows: int
+    total_observed_ms: int = 0
 
 
 # Backwards compatibility: many modules still refer to BaselineContext.

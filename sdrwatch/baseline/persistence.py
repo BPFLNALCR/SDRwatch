@@ -431,10 +431,16 @@ class BaselinePersistence:
         return None
 
     def _lookup_occ_ratio(self, freq_hz: int) -> Optional[float]:
+        """Return the duty cycle / occupancy ratio for a frequency.
+        
+        Uses time-based duty cycle (occupied_ms / observed_ms) when available,
+        falling back to window-based occ_ratio for backward compatibility.
+        This provides more accurate detection of intermittent/bursty signals.
+        """
         bin_index = self._bin_index_for_freq(freq_hz)
         if bin_index is None:
             return None
-        return self.store.baseline_occ_ratio(self.baseline_ctx.id, bin_index)
+        return self.store.baseline_duty_cycle(self.baseline_ctx.id, bin_index)
 
     def _bin_index_for_freq(self, freq_hz: int) -> Optional[int]:
         if freq_hz < self.baseline_ctx.freq_start_hz or freq_hz > self.baseline_ctx.freq_stop_hz:

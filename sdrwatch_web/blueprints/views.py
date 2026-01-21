@@ -670,7 +670,7 @@ def signal_detail(signal_id: str):
                 occ_row = q1(
                     con,
                     """
-                    SELECT occ_count, last_seen_utc
+                    SELECT occ_count, last_seen_utc, observed_ms, occupied_ms
                     FROM baseline_occupancy
                     WHERE baseline_id = ? AND bin_index = ?
                     """,
@@ -680,9 +680,16 @@ def signal_detail(signal_id: str):
                     baseline_windows = baseline.get("total_windows") or 0
                     occ_count = occ_row.get("occ_count") or 0
                     occ_ratio = occ_count / baseline_windows if baseline_windows > 0 else 0.0
+                    # Time-based duty cycle (more accurate for varying dwell times)
+                    observed_ms = occ_row.get("observed_ms") or 0
+                    occupied_ms = occ_row.get("occupied_ms") or 0
+                    duty_cycle = occupied_ms / observed_ms if observed_ms > 0 else occ_ratio
                     occupancy_data = {
                         "occ_count": occ_count,
                         "occ_ratio": occ_ratio,
+                        "duty_cycle": duty_cycle,
+                        "observed_ms": observed_ms,
+                        "occupied_ms": occupied_ms,
                         "baseline_windows": baseline_windows,
                         "last_seen_utc": occ_row.get("last_seen_utc"),
                     }
@@ -762,10 +769,13 @@ def signal_detail(signal_id: str):
         threat_score += 15
         threat_factors.append("Intermittent/burst pattern")
     
-    # Factor: low occupancy (new or rare)
-    if occupancy_data and occupancy_data.get("occ_ratio", 0) < 0.1:
-        threat_score += 15
-        threat_factors.append("Low duty cycle")
+    # Factor: low duty cycle (new or rare signal)
+    # Uses time-based duty_cycle when available, falls back to occ_ratio
+    if occupancy_data:
+        duty_cycle = occupancy_data.get("duty_cycle", occupancy_data.get("occ_ratio", 0))
+        if duty_cycle < 0.1:
+            threat_score += 15
+            threat_factors.append(f"Low duty cycle ({duty_cycle:.1%})")
     
     # Factor: not near known spur (real signal vs artifact)
     if near_spur:

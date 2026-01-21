@@ -22,6 +22,7 @@ class BaselineStatsUpdater:
         self._warned_bin_mismatch = False
         self._warned_bin_invalid = False
         self._warned_span = False
+        self._total_dwell_ms: float = 0.0  # Track dwell time accumulated this sweep
 
     def update_window(
         self,
@@ -29,8 +30,19 @@ class BaselineStatsUpdater:
         psd_db: np.ndarray,
         noise_per_bin_db: np.ndarray,
         occupied_mask: np.ndarray,
+        *,
+        dwell_ms: float = 0.0,
     ) -> bool:
-        """Update per-bin EMA stats for a single sweep window."""
+        """Update per-bin EMA stats for a single sweep window.
+        
+        Args:
+            rf_freqs: RF frequencies for each bin (Hz).
+            psd_db: Power spectral density in dB for each bin.
+            noise_per_bin_db: Noise floor estimate in dB for each bin.
+            occupied_mask: Boolean mask indicating which bins are occupied.
+            dwell_ms: Dwell time in milliseconds for this window. If not provided,
+                      time-based duty cycle will fall back to window-based ratio.
+        """
 
         if self.baseline_ctx.bin_hz <= 0:
             self._warn_invalid_bin()
@@ -56,8 +68,13 @@ class BaselineStatsUpdater:
             power_db=power_vec,
             occupied_mask=occupied_vec,
             timestamp_utc=window_ts,
+            dwell_ms=dwell_ms,
         )
         total_windows = self.store.increment_baseline_windows(self.baseline_ctx.id, 1)
+        if dwell_ms > 0:
+            total_observed_ms = self.store.increment_baseline_observed_ms(self.baseline_ctx.id, dwell_ms)
+            self.baseline_ctx.total_observed_ms = total_observed_ms
+            self._total_dwell_ms += dwell_ms
         self.store.commit()
         self.baseline_ctx.total_windows = total_windows
         return True
