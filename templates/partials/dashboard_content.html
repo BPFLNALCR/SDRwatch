@@ -191,7 +191,7 @@
                       <span class="chip text-xs bg-amber-600/60 text-amber-100">{{ sig.label }}</span>
                     {% endif %}
                   </div>
-                  <div class="text-2xl font-semibold mt-1">{{ format_freq_label(sig.f_center_hz) }} MHz</div>
+                  <div class="text-2xl font-semibold mt-1">{{ format_freq_label(sig.f_center_hz) }}</div>
                 </div>
                 <div class="flex flex-col items-end gap-2">
                   <button type="button" class="text-lg {{ 'text-sky-400' if is_selected else 'text-slate-500 hover:text-sky-400' }}" data-toggle-select="{{ sig.id }}" title="{{ 'Deselect signal' if is_selected else 'Select signal' }}">
@@ -281,7 +281,7 @@
                 <div class="text-xs text-slate-300 mt-1">{{ event.details }}</div>
                 <div class="flex flex-wrap gap-3 text-[11px] text-slate-400 mt-3">
                   {% if event.f_center_hz is not none %}
-                    <span>{{ format_freq_label(event.f_center_hz) }} MHz</span>
+                    <span>{{ format_freq_label(event.f_center_hz) }}</span>
                   {% endif %}
                   {% set event_bw = format_bandwidth_khz(event.get('bandwidth_hz_display') or event.get('bandwidth_hz')) %}
                   {% if event_bw is not none %}
