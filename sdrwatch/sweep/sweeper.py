@@ -386,8 +386,8 @@ class Sweeper:
                 total_promoted += promoted
                 total_new_signals += new_signals
 
-                _log.debug(
-                    "window center_hz=%.1f det_count=%d mean_db=%.1f p90_db=%.1f anomalous=%d accepted=%d promoted=%d new_sig=%d spur_masked=%d",
+                _log.info(
+                    "[scan] window center_hz=%.1f det_count=%d mean_db=%.1f p90_db=%.1f anomalous=%d accepted=%d promoted=%d new_sig=%d spur_masked=%d",
                     center,
                     len(segs),
                     mean_psd_db,

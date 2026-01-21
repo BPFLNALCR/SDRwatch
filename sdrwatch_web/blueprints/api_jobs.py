@@ -22,14 +22,21 @@ bp = Blueprint("api_jobs", __name__)
 
 
 def parse_window_log_line(line: str) -> Optional[Dict[str, Any]]:
-    """Parse a scanner window log line into a structured dict."""
-    prefix = "[scan] window"
+    """Parse a scanner window log line into a structured dict.
+    
+    The scanner logs lines like:
+    [2025-01-21 12:34:56] INFO     [sweep.sweeper] [scan] window center_hz=... det_count=...
+    
+    We look for the marker '[scan] window' anywhere in the line.
+    """
+    marker = "[scan] window"
     if not isinstance(line, str):
         return None
     text = line.strip()
-    if not text.startswith(prefix):
+    idx = text.find(marker)
+    if idx < 0:
         return None
-    payload = text[len(prefix):].strip()
+    payload = text[idx + len(marker):].strip()
     if not payload:
         return None
 
