@@ -3,59 +3,72 @@
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![CI](https://github.com/BPFLNALCR/sdr-watch/actions/workflows/ci.yml/badge.svg)
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%205-red)
-![SDR](https://img.shields.io/badge/SDR-RTL--SDR-blue)
+![SDR](https://img.shields.io/badge/SDR-RTL--SDR%20%7C%20SoapySDR-blue)
 ![Planned SDRs](https://img.shields.io/badge/Planned-HackRF%2C%20Airspy%2C%20LimeSDR%2C%20USRP-yellow)
 ![WebUI](https://img.shields.io/badge/WebUI-Flask-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-**Wideband spectrum scanner, baseline builder, and bandplan mapper for SDR devices with a lightweight web dashboard.**
+**Tactical spectrum situational awareness for SDR devices—wideband scanning, baseline tracking, signal classification, and a real-time web dashboard.**
 
-SDR-Watch transforms a Raspberry Pi 5 and SDR dongle into a **persistent spectrum monitoring station**. It sweeps wide frequency ranges, detects and logs signals, builds long-term baselines of spectrum activity, and maps detections to official frequency allocations. It now includes a **simple web dashboard** for real-time monitoring and control. 🌐
+SDR-Watch transforms a Raspberry Pi 5 and SDR dongle into a **persistent spectrum monitoring station**. It sweeps wide frequency ranges, detects and logs signals, builds long-term baselines of spectrum activity, and maps detections to official frequency allocations. The **tactical web dashboard** provides real-time monitoring, signal classification, and actionable situational awareness.
 
-👉 Example applications:
+**Example applications:**
 
 - **Electronic Protection**: Detect interference, jamming attempts, or unusual transmissions in critical bands.
 - **Spectrum Security**: Identify unauthorized users, validate coordination, and monitor long-term occupancy.
 - **Research & Development**: Study waveform usage, analyze antenna performance, and collect environmental RF data.
-- **Ops & Training**: Enable live visualization of RF activity during field exercises or experimental events.
+- **Field Operations**: Enable live visualization of RF activity during exercises, events, or security operations.
+- **Signal Classification**: Mark detected signals as Friendly/Ambient/Hostile for rapid threat assessment.
 
-This is a **lightweight but powerful tool** that makes you the one who knows what’s really happening in the air first.
+**Current capabilities:**
 
-At its current stage of development, SDR-Watch is:
-
-* ✅ Optimized for **RTL-SDR** devices (support for HackRF, Airspy, LimeSDR, USRP, etc. planned).
-* ✅ Intended to run on a **Raspberry Pi 5** with a **32 GB SD card** using **Raspbian Lite OS**.
-* ✅ Usable as both a CLI tool and a web dashboard.
+* ✅ Optimized for **RTL-SDR** devices via native driver or **SoapySDR** abstraction.
+* ✅ Runs on **Raspberry Pi 5** with **Raspberry Pi OS** (Trixie/Bookworm).
+* ✅ Full CLI tool and tactical web dashboard with signal management.
 
 ---
 
 ## ✨ Features
 
-- **📶 Wideband Sweeps**: Scan across frequency ranges using RTL-SDR, HackRF, Airspy, LimeSDR, USRP (planned).
-- **🔎 Signal Detection**: Robust noise floor estimation (median + MAD) with thresholding.
-- **📊 Baseline Tracking**: Long-term exponential moving average to separate normal vs. anomalous signals.
-- **🗺️ Bandplan Mapping**: Map detections to FCC, CEPT, ITU-R, and other official allocations.
-- **💾 Data Logging**: Store all scans, detections, and baselines in SQLite.
-- **🌍 Web Dashboard**:
-  - 📈 Real-time graphs and histograms.
-  - 🎛️ Control buttons for common scan presets (FM band, full sweep, etc.).
-  - 👀 At-a-glance monitoring of activity and occupancy.
-  - 🕒 Trend timeline with hourly/daily buckets and strongest SNR snapshots.
-  - 🗺️ Frequency-coverage heatmap with optional LAT/LONG tagging per scan.
-  - 🎚️ Interactive filters for service, SNR, frequency span, and lookback windows.
-- **🧠 Self-healing controller**:
-  - Auto-discovers `sdrwatch.py` every launch via `resolve_scanner_paths()` so `/opt/sdrwatch` deployments, symlinked releases, and fresh installs work without restarting the daemon.
-  - Exposes a RESTful job API (`/jobs`, `/jobs/<id>`, `/jobs/<id>/logs`) that the web layer simply proxies.
-- **🔔 Alerts & Outputs**:
-  - Desktop notifications (`notify-send`) for new detections.
-  - JSONL stream for integration with Grafana, Loki, ELK (each record now includes the window coverage ratio, observed duration, bandwidth estimate, and persistence mode used for gating).
-  - Enhanced Option A JSONL instrumentation logs `{cluster_reject, cluster_emit, persist_missing, revisit_apply}` events with SNR/width context so FM tuning sessions can be replayed without touching the SQLite DB.
-- **⚙️ Services Integration**: Systemd units for `sdrwatch-control` (API manager) and `sdrwatch-web` (dashboard).
-  - Web UI now uses REST endpoints (`/api/jobs`, `/api/jobs/active`, `/api/jobs/<id>`, `/api/jobs/<id>/logs`) so multiple browser sessions stay in sync and the architecture can scale horizontally.
+### Core Scanning
+- **Wideband Sweeps**: Scan across frequency ranges using RTL-SDR (native or SoapySDR).
+- **Signal Detection**: CFAR-based detection with robust noise floor estimation (median + MAD).
+- **Baseline Tracking**: Long-term exponential moving average to separate normal vs. anomalous signals.
+- **Bandplan Mapping**: Map detections to FCC, CEPT, ITU-R, and other official allocations.
+- **Data Logging**: Store all scans, detections, and baselines in SQLite.
+- **Two-Pass Verification**: Refine bandwidths and suppress false positives with revisit sweeps.
+
+### Tactical Web Dashboard
+- **Signal Cards**: Visual grid of detected signals with frequency, bandwidth, SNR, and confidence.
+- **Signal Classification**: Mark signals as **Friendly** (green), **Ambient** (gray), or **Hostile** (red).
+- **Signal Selection**: Star/highlight signals of interest for tracking across sessions.
+- **Human-Friendly IDs**: Each signal gets a unique identifier (e.g., `SIG-0042`) for easy reference.
+- **Signal Labels & Notes**: Add custom labels and freeform notes to any detection.
+- **User Bandwidth Corrections**: Override detected bandwidth for display purposes.
+- **Signal Detail Pages**: Deep-dive view for individual signals with full metadata and edit forms.
+- **Signals List**: Browse all signals across baselines with filtering and bulk operations.
+- **Changes Panel**: Real-time delta feed showing NEW, QUIETED, and POWER_SHIFT events.
+- **Band Summary**: At-a-glance view of spectrum occupancy by frequency band.
+- **Baseline Management**: Create, select, and switch between multiple baselines.
+- **Control Panel**: Start/stop scans, select profiles, configure parameters.
+- **Spur Map**: View and manage known spurious signals for calibration.
+- **Debug Dashboard**: Developer tools showing DB stats, errors, and system health.
+
+### Controller & API
+- **RESTful Job API**: `/jobs`, `/devices`, `/profiles`, `/baselines` endpoints.
+- **Signal Management API**: `/api/signals` for CRUD operations on detections.
+- **Bearer Token Auth**: Secure controller and web API with `SDRWATCH_CONTROL_TOKEN`.
+- **Auto-Discovery**: Controller resolves scanner paths dynamically for flexible deployments.
+- **Self-Healing**: Stale lock cleanup, process monitoring, and graceful restarts.
+
+### Outputs & Integration
+- **JSONL Streaming**: Per-detection events with baseline ID, confidence, bandwidth, and classification.
+- **Desktop Notifications**: `notify-send` alerts for new detections.
+- **Systemd Integration**: Service units for `sdrwatch-control` and `sdrwatch-web`.
 
 ---
 
-## 🛠️ Installation (Raspberry Pi 5 – Raspbian Lite 64-bit)
+## 🛠️ Installation (Raspberry Pi 5)
 
 Quick install with the included one-shot installer:
 
@@ -68,13 +81,13 @@ chmod +x install-sdrwatch.sh
 
 The installer will:
 
-- Install dependencies (RTL-SDR, HackRF, SoapySDR, NumPy/SciPy, Flask, etc.).
+- Install dependencies (RTL-SDR, SoapySDR, NumPy/SciPy, Flask, etc.).
 - Set up a Python venv with system packages.
-- Verify hardware (`rtl_test`, `hackrf_info`).
+- Verify hardware (`rtl_test`).
 - Apply kernel blacklist + udev rules for RTL2832U dongles.
 - Optionally configure + enable **systemd services** for automatic startup.
 
-🔧 Non-interactive mode:
+Non-interactive mode:
 
 ```bash
 SDRWATCH_AUTO_YES=1 ./install-sdrwatch.sh
@@ -86,18 +99,14 @@ SDRWATCH_AUTO_YES=1 ./install-sdrwatch.sh
 
 ### Command Line
 
-Sweep the FM band once (default behavior):
+All sweeps must be associated with a baseline (`--baseline-id <id>` or `--baseline-id latest`).
+
+Sweep the FM band once:
 
 ```bash
 python3 -m sdrwatch.cli --baseline-id 3 --start 88e6 --stop 108e6 --step 1.8e6 \
   --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr --gain auto
 ```
-
-Notes:
-- All sweeps must be associated with a baseline (`--baseline-id <id>` or `--baseline-id latest`).
-- By default, the scanner runs a single full sweep and exits.
-- Use `--loop` for continuous sweeps, `--repeat N` for a fixed number of sweeps, or `--duration 10m` to run until the time elapses.
-- Tag scan metadata with `--latitude`/`--longitude` (decimal degrees) when location context matters; the values are stored in the `scans` table and surfaced in the dashboard + heatmap.
 
 Continuous monitoring across 30 MHz – 1.7 GHz:
 
@@ -107,7 +116,7 @@ python3 -m sdrwatch.cli --baseline-id 3 --start 30e6 --stop 1700e6 --step 2.4e6 
   --gain auto --loop --notify --db sdrwatch.db --jsonl events.jsonl
 ```
 
-Enable the **two-pass verification** workflow to refine bandwidths and suppress false positives automatically:
+Two-pass verification for refined bandwidth detection:
 
 ```bash
 python3 -m sdrwatch.cli --baseline-id 3 --start 88e6 --stop 108e6 --step 2.4e6 \
@@ -115,69 +124,101 @@ python3 -m sdrwatch.cli --baseline-id 3 --start 88e6 --stop 108e6 --step 2.4e6 \
   --revisit-margin-hz 150e3 --revisit-max-bands 40
 ```
 
-The first pass runs today’s coarse sweep, tagging suspicious hits. The revisit pass then re-tunes each tag, expanding outward until both sides reach the noise floor so FM broadcast carriers, for example, are reported at their true 200 kHz width. Previously cataloged signals are only confirmed (no duplicate detections), while missing signals are timestamped and re-queued for future revisits.
+#### Scan Profiles
 
-#### FM broadcast preset
+Use `--profile <name>` for preset configurations:
 
-For repeatable FM-band validation sweeps, pass `--profile fm_broadcast`. The profile pins the range to 88–108 MHz, step size to 1.2 MHz overlap, FFT 8192, avg 10, gain 20 dB, a lower 6 dB threshold, guard 3, min width 12 bins, and two-pass revisit defaults (32768 FFT, 200 kHz margin, 40 bands). It also relaxes persistence to hit-ratio 0.25 with single-window acceptance so long-lived stations are promoted immediately, then enforces ~200 kHz wide outputs via bandwidth padding so the JSONL looks like the actual FM deviation. Confidence scoring is biased for FM too: single-window hits saturate the confidence hit/duration terms faster (normalizers drop from 6/8 windows to 2/2) and we apply a small +0.05 bias so legitimate stations land in the ~0.5–0.7 range even when each sweep only visits them once. The web control surface now auto-fills the same values whenever “fm_broadcast” is selected in the Profile dropdown, eliminating guess work between the GUI and CLI.
+| Profile | Description |
+| --- | --- |
+| `fm_broadcast` | FM band (88-108 MHz), optimized for broadcast detection |
+| `full_sweep` | Wide coverage with balanced settings |
 
-### Configurable persistence gates
+#### Persistence Modes
 
-Use `--persistence-mode` to choose how detections are promoted to persistent records:
+Use `--persistence-mode` to control how detections are promoted:
 
 | Mode | Description |
 | --- | --- |
-| `hits` (default) | Requires a minimum number of hits/windows **and** the specified `--persistence-hit-ratio` coverage within the cluster span. |
-| `duration` | Requires the cluster to remain active for at least `--persistence-min-seconds` while still meeting the minimum hit/window counts. |
-| `both` | Requires both coverage and duration thresholds to pass.
+| `hits` (default) | Requires minimum hits/windows and hit-ratio coverage |
+| `duration` | Requires minimum active time |
+| `both` | Requires both coverage and duration thresholds |
 
-Additional knobs:
+### Web Dashboard
 
-- `--persistence-hit-ratio` (default `0.6`)
-- `--persistence-min-seconds` (default `10`)
-- `--persistence-min-hits` / `--persistence-min-windows` (defaults `2` / `2`)
-
-The **Control** page exposes the same options so you can switch between hit-ratio, duration, or combined persistence gating directly from the dashboard.
-
-### Web Dashboard 🌐
-
-If installed with services enabled, the dashboard is always on at boot:\
+If installed with services enabled, the dashboard is available at boot:
 `http://<raspberrypi-ip>:8080`
 
 Manual launch:
 
 ```bash
-python3 sdrwatch-web-simple.py --db sdrwatch.db --host 0.0.0.0 --port 8080
+python3 sdrwatch-web.py --db sdrwatch.db --host 0.0.0.0 --port 8080
 ```
 
-The dashboard can render immediately even if the database is empty; it will auto-switch to the "waiting" state until the first scan populates tables.
+#### Dashboard Features
+
+- **Signal Cards**: Click any signal card to view details or use inline controls.
+- **Classification**: Use dropdown or quick-mark buttons (Friendly/Ambient/Hostile).
+- **Selection**: Click the star icon to highlight signals of interest.
+- **Labels**: Add short labels like "Base Station" or "Jammer" for quick identification.
+- **Notes**: Record observations, timestamps, or investigation notes.
+- **Signal Detail**: Click "View details" for full signal page with edit forms.
 
 ---
 
-## 🔗 Controller REST API & Tokens
+## 🔗 Controller REST API
 
-The controller exposes a stable REST surface consumed by the Flask frontend or any automation:
+The controller exposes a REST API consumed by the web frontend or automation:
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/devices` | Enumerate SDRs (key, kind, label, metadata). |
-| `GET` | `/jobs` | List jobs (status, params, timestamps). |
-| `POST` | `/jobs` | Start a job `{device_key, label, params}`. |
-| `GET` | `/jobs/<id>` | Inspect a specific job. |
-| `GET` | `/jobs/<id>/logs?tail=N` | Stream scanner logs from disk. |
-| `DELETE` | `/jobs/<id>` | Stop the job (SIGTERM/SIGKILL fallback). |
+| `GET` | `/devices` | Enumerate SDRs (key, kind, label, metadata) |
+| `GET` | `/jobs` | List jobs (status, params, timestamps) |
+| `POST` | `/jobs` | Start a job `{device_key, label, baseline_id, params}` |
+| `GET` | `/jobs/<id>` | Inspect a specific job |
+| `GET` | `/jobs/<id>/logs?tail=N` | Stream scanner logs |
+| `DELETE` | `/jobs/<id>` | Stop the job |
+| `GET` | `/profiles` | List available scan profiles |
+| `GET` | `/baselines` | List baselines |
+| `POST` | `/baselines` | Create a new baseline |
 
-Set `SDRWATCH_CONTROL_TOKEN` when running `sdrwatch-control.py serve` to require bearer auth. The web app reads `SDRWATCH_CONTROL_URL` / `SDRWATCH_CONTROL_TOKEN` and simply forwards REST calls, exposing its own `Bearer SDRWATCH_TOKEN` guard for the `/api/*` routes.
+### Signal API
 
-**Scanner path discovery:** the controller launches `python -m sdrwatch.cli` by default and still hunts for a local `sdrwatch.py` shim (or `SDRWATCH_PROJECT_DIR`) to determine the project root for DB defaults. Override via environment variables if you relocate deployments or need to force the legacy script via `SDRWATCH_SCAN_EXEC=script`.
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/signals` | List all signals with classification data |
+| `GET` | `/api/signals/<id>` | Get signal details |
+| `PATCH` | `/api/signals/<id>` | Update classification, label, notes, user_bw_hz |
+| `POST` | `/api/signals/<id>/toggle-selected` | Toggle selection status |
+| `GET` | `/api/signals/selected` | List selected signals only |
+
+Set `SDRWATCH_CONTROL_TOKEN` for bearer auth. The web app reads `SDRWATCH_CONTROL_URL` and `SDRWATCH_CONTROL_TOKEN` to proxy requests.
 
 ---
 
 ## 🗄️ Database Schema
 
-- **scans**: sweep metadata
-- **detections**: detected signals
-- **baseline**: persistent occupancy statistics
+Key tables:
+
+| Table | Purpose |
+| --- | --- |
+| `baselines` | Baseline metadata (name, frequency range, location) |
+| `baseline_detections` | Persistent signal records with classification |
+| `baseline_noise` | Per-bin noise floor EMA |
+| `baseline_occupancy` | Per-bin occupancy counts |
+| `scan_updates` | Per-sweep summary statistics |
+| `spur_map` | Known spurious signals for calibration |
+
+### Signal Classification Columns
+
+The `baseline_detections` table includes tactical awareness fields:
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `label` | TEXT | User-defined short label |
+| `classification` | TEXT | `friendly`, `ambient`, `hostile`, or `unknown` |
+| `user_bw_hz` | INTEGER | User-corrected bandwidth (display only) |
+| `notes` | TEXT | Freeform user notes |
+| `selected` | INTEGER | Boolean flag for highlighting |
 
 ---
 
@@ -192,36 +233,38 @@ low_hz,high_hz,service,region,notes
 
 ---
 
-## 🔍 Inspecting Collected Data
+## 🔍 Inspecting Data
 
-Query detections:
+Query recent detections:
 
 ```bash
-sqlite3 -header -column sdrwatch.db "SELECT time_utc, f_center_hz/1e6 AS MHz, snr_db, service FROM detections ORDER BY id DESC LIMIT 20;"
+sqlite3 -header -column sdrwatch.db \
+  "SELECT id, f_center_hz/1e6 AS MHz, classification, label FROM baseline_detections ORDER BY id DESC LIMIT 20;"
 ```
 
-Query baseline:
+Query selected signals:
 
 ```bash
-sqlite3 -header -column sdrwatch.db "SELECT bin_hz/1e6 AS MHz, round(ema_occ,3) AS occ FROM baseline ORDER BY occ DESC LIMIT 20;"
+sqlite3 -header -column sdrwatch.db \
+  "SELECT id, f_center_hz/1e6 AS MHz, classification FROM baseline_detections WHERE selected=1;"
 ```
 
-Export:
+Export to CSV:
 
 ```bash
-sqlite3 -header -csv sdrwatch.db "SELECT * FROM detections;" > detections.csv
+sqlite3 -header -csv sdrwatch.db "SELECT * FROM baseline_detections;" > signals.csv
 ```
 
 ---
 
 ## 🛣️ Roadmap
 
-- Expand SDR support (HackRF, Airspy, LimeSDR, USRP).
-- Add CFAR-style detection to reduce false positives.
-- Implement duty-cycle analysis for bursty signals.
-- Enhance web dashboard with interactive filters & charts.
-- Multi-SDR coordination for distributed scanning.
-- Expand region-specific bandplans (FCC, CEPT, BNetzA).
+- [ ] Additional SDR support (HackRF, Airspy, LimeSDR, USRP via SoapySDR)
+- [ ] Duty-cycle analysis for bursty signals
+- [ ] Multi-SDR coordination for distributed scanning
+- [ ] Enhanced charting and spectrum waterfall
+- [ ] Export/import of signal classifications
+- [ ] Alert rules based on classification and frequency
 
 ---
 
@@ -233,5 +276,4 @@ MIT License. See [LICENSE](LICENSE).
 
 ## 🙏 Acknowledgements
 
-Inspired by `rtl_power`, `SoapyPower`, and GNU Radio’s `gr-inspector`, but extended for **persistent monitoring, automated mapping, and a real-time dashboard**.
-
+Inspired by `rtl_power`, `SoapyPower`, and GNU Radio's `gr-inspector`, extended for **persistent monitoring, baseline tracking, signal classification, and tactical situational awareness**.
