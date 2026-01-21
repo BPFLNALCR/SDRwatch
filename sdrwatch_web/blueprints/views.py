@@ -378,7 +378,7 @@ def dashboard():
         confidence_available=confidence_available,
         db_status="ready",
         db_status_message="",
-        db_path=current_app.config.get("DB_PATH", ""),
+        db_path=current_app.config.get("SDRWATCH_DB_PATH") or current_app.config.get("DB_PATH", ""),
         tactical_config=tactical_config,
         baselines=baselines,
         baseline_summaries=baseline_summary_data,
@@ -418,7 +418,7 @@ def control():
     summaries = baseline_summary_map()
     return render_template(
         "control.html",
-        db_path=current_app.config.get("DB_PATH", ""),
+        db_path=current_app.config.get("SDRWATCH_DB_PATH") or current_app.config.get("DB_PATH", ""),
         profiles=controller_profiles(),
         baselines=baseline_list,
         baseline_summaries=summaries,
@@ -438,7 +438,7 @@ def live():
         "live.html",
         db_status=state,
         db_status_message=state_message,
-        db_path=current_app.config.get("DB_PATH", ""),
+        db_path=current_app.config.get("SDRWATCH_DB_PATH") or current_app.config.get("DB_PATH", ""),
     )
 
 
@@ -580,7 +580,7 @@ def spur_map():
         spur_entries=rows,
         db_status="ready",
         db_status_message="",
-        db_path=current_app.config.get("DB_PATH", ""),
+        db_path=current_app.config.get("SDRWATCH_DB_PATH") or current_app.config.get("DB_PATH", ""),
         format_ts_label=format_ts_label,
     )
 

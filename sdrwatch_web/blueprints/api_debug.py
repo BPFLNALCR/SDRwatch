@@ -111,7 +111,7 @@ def api_debug_health():
 
     # Check WAL size
     try:
-        db_path = app.config.get("DATABASE_PATH")
+        db_path = app.config.get("SDRWATCH_DB_PATH") or app.config.get("DB_PATH")
         if db_path:
             db_dir = os.path.dirname(os.path.abspath(db_path))
             db_name = os.path.basename(db_path)

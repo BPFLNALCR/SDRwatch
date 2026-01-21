@@ -7,7 +7,7 @@ new baseline entries.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from flask import current_app
@@ -64,7 +64,8 @@ def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
             num_new_signals INTEGER NOT NULL,
             num_revisits INTEGER NOT NULL DEFAULT 0,
             num_confirmed INTEGER NOT NULL DEFAULT 0,
-            num_false_positive INTEGER NOT NULL DEFAULT 0
+            num_false_positive INTEGER NOT NULL DEFAULT 0,
+            duration_ms INTEGER
         )
         """,
         """
@@ -169,7 +170,7 @@ def create_baseline_entry(data: Dict[str, Any]) -> Dict[str, Any]:
 
     payload = {
         "name": name,
-        "created_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat() + "Z",
         "location_lat": _coerce_float(data.get("location_lat")),
         "location_lon": _coerce_float(data.get("location_lon")),
         "sdr_serial": (str(data.get("sdr_serial") or "").strip() or None),
@@ -182,9 +183,12 @@ def create_baseline_entry(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     app = current_app._get_current_object()
+    db_path = app.config.get('SDRWATCH_DB_PATH') or app.config.get('DB_PATH')
+    if not db_path:
+        raise RuntimeError("No database path configured")
 
     try:
-        conn = sqlite3.connect(app._db_path)
+        conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
     except sqlite3.Error as exc:
         raise RuntimeError(f"failed to open database for baseline creation: {exc}")

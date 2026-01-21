@@ -6,7 +6,6 @@ Wires together blueprints, DB lifecycle, error handling, and request middleware.
 from __future__ import annotations
 
 import os
-import sqlite3
 import traceback as tb
 from datetime import datetime, timezone
 from time import perf_counter
@@ -16,6 +15,7 @@ from flask import Flask, g, request
 
 from sdrwatch_web.config import CONTROL_TOKEN, CONTROL_URL
 from sdrwatch_web.controller import ControllerClient
+from sdrwatch_web.db import init_db
 
 
 def create_app(db_path: str) -> Flask:
@@ -29,63 +29,17 @@ def create_app(db_path: str) -> Flask:
     # ------------------------------------------------------------------
     # App-level state
     # ------------------------------------------------------------------
+    # Initialize database state using the shared db module
+    init_db(app, db_path)
+
+    # Legacy keys for backward compatibility with existing code
     app.config["DB_PATH"] = db_path
-    app.config["DB_ERROR"] = None
-    app.config["DB_CONNECTION"] = None
-    app.config["HAS_CONFIDENCE_COLUMN"] = None
-    app.config["TABLE_COLUMNS_CACHE"] = {}
-    app.config["TABLE_EXISTS_CACHE"] = {}
+    app.config["DB_ERROR"] = app.config.get("SDRWATCH_DB_ERROR")
+    app.config["DB_CONNECTION"] = app.config.get("SDRWATCH_DB_CON")
+    app.config["HAS_CONFIDENCE_COLUMN"] = app.config.get("SDRWATCH_DB_HAS_CONFIDENCE")
+    app.config["TABLE_COLUMNS_CACHE"] = app.config.get("SDRWATCH_DB_COLUMNS_CACHE", {})
+    app.config["TABLE_EXISTS_CACHE"] = app.config.get("SDRWATCH_DB_EXISTS_CACHE", {})
     app.config["CONTROLLER_CLIENT"] = ControllerClient(CONTROL_URL, CONTROL_TOKEN)
-
-    # ------------------------------------------------------------------
-    # DB lifecycle helpers (attached to app for shared use)
-    # ------------------------------------------------------------------
-
-    def _open_db_ro(path: str) -> sqlite3.Connection:
-        """Open SQLite in read-only mode with dict row factory."""
-        abspath = os.path.abspath(path)
-        con = sqlite3.connect(
-            f"file:{abspath}?mode=ro", uri=True, check_same_thread=False
-        )
-        con.execute("PRAGMA busy_timeout=2000;")
-        con.row_factory = lambda cur, row: {
-            d[0]: row[i] for i, d in enumerate(cur.description)
-        }
-        return con
-
-    def _ensure_con() -> Optional[sqlite3.Connection]:
-        """Lazy-open and cache the read-only DB connection."""
-        if app.config["DB_CONNECTION"] is not None:
-            return app.config["DB_CONNECTION"]
-        try:
-            app.config["DB_CONNECTION"] = _open_db_ro(app.config["DB_PATH"])
-            app.config["DB_ERROR"] = None
-            app.config["HAS_CONFIDENCE_COLUMN"] = None
-        except Exception as exc:
-            app.config["DB_CONNECTION"] = None
-            app.config["DB_ERROR"] = str(exc)
-            app.config["HAS_CONFIDENCE_COLUMN"] = None
-        return app.config["DB_CONNECTION"]
-
-    def _reset_con() -> None:
-        """Close and discard the cached DB connection."""
-        if app.config["DB_CONNECTION"] is not None:
-            try:
-                app.config["DB_CONNECTION"].close()
-            except Exception:
-                pass
-        app.config["DB_CONNECTION"] = None
-        app.config["TABLE_COLUMNS_CACHE"] = {}
-        app.config["TABLE_EXISTS_CACHE"] = {}
-
-    # Attach helpers for external access via extensions dict
-    if "sdrwatch_helpers" not in app.extensions:
-        app.extensions["sdrwatch_helpers"] = {}
-    app.extensions["sdrwatch_helpers"]["ensure_con"] = _ensure_con
-    app.extensions["sdrwatch_helpers"]["reset_con"] = _reset_con
-
-    # Attempt initial connection (tolerates failure)
-    _ensure_con()
 
     # ------------------------------------------------------------------
     # Error ring buffer (exposed via api_debug blueprint)

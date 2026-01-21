@@ -164,7 +164,7 @@ def table_exists(table_name: str) -> bool:
     if key in cache:
         return cache[key]
 
-    connection = _ensure_con(app)
+    connection = _ensure_con(current_app)
     if connection is None:
         cache[key] = False
         return False
@@ -250,7 +250,7 @@ def detections_have_confidence() -> bool:
 
     connection = _ensure_con(current_app)
     if connection is None:
-        app.config['SDRWATCH_DB_HAS_CONFIDENCE'] = False
+        current_app.config['SDRWATCH_DB_HAS_CONFIDENCE'] = False
         return False
 
     try:
