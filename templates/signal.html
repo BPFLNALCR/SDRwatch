@@ -202,14 +202,19 @@
         </div>
         
         <div class="mt-4">
-          <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Hit Ratio (Duty Cycle)</div>
-          <div class="w-full bg-slate-800 rounded-full h-4 relative">
-            <div class="bg-sky-500 h-4 rounded-full" style="width: {{ (signal.hit_ratio * 100)|round(1) }}%"></div>
-            {% if signal.hit_ratio < 0.1 %}
-            <span class="absolute inset-0 flex items-center justify-center text-xs text-slate-400">Low duty cycle — may indicate burst transmission</span>
+          <div class="flex items-center gap-2 mb-2">
+            <div class="text-xs uppercase tracking-wide text-slate-400" title="Segment detections per observation window. Values over 100% indicate wideband signals detected as multiple segments per window.">Segment Density</div>
+            {% if signal.hit_ratio > 1.0 %}
+            <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-amber-600/80 text-amber-100">{{ (signal.hit_ratio * 100)|round(0) }}%</span>
             {% endif %}
           </div>
-          <div class="text-sm text-slate-400 mt-1">{{ (signal.hit_ratio * 100)|round(1) }}% of observation windows</div>
+          <div class="w-full bg-slate-800 rounded-full h-4 relative overflow-hidden">
+            <div class="bg-sky-500 h-4 rounded-full" style="width: {{ [signal.hit_ratio * 100, 100]|min|round(1) }}%"></div>
+            {% if signal.hit_ratio < 0.1 %}
+            <span class="absolute inset-0 flex items-center justify-center text-xs text-slate-400">Low density — may indicate burst transmission</span>
+            {% endif %}
+          </div>
+          <div class="text-sm text-slate-400 mt-1">{{ (signal.hit_ratio * 100)|round(1) }}% · {{ signal.total_hits or 0 }} hits / {{ signal.total_windows or 0 }} windows</div>
         </div>
 
         {% if signal.missing_since_utc %}
