@@ -185,7 +185,7 @@
                   {% endif %}
                   {% set event_bw = format_bandwidth_khz(event.get('bandwidth_hz_display') or event.get('bandwidth_hz')) %}
                   {% if event_bw is not none %}
-                    <span>{{ event_bw|round(0) }} kHz</span>
+                    <span>{{ event_bw }}</span>
                   {% endif %}
                   {% if event.confidence is not none %}
                     <span>Confidence {{ '%.2f'|format(event.confidence) }}</span>
@@ -234,7 +234,7 @@
               <div class="grid grid-cols-2 gap-3 text-sm">
                 <div>
                   <div class="text-xs uppercase tracking-wide muted">Bandwidth</div>
-                  <div class="text-lg font-semibold">{{ bw|round(0) if bw is not none else '—' }} kHz</div>
+                  <div class="text-lg font-semibold">{{ bw if bw is not none else '—' }}</div>
                 </div>
                 <div>
                   <div class="text-xs uppercase tracking-wide muted">Confidence</div>
