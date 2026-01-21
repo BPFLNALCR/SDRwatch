@@ -161,7 +161,7 @@
             {% if opt.key != 'ALL' %}
               {% set _ = params.update({'change_filter': opt.key}) %}
             {% endif %}
-            <a href="{{ url_for('dashboard', **params) }}" class="chip {{ 'chip-active' if dashboard_change_filter == opt.key else '' }}" data-change-filter-link>{{ opt.label }}</a>
+            <a href="{{ url_for('views.dashboard', **params) }}" class="chip {{ 'chip-active' if dashboard_change_filter == opt.key else '' }}" data-change-filter-link>{{ opt.label }}</a>
           {% endfor %}
         </div>
       </div>

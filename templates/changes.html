@@ -80,7 +80,7 @@
               {% if key != 'ALL' %}
                 {% set _ = link_params.update({'type': key}) %}
               {% endif %}
-              <a href="{{ url_for('changes', **link_params) }}" class="chip {{ 'chip-active' if active_filter == key else '' }}" data-filter="{{ key }}">{{ label }}</a>
+              <a href="{{ url_for('views.changes', **link_params) }}" class="chip {{ 'chip-active' if active_filter == key else '' }}" data-filter="{{ key }}">{{ label }}</a>
             {% endfor %}
           </div>
           <div class="text-xs text-slate-400" id="changes-meta">
