@@ -14,7 +14,7 @@
       <div class="chip text-xs uppercase tracking-wide {{ 'chip-active' if event.type == 'NEW_SIGNAL' else '' }}">{{ event.type }}</div>
       <div>{{ event.time_label or event.time_utc or '—' }}</div>
     </div>
-    <div class="text-sm font-semibold mt-2">{{ event.summary }}</div>
+    <div class="text-sm font-semibold mt-2">{{ format_change_summary(event) }}</div>
     <div class="text-xs text-slate-300 mt-1">{{ event.details }}</div>
     <div class="flex flex-wrap gap-3 text-[11px] text-slate-400 mt-3">
       {% if event.f_center_hz is not none %}
@@ -24,7 +24,7 @@
       {% if bw_value %}
         <span>BW {{ '%.0f'|format(bw_value / 1e3) }} kHz</span>
       {% endif %}
-      {% if event.confidence is not none %}
+      {% if event.confidence is defined and event.confidence is not none %}
         <span>Confidence {{ '%.2f'|format(event.confidence) }}</span>
       {% endif %}
       {% if event.delta_db is defined and event.delta_db is not none %}

@@ -1126,11 +1126,32 @@ def change_events_payload(
                 quiet_rows = []
 
             for row in quiet_rows:
+                fc = row.get("f_center_hz")
+                f_low = row.get("f_low_hz")
+                f_high = row.get("f_high_hz")
+                bw = None
+                if f_low is not None and f_high is not None:
+                    try:
+                        bw = max(0.0, float(f_high) - float(f_low))
+                    except Exception:
+                        bw = None
+
+                display_bw = compute_display_bandwidth_hz(
+                    baseline_row=baseline_row,
+                    f_low_hz=float(f_low) if f_low else None,
+                    f_high_hz=float(f_high) if f_high else None,
+                    bandwidth_hz=bw,
+                )
+
                 event = {
                     "type": "QUIETED",
                     "time_utc": row.get("last_seen_utc"),
-                    "f_center_hz": row.get("f_center_hz"),
+                    "f_center_hz": fc,
+                    "bandwidth_hz": bw,
+                    "bandwidth_hz_display": display_bw,
+                    "confidence": row.get("confidence"),
                     "last_seen_utc": row.get("last_seen_utc"),
+                    "total_windows": row.get("total_windows"),
                     "details": f"Last seen {row.get('last_seen_utc')}, was persistent ({row.get('total_windows')} windows)",
                 }
                 append_event(event)
@@ -1179,11 +1200,20 @@ def change_events_payload(
                 if ts_dt is None or ts_dt < base_cutoff_dt:
                     continue
 
+                display_bw = compute_display_bandwidth_hz(
+                    baseline_row=baseline_row,
+                    f_low_hz=freq_hz,
+                    f_high_hz=freq_hz + bin_hz if bin_hz > 0 else freq_hz,
+                    bandwidth_hz=bin_hz if bin_hz > 0 else None,
+                )
+
                 event = {
                     "type": "POWER_SHIFT",
                     "time_utc": last_seen,
                     "f_center_hz": freq_hz,
                     "bandwidth_hz": bin_hz if bin_hz > 0 else None,
+                    "bandwidth_hz_display": display_bw,
+                    "confidence": None,
                     "delta_db": delta_db,
                     "power_db": power_val,
                     "noise_floor_db": noise_val,
