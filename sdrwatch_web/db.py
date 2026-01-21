@@ -62,8 +62,37 @@ def init_db(app: Flask, db_path: str) -> None:
     app.config['SDRWATCH_DB_COLUMNS_CACHE'] = {}
     app.config['SDRWATCH_DB_EXISTS_CACHE'] = {}
 
+    # Run migrations on startup (writable connection, then close)
+    _run_startup_migrations(db_path)
+
     # Attempt initial connection (tolerates failure if DB is missing)
     _ensure_con(app)
+
+
+def _run_startup_migrations(db_path: str) -> None:
+    """
+    Run database migrations on startup using a writable connection.
+
+    Args:
+        db_path: Path to the SQLite database file.
+    """
+    if not os.path.exists(db_path):
+        return  # No DB file yet, nothing to migrate
+
+    try:
+        conn = sqlite3.connect(db_path)
+        # Check if baseline_detections table exists before migrating
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='baseline_detections'"
+        )
+        if cursor.fetchone() is not None:
+            from sdrwatch_web.schema import migrate_detection_classification
+            migrate_detection_classification(conn)
+            conn.commit()
+        conn.close()
+    except Exception:
+        # Migration failure is non-fatal; columns may already exist or table missing
+        pass
 
 
 def _ensure_con(app: Flask) -> Optional[sqlite3.Connection]:

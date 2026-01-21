@@ -1,6 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="space-y-6">
+  {% if not signal %}
+  <div class="card">
+    <div class="flex items-center gap-3 mb-4">
+      <a href="/" class="text-sm text-slate-400 hover:text-sky-400">← Dashboard</a>
+    </div>
+    <h1 class="text-2xl font-bold text-red-400">Signal not found</h1>
+    <p class="text-sm text-slate-400 mt-2">{{ error or 'The requested signal does not exist or has been removed.' }}</p>
+    <a href="/signals" class="btn mt-4">Browse all signals</a>
+  </div>
+  {% else %}
   <div class="card">
     <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
       <div>
@@ -27,7 +37,7 @@
           <span class="chip text-sm bg-amber-600/60 text-amber-100">{{ signal.label }}</span>
         {% endif %}
         <span class="chip text-sm {% if signal.classification == 'friendly' %}bg-green-600/80 text-green-100{% elif signal.classification == 'hostile' %}bg-red-600/80 text-red-100{% elif signal.classification == 'ambient' %}bg-slate-500/80 text-slate-100{% else %}bg-slate-700/80 text-slate-300{% endif %}">
-          {{ signal.classification|capitalize }}
+          {{ (signal.classification or 'unknown')|capitalize }}
         </span>
       </div>
     </div>
@@ -249,4 +259,5 @@
   document.getElementById('mark-hostile-btn')?.addEventListener('click', () => quickClassify('hostile'));
 })();
 </script>
+{% endif %}
 {% endblock %}
