@@ -15,6 +15,46 @@ from flask import current_app
 from sdrwatch_web.db import reset_ro_connection
 
 
+# ---------------------------------------------------------------------------
+# Classification columns migration
+# ---------------------------------------------------------------------------
+
+
+def migrate_detection_classification(conn: sqlite3.Connection) -> None:
+    """
+    Add classification columns to baseline_detections if missing.
+
+    Columns added:
+      - label TEXT: user-defined short label
+      - classification TEXT: friendly/ambient/hostile/unknown
+      - user_bw_hz INTEGER: user-corrected bandwidth (display only)
+      - notes TEXT: freeform user notes
+      - selected INTEGER: boolean flag for highlighting
+
+    Args:
+        conn: Writable SQLite connection.
+    """
+    # Check which columns already exist
+    cursor = conn.execute("PRAGMA table_info(baseline_detections)")
+    existing = {row[1] for row in cursor.fetchall()}
+
+    migrations = [
+        ("label", "ALTER TABLE baseline_detections ADD COLUMN label TEXT"),
+        ("classification", "ALTER TABLE baseline_detections ADD COLUMN classification TEXT DEFAULT 'unknown'"),
+        ("user_bw_hz", "ALTER TABLE baseline_detections ADD COLUMN user_bw_hz INTEGER"),
+        ("notes", "ALTER TABLE baseline_detections ADD COLUMN notes TEXT"),
+        ("selected", "ALTER TABLE baseline_detections ADD COLUMN selected INTEGER DEFAULT 0"),
+    ]
+
+    for col_name, alter_stmt in migrations:
+        if col_name not in existing:
+            try:
+                conn.execute(alter_stmt)
+            except sqlite3.OperationalError:
+                # Column may already exist from a partial migration
+                pass
+
+
 def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
     """
     Ensure all baseline-related tables exist.
@@ -51,7 +91,12 @@ def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
             last_seen_utc TEXT NOT NULL,
             total_hits INTEGER NOT NULL,
             total_windows INTEGER NOT NULL,
-            confidence REAL NOT NULL
+            confidence REAL NOT NULL,
+            label TEXT,
+            classification TEXT DEFAULT 'unknown',
+            user_bw_hz INTEGER,
+            notes TEXT,
+            selected INTEGER DEFAULT 0
         )
         """,
         """
@@ -134,6 +179,9 @@ def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
     ]
     for stmt in stmts:
         conn.execute(stmt)
+
+    # Run migrations for existing tables
+    migrate_detection_classification(conn)
 
 
 def create_baseline_entry(data: Dict[str, Any]) -> Dict[str, Any]:

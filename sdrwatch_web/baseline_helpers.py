@@ -751,7 +751,12 @@ def tactical_snapshot_payload(baseline_id: int) -> Optional[Dict[str, Any]]:
                 last_seen_utc,
                 first_seen_utc,
                 total_hits,
-                total_windows
+                total_windows,
+                label,
+                classification,
+                user_bw_hz,
+                notes,
+                selected
             FROM baseline_detections
             WHERE baseline_id = ?
               AND last_seen_utc >= datetime('now', ?)
@@ -794,16 +799,31 @@ def tactical_snapshot_payload(baseline_id: int) -> Optional[Dict[str, Any]]:
             bandwidth_hz=bandwidth,
         )
 
+        # Use user-corrected bandwidth for display if available
+        user_bw = row.get("user_bw_hz")
+        if user_bw is not None:
+            try:
+                display_bandwidth = float(user_bw)
+            except (ValueError, TypeError):
+                pass
+
+        det_id = row.get("id")
         active_payload.append({
-            "id": row.get("id"),
+            "id": det_id,
+            "signal_id": f"SIG-{det_id:04d}" if det_id else None,
             "f_center_hz": center,
             "bandwidth_hz": bandwidth,
             "bandwidth_hz_display": display_bandwidth,
+            "user_bw_hz": user_bw,
             "confidence": row.get("confidence"),
             "last_seen_utc": row.get("last_seen_utc"),
             "first_seen_utc": row.get("first_seen_utc"),
             "total_hits": row.get("total_hits"),
             "total_windows": row.get("total_windows"),
+            "label": row.get("label"),
+            "classification": row.get("classification") or "unknown",
+            "notes": row.get("notes"),
+            "selected": bool(row.get("selected")),
         })
 
     snapshot = {

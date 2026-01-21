@@ -548,6 +548,261 @@ def changes():
 
 
 # ---------------------------------------------------------------------------
+# Signal detail (/signal/<id>)
+# ---------------------------------------------------------------------------
+
+
+@bp.route("/signal/<signal_id>")
+def signal_detail(signal_id: str):
+    """
+    Signal detail page for viewing and editing a single detection.
+
+    Args:
+        signal_id: Signal ID (e.g., "SIG-0042" or "42").
+    """
+    from sdrwatch_web.blueprints.api_signals import parse_signal_id, format_signal_id
+
+    state, state_message = db_state()
+    if state != "ready":
+        context = db_waiting_context(state, state_message)
+        context["signal"] = None
+        return render_template("signal.html", **context)
+
+    det_id = parse_signal_id(signal_id)
+    if det_id is None:
+        return render_template(
+            "signal.html",
+            signal=None,
+            error="Invalid signal ID",
+            db_status="ready",
+            db_status_message="",
+            format_ts_label=format_ts_label,
+            format_bandwidth_khz=format_bandwidth_khz,
+        ), 400
+
+    con = get_con()
+    try:
+        row = q1(
+            con,
+            """
+            SELECT id, baseline_id, f_low_hz, f_high_hz, f_center_hz,
+                   first_seen_utc, last_seen_utc, total_hits, total_windows,
+                   confidence, label, classification, user_bw_hz, notes, selected
+            FROM baseline_detections
+            WHERE id = ?
+            """,
+            (det_id,),
+        )
+    except sqlite3.OperationalError as e:
+        return render_template(
+            "signal.html",
+            signal=None,
+            error=f"Database error: {e}",
+            db_status="ready",
+            db_status_message="",
+            format_ts_label=format_ts_label,
+            format_bandwidth_khz=format_bandwidth_khz,
+        ), 500
+
+    if not row:
+        return render_template(
+            "signal.html",
+            signal=None,
+            error="Signal not found",
+            db_status="ready",
+            db_status_message="",
+            format_ts_label=format_ts_label,
+            format_bandwidth_khz=format_bandwidth_khz,
+        ), 404
+
+    baseline_id = row.get("baseline_id")
+    baseline = fetch_baseline_record(baseline_id) if baseline_id else None
+
+    f_low = row.get("f_low_hz")
+    f_high = row.get("f_high_hz")
+    f_center = row.get("f_center_hz")
+    bw = (f_high - f_low) if f_low is not None and f_high is not None else None
+    user_bw = row.get("user_bw_hz")
+
+    from sdrwatch_web.formatting import compute_display_bandwidth_hz
+
+    display_bw = compute_display_bandwidth_hz(
+        baseline_row=baseline,
+        f_low_hz=float(f_low) if f_low else None,
+        f_high_hz=float(f_high) if f_high else None,
+        bandwidth_hz=bw,
+    ) if baseline else bw
+
+    total_hits = row.get("total_hits") or 0
+    total_windows = row.get("total_windows") or 0
+    hit_ratio = total_hits / total_windows if total_windows > 0 else 0.0
+
+    signal = {
+        "id": det_id,
+        "signal_id": format_signal_id(det_id),
+        "baseline_id": baseline_id,
+        "baseline_name": baseline.get("name") if baseline else None,
+        "f_center_hz": f_center,
+        "f_center_mhz": f_center / 1e6 if f_center else None,
+        "f_low_hz": f_low,
+        "f_high_hz": f_high,
+        "bandwidth_hz": bw,
+        "bandwidth_hz_display": user_bw if user_bw else display_bw,
+        "user_bw_hz": user_bw,
+        "first_seen_utc": row.get("first_seen_utc"),
+        "last_seen_utc": row.get("last_seen_utc"),
+        "total_hits": total_hits,
+        "total_windows": total_windows,
+        "hit_ratio": hit_ratio,
+        "confidence": row.get("confidence"),
+        "label": row.get("label"),
+        "classification": row.get("classification") or "unknown",
+        "notes": row.get("notes"),
+        "selected": bool(row.get("selected")),
+    }
+
+    return render_template(
+        "signal.html",
+        signal=signal,
+        db_status="ready",
+        db_status_message="",
+        format_ts_label=format_ts_label,
+        format_bandwidth_khz=format_bandwidth_khz,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Signals list (/signals)
+# ---------------------------------------------------------------------------
+
+
+@bp.route("/signals")
+def signals_list():
+    """
+    Signals list page showing all detections with filtering.
+    """
+    state, state_message = db_state()
+    if state != "ready":
+        context = db_waiting_context(state, state_message)
+        context["signals"] = []
+        context["baselines"] = []
+        return render_template("signals.html", **context)
+
+    con = get_con()
+
+    try:
+        baselines = qa(
+            con,
+            """
+            SELECT id, name, freq_start_hz, freq_stop_hz
+            FROM baselines
+            ORDER BY id DESC
+            """,
+        )
+    except sqlite3.OperationalError:
+        baselines = []
+
+    baseline_id_param = (request.args.get("baseline_id") or "").strip()
+    classification_param = (request.args.get("classification") or "").strip().lower()
+    selected_only = request.args.get("selected", "").strip().lower() in ("1", "true")
+
+    selected_baseline_id: Optional[int] = None
+    if baseline_id_param:
+        try:
+            selected_baseline_id = int(baseline_id_param)
+        except ValueError:
+            pass
+
+    if selected_baseline_id is None and baselines:
+        selected_baseline_id = baselines[0].get("id")
+
+    baseline = fetch_baseline_record(selected_baseline_id) if selected_baseline_id else None
+
+    conditions = []
+    params: List[Any] = []
+
+    if selected_baseline_id:
+        conditions.append("baseline_id = ?")
+        params.append(selected_baseline_id)
+
+    if classification_param in ("friendly", "ambient", "hostile", "unknown"):
+        conditions.append("classification = ?")
+        params.append(classification_param)
+
+    if selected_only:
+        conditions.append("selected = 1")
+
+    where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+    try:
+        rows = qa(
+            con,
+            f"""
+            SELECT id, baseline_id, f_low_hz, f_high_hz, f_center_hz,
+                   first_seen_utc, last_seen_utc, total_hits, total_windows,
+                   confidence, label, classification, user_bw_hz, notes, selected
+            FROM baseline_detections
+            WHERE {where_clause}
+            ORDER BY last_seen_utc DESC
+            LIMIT 200
+            """,
+            tuple(params),
+        )
+    except sqlite3.OperationalError:
+        rows = []
+
+    from sdrwatch_web.blueprints.api_signals import format_signal_id
+    from sdrwatch_web.formatting import compute_display_bandwidth_hz
+
+    signals = []
+    for row in rows:
+        det_id = row.get("id")
+        f_low = row.get("f_low_hz")
+        f_high = row.get("f_high_hz")
+        bw = (f_high - f_low) if f_low is not None and f_high is not None else None
+        user_bw = row.get("user_bw_hz")
+
+        display_bw = compute_display_bandwidth_hz(
+            baseline_row=baseline,
+            f_low_hz=float(f_low) if f_low else None,
+            f_high_hz=float(f_high) if f_high else None,
+            bandwidth_hz=bw,
+        ) if baseline else bw
+
+        signals.append({
+            "id": det_id,
+            "signal_id": format_signal_id(det_id) if det_id else None,
+            "baseline_id": row.get("baseline_id"),
+            "f_center_hz": row.get("f_center_hz"),
+            "bandwidth_hz": bw,
+            "bandwidth_hz_display": user_bw if user_bw else display_bw,
+            "first_seen_utc": row.get("first_seen_utc"),
+            "last_seen_utc": row.get("last_seen_utc"),
+            "total_hits": row.get("total_hits"),
+            "total_windows": row.get("total_windows"),
+            "confidence": row.get("confidence"),
+            "label": row.get("label"),
+            "classification": row.get("classification") or "unknown",
+            "notes": row.get("notes"),
+            "selected": bool(row.get("selected")),
+        })
+
+    return render_template(
+        "signals.html",
+        signals=signals,
+        baselines=baselines,
+        selected_baseline_id=str(selected_baseline_id) if selected_baseline_id else "",
+        classification_filter=classification_param,
+        selected_only=selected_only,
+        db_status="ready",
+        db_status_message="",
+        format_ts_label=format_ts_label,
+        format_freq_label=format_freq_label,
+        format_bandwidth_khz=format_bandwidth_khz,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Spur map (/spur-map)
 # ---------------------------------------------------------------------------
 

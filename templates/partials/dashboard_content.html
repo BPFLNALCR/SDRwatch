@@ -8,6 +8,18 @@
   {%- endif -%}
 {%- endmacro %}
 
+{% macro classification_chip(cls) -%}
+  {%- if cls == 'friendly' -%}
+    <span class="chip text-xs bg-green-600/80 text-green-100">Friendly</span>
+  {%- elif cls == 'ambient' -%}
+    <span class="chip text-xs bg-slate-500/80 text-slate-100">Ambient</span>
+  {%- elif cls == 'hostile' -%}
+    <span class="chip text-xs bg-red-600/80 text-red-100">Hostile</span>
+  {%- else -%}
+    <span class="chip text-xs bg-slate-700/80 text-slate-300">Unknown</span>
+  {%- endif -%}
+{%- endmacro %}
+
 <div class="space-y-6" id="dashboard-panels">
   <div class="card flex flex-wrap items-center justify-between gap-4">
     <div>
@@ -149,6 +161,94 @@
       {% endif %}
     </section>
 
+    <section id="signal-cards" class="card space-y-4">
+      <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 class="text-xl font-semibold">Signal cards</h2>
+          <p class="text-sm text-slate-300">Active detections observed in the past {{ (snapshot.active_window_minutes if snapshot else tactical_config.active_window_minutes) or tactical_config.active_window_minutes }} minutes.</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <a href="/signals?baseline_id={{ selected_baseline_id }}" class="btn text-xs">View all signals</a>
+          <span class="text-xs text-slate-400">{{ signal_cards|length }} signals</span>
+        </div>
+      </div>
+      {% if signal_cards %}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {% for sig in signal_cards %}
+            {% set bw = format_bandwidth_khz(sig.get('bandwidth_hz_display') or sig.get('bandwidth_hz')) %}
+            {% set conf = sig.confidence %}
+            {% set hits = sig.total_hits or 0 %}
+            {% set windows = sig.total_windows or 0 %}
+            {% set ratio = hits / windows if windows else 0 %}
+            {% set cls = sig.classification or 'unknown' %}
+            {% set is_selected = sig.selected %}
+            <article class="border rounded-2xl p-4 flex flex-col gap-3 transition-all duration-200 {{ 'border-sky-500/60 bg-sky-900/30 ring-1 ring-sky-500/40' if is_selected else 'border-white/10 bg-slate-900/60' }}" data-signal-id="{{ sig.id }}" data-signal-card>
+              <div class="flex items-start justify-between gap-3">
+                <div class="flex-1">
+                  <div class="flex items-center gap-2">
+                    <a href="/signal/{{ sig.id }}" class="text-xs font-mono text-sky-400 hover:underline" title="View signal details">{{ sig.signal_id or ('SIG-%04d'|format(sig.id)) }}</a>
+                    {% if sig.label %}
+                      <span class="chip text-xs bg-amber-600/60 text-amber-100">{{ sig.label }}</span>
+                    {% endif %}
+                  </div>
+                  <div class="text-2xl font-semibold mt-1">{{ format_freq_label(sig.f_center_hz) }} MHz</div>
+                </div>
+                <div class="flex flex-col items-end gap-2">
+                  <button type="button" class="text-lg {{ 'text-sky-400' if is_selected else 'text-slate-500 hover:text-sky-400' }}" data-toggle-select="{{ sig.id }}" title="{{ 'Deselect signal' if is_selected else 'Select signal' }}">
+                    {{ '★' if is_selected else '☆' }}
+                  </button>
+                  {{ classification_chip(cls) }}
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                {% if sig.near_spur is defined and sig.near_spur %}<span class="chip text-xs bg-amber-700/60">Near spur</span>{% endif %}
+                {% if sig.user_bw_hz %}<span class="chip text-xs bg-purple-600/60" title="User-corrected bandwidth">BW adj.</span>{% endif %}
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div class="text-xs uppercase tracking-wide muted">Bandwidth</div>
+                  <div class="text-lg font-semibold">{{ bw if bw is not none else '—' }}</div>
+                </div>
+                <div>
+                  <div class="text-xs uppercase tracking-wide muted">Confidence</div>
+                  <div class="text-lg font-semibold">{% if conf is not none %}{{ (conf * 100)|round(0) }}%{% else %}—{% endif %}</div>
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div class="text-xs uppercase tracking-wide muted">First seen</div>
+                  <div class="text-lg font-semibold">{{ format_ts_label(sig.first_seen_utc) }}</div>
+                </div>
+                <div>
+                  <div class="text-xs uppercase tracking-wide muted">Last seen</div>
+                  <div class="text-lg font-semibold">{{ format_ts_label(sig.last_seen_utc) }}</div>
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-4 text-xs text-slate-300">
+                <span>Hits {{ hits }}</span>
+                <span>Windows {{ windows }}</span>
+                <span>Hit ratio {{ '%.0f'|format(ratio * 100) }}%</span>
+              </div>
+              {% if sig.notes %}
+                <div class="text-xs text-slate-400 italic border-t border-white/10 pt-2 mt-1">{{ sig.notes[:100] }}{% if sig.notes|length > 100 %}...{% endif %}</div>
+              {% endif %}
+              <div class="flex gap-2 mt-1">
+                <a href="/signal/{{ sig.id }}" class="btn text-xs">Details</a>
+                <select class="input text-xs py-1" data-classify-signal="{{ sig.id }}" title="Classify signal">
+                  <option value="unknown" {{ 'selected' if cls == 'unknown' else '' }}>Unknown</option>
+                  <option value="friendly" {{ 'selected' if cls == 'friendly' else '' }}>Friendly</option>
+                  <option value="ambient" {{ 'selected' if cls == 'ambient' else '' }}>Ambient</option>
+                  <option value="hostile" {{ 'selected' if cls == 'hostile' else '' }}>Hostile</option>
+                </select>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="text-sm text-slate-300">No active signals in the current window. Once sweeps run, persistent detections will land here as cards.</div>
+      {% endif %}
+    </section>
+
     <section id="changes-panel" class="card space-y-4">
       <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <div>
@@ -202,65 +302,6 @@
         </div>
       {% else %}
         <div class="text-sm text-slate-300">Select a baseline to view recent changes.</div>
-      {% endif %}
-    </section>
-
-    <section id="signal-cards" class="card space-y-4">
-      <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 class="text-xl font-semibold">Signal cards</h2>
-          <p class="text-sm text-slate-300">Active detections observed in the past {{ (snapshot.active_window_minutes if snapshot else tactical_config.active_window_minutes) or tactical_config.active_window_minutes }} minutes.</p>
-        </div>
-        <div class="text-xs text-slate-400">{{ signal_cards|length }} signals</div>
-      </div>
-      {% if signal_cards %}
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {% for sig in signal_cards %}
-            {% set bw = format_bandwidth_khz(sig.get('bandwidth_hz_display') or sig.get('bandwidth_hz')) %}
-            {% set conf = sig.confidence %}
-            {% set hits = sig.total_hits or 0 %}
-            {% set windows = sig.total_windows or 0 %}
-            {% set ratio = hits / windows if windows else 0 %}
-            <article class="border border-white/10 rounded-2xl p-4 bg-slate-900/60 flex flex-col gap-3">
-              <div class="flex items-start justify-between gap-3">
-                <div>
-                  <div class="text-sm uppercase tracking-wide text-slate-400">Center frequency</div>
-                  <div class="text-2xl font-semibold">{{ format_freq_label(sig.f_center_hz) }} MHz</div>
-                </div>
-                <div class="flex flex-wrap gap-2">
-                  {% if sig.near_spur is defined and sig.near_spur %}<span class="chip text-xs">Near spur</span>{% endif %}
-                </div>
-              </div>
-              <div class="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <div class="text-xs uppercase tracking-wide muted">Bandwidth</div>
-                  <div class="text-lg font-semibold">{{ bw if bw is not none else '—' }}</div>
-                </div>
-                <div>
-                  <div class="text-xs uppercase tracking-wide muted">Confidence</div>
-                  <div class="text-lg font-semibold">{% if conf is not none %}{{ (conf * 100)|round(0) }}%{% else %}—{% endif %}</div>
-                </div>
-              </div>
-              <div class="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <div class="text-xs uppercase tracking-wide muted">First seen</div>
-                  <div class="text-lg font-semibold">{{ format_ts_label(sig.first_seen_utc) }}</div>
-                </div>
-                <div>
-                  <div class="text-xs uppercase tracking-wide muted">Last seen</div>
-                  <div class="text-lg font-semibold">{{ format_ts_label(sig.last_seen_utc) }}</div>
-                </div>
-              </div>
-              <div class="flex flex-wrap gap-4 text-xs text-slate-300">
-                <span>Hits {{ hits }}</span>
-                <span>Windows {{ windows }}</span>
-                <span>Hit ratio {{ '%.0f'|format(ratio * 100) }}%</span>
-              </div>
-            </article>
-          {% endfor %}
-        </div>
-      {% else %}
-        <div class="text-sm text-slate-300">No active signals in the current window. Once sweeps run, persistent detections will land here as cards.</div>
       {% endif %}
     </section>
   {% endif %}

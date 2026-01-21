@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="space-y-6">
+  <div class="card">
+    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div>
+        <h1 class="text-2xl font-bold">Signals</h1>
+        <p class="text-sm text-slate-400">Browse and manage all detected signals across baselines.</p>
+      </div>
+      <form method="get" class="flex flex-wrap items-center gap-3">
+        <div class="flex items-center gap-2">
+          <label class="text-xs uppercase tracking-wide text-slate-400" for="baseline-select">Baseline</label>
+          <select id="baseline-select" name="baseline_id" class="input">
+            {% for b in baselines %}
+              <option value="{{ b.id }}" {% if selected_baseline_id == b.id|string %}selected{% endif %}>#{{ b.id }} · {{ b.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-xs uppercase tracking-wide text-slate-400" for="classification-select">Classification</label>
+          <select id="classification-select" name="classification" class="input">
+            <option value="" {% if not classification_filter %}selected{% endif %}>All</option>
+            <option value="unknown" {% if classification_filter == 'unknown' %}selected{% endif %}>Unknown</option>
+            <option value="friendly" {% if classification_filter == 'friendly' %}selected{% endif %}>Friendly</option>
+            <option value="ambient" {% if classification_filter == 'ambient' %}selected{% endif %}>Ambient</option>
+            <option value="hostile" {% if classification_filter == 'hostile' %}selected{% endif %}>Hostile</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-2">
+          <input type="checkbox" id="selected-only" name="selected" value="1" {% if selected_only %}checked{% endif %} class="w-4 h-4" />
+          <label class="text-xs uppercase tracking-wide text-slate-400" for="selected-only">Selected only</label>
+        </div>
+        <button type="submit" class="btn text-xs">Filter</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold">{{ signals|length }} signals</h2>
+      <a href="/" class="text-sm text-slate-400 hover:text-sky-400">← Back to Dashboard</a>
+    </div>
+
+    {% if signals %}
+      <div class="overflow-x-auto">
+        <table class="table">
+          <thead>
+            <tr class="text-xs uppercase tracking-wide text-slate-400">
+              <th class="th">ID</th>
+              <th class="th">Center (MHz)</th>
+              <th class="th">Bandwidth</th>
+              <th class="th">Label</th>
+              <th class="th">Classification</th>
+              <th class="th">Confidence</th>
+              <th class="th">Hits</th>
+              <th class="th">Last seen</th>
+              <th class="th">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for sig in signals %}
+              {% set cls = sig.classification or 'unknown' %}
+              <tr class="border-b border-white/10 {{ 'bg-sky-900/20' if sig.selected else '' }}">
+                <td class="td">
+                  <a href="/signal/{{ sig.id }}" class="text-sky-400 hover:underline font-mono text-sm">{{ sig.signal_id }}</a>
+                  {% if sig.selected %}<span class="text-sky-400 ml-1">★</span>{% endif %}
+                </td>
+                <td class="td font-semibold">{{ format_freq_label(sig.f_center_hz) }}</td>
+                <td class="td">{{ format_bandwidth_khz(sig.bandwidth_hz_display) or '—' }}</td>
+                <td class="td">
+                  {% if sig.label %}
+                    <span class="chip text-xs bg-amber-600/60 text-amber-100">{{ sig.label }}</span>
+                  {% else %}
+                    <span class="text-slate-500">—</span>
+                  {% endif %}
+                </td>
+                <td class="td">
+                  {% if cls == 'friendly' %}
+                    <span class="chip text-xs bg-green-600/80 text-green-100">Friendly</span>
+                  {% elif cls == 'hostile' %}
+                    <span class="chip text-xs bg-red-600/80 text-red-100">Hostile</span>
+                  {% elif cls == 'ambient' %}
+                    <span class="chip text-xs bg-slate-500/80 text-slate-100">Ambient</span>
+                  {% else %}
+                    <span class="chip text-xs bg-slate-700/80 text-slate-300">Unknown</span>
+                  {% endif %}
+                </td>
+                <td class="td">{% if sig.confidence is not none %}{{ (sig.confidence * 100)|round(0) }}%{% else %}—{% endif %}</td>
+                <td class="td">{{ sig.total_hits or 0 }}</td>
+                <td class="td text-slate-400 text-sm">{{ format_ts_label(sig.last_seen_utc) }}</td>
+                <td class="td">
+                  <a href="/signal/{{ sig.id }}" class="btn text-xs">View</a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="text-sm text-slate-300 border border-dashed border-white/20 rounded-xl p-4">No signals match the current filters.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

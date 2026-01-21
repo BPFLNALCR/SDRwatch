@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="space-y-6">
+  <div class="card">
+    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div>
+        <div class="flex items-center gap-3 mb-2">
+          <a href="/" class="text-sm text-slate-400 hover:text-sky-400">← Dashboard</a>
+          {% if signal.baseline_id %}
+            <span class="text-slate-500">·</span>
+            <a href="/?baseline_id={{ signal.baseline_id }}" class="text-sm text-slate-400 hover:text-sky-400">Baseline #{{ signal.baseline_id }}</a>
+          {% endif %}
+        </div>
+        <h1 class="text-2xl font-bold flex items-center gap-3">
+          <span class="text-sky-400 font-mono">{{ signal.signal_id }}</span>
+          <span class="text-slate-300">{{ '%.6f'|format(signal.f_center_mhz or 0) }} MHz</span>
+          <button type="button" class="text-2xl {{ 'text-sky-400' if signal.selected else 'text-slate-500 hover:text-sky-400' }}" id="toggle-select-btn" title="{{ 'Deselect signal' if signal.selected else 'Select signal' }}">
+            {{ '★' if signal.selected else '☆' }}
+          </button>
+        </h1>
+        <p class="text-sm text-slate-400 mt-1">
+          {% if signal.baseline_name %}Baseline: {{ signal.baseline_name }}{% endif %}
+        </p>
+      </div>
+      <div class="flex items-center gap-3">
+        {% if signal.label %}
+          <span class="chip text-sm bg-amber-600/60 text-amber-100">{{ signal.label }}</span>
+        {% endif %}
+        <span class="chip text-sm {% if signal.classification == 'friendly' %}bg-green-600/80 text-green-100{% elif signal.classification == 'hostile' %}bg-red-600/80 text-red-100{% elif signal.classification == 'ambient' %}bg-slate-500/80 text-slate-100{% else %}bg-slate-700/80 text-slate-300{% endif %}">
+          {{ signal.classification|capitalize }}
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Signal properties -->
+    <div class="lg:col-span-2 space-y-6">
+      <section class="card">
+        <h2 class="text-lg font-semibold mb-4">Signal properties</h2>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Center frequency</div>
+            <div class="text-xl font-semibold">{{ '%.6f'|format(signal.f_center_mhz or 0) }} MHz</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Lower bound</div>
+            <div class="text-xl font-semibold">{{ '%.6f'|format((signal.f_low_hz or 0) / 1e6) }} MHz</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Upper bound</div>
+            <div class="text-xl font-semibold">{{ '%.6f'|format((signal.f_high_hz or 0) / 1e6) }} MHz</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Detected bandwidth</div>
+            <div class="text-xl font-semibold">{{ format_bandwidth_khz(signal.bandwidth_hz) or '—' }}</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Display bandwidth{% if signal.user_bw_hz %} <span class="text-purple-400">(adj.)</span>{% endif %}</div>
+            <div class="text-xl font-semibold">{{ format_bandwidth_khz(signal.bandwidth_hz_display) or '—' }}</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Confidence</div>
+            <div class="text-xl font-semibold">{% if signal.confidence is not none %}{{ (signal.confidence * 100)|round(1) }}%{% else %}—{% endif %}</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="text-lg font-semibold mb-4">Observation history</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">First seen</div>
+            <div class="text-lg font-semibold">{{ format_ts_label(signal.first_seen_utc) }}</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Last seen</div>
+            <div class="text-lg font-semibold">{{ format_ts_label(signal.last_seen_utc) }}</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Total hits</div>
+            <div class="text-lg font-semibold">{{ signal.total_hits or 0 }}</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Total windows</div>
+            <div class="text-lg font-semibold">{{ signal.total_windows or 0 }}</div>
+          </div>
+        </div>
+        <div class="mt-4">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Hit ratio</div>
+          <div class="w-full bg-slate-800 rounded-full h-4">
+            <div class="bg-sky-500 h-4 rounded-full" style="width: {{ (signal.hit_ratio * 100)|round(1) }}%"></div>
+          </div>
+          <div class="text-sm text-slate-400 mt-1">{{ (signal.hit_ratio * 100)|round(1) }}% of windows</div>
+        </div>
+      </section>
+
+      {% if signal.notes %}
+      <section class="card">
+        <h2 class="text-lg font-semibold mb-2">Notes</h2>
+        <p class="text-sm text-slate-300 whitespace-pre-wrap">{{ signal.notes }}</p>
+      </section>
+      {% endif %}
+    </div>
+
+    <!-- Edit panel -->
+    <div class="space-y-6">
+      <section class="card">
+        <h2 class="text-lg font-semibold mb-4">Classification & labeling</h2>
+        <form id="signal-edit-form" class="space-y-4">
+          <div class="field">
+            <label for="signal-label">Label</label>
+            <input type="text" id="signal-label" name="label" class="input w-full" placeholder="e.g., Local FM, ATC, etc." value="{{ signal.label or '' }}" maxlength="64" />
+            <div class="hint">Short identifier (max 64 chars)</div>
+          </div>
+
+          <div class="field">
+            <label for="signal-classification">Classification</label>
+            <select id="signal-classification" name="classification" class="input w-full">
+              <option value="unknown" {{ 'selected' if signal.classification == 'unknown' else '' }}>Unknown</option>
+              <option value="friendly" {{ 'selected' if signal.classification == 'friendly' else '' }}>Friendly</option>
+              <option value="ambient" {{ 'selected' if signal.classification == 'ambient' else '' }}>Ambient</option>
+              <option value="hostile" {{ 'selected' if signal.classification == 'hostile' else '' }}>Hostile</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="signal-user-bw">Corrected bandwidth (Hz)</label>
+            <input type="number" id="signal-user-bw" name="user_bw_hz" class="input w-full" placeholder="e.g., 25000" value="{{ signal.user_bw_hz or '' }}" min="0" step="1000" />
+            <div class="hint">Override display bandwidth (leave empty to use detected)</div>
+          </div>
+
+          <div class="field">
+            <label for="signal-notes">Notes</label>
+            <textarea id="signal-notes" name="notes" class="input w-full" rows="4" placeholder="Add any observations or context..." maxlength="1024">{{ signal.notes or '' }}</textarea>
+            <div class="hint">Max 1024 characters</div>
+          </div>
+
+          <div class="flex gap-2">
+            <button type="submit" class="btn">Save changes</button>
+            <button type="button" id="reset-btn" class="btn" style="background:#475569">Reset</button>
+          </div>
+          <div id="save-status" class="text-sm text-green-400 hidden">Changes saved successfully.</div>
+          <div id="save-error" class="text-sm text-red-400 hidden"></div>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2 class="text-lg font-semibold mb-4">Quick actions</h2>
+        <div class="space-y-2">
+          <button type="button" class="btn w-full justify-center" id="mark-friendly-btn">Mark as Friendly</button>
+          <button type="button" class="btn w-full justify-center" id="mark-ambient-btn" style="background:#64748b">Mark as Ambient</button>
+          <button type="button" class="btn w-full justify-center red" id="mark-hostile-btn">Mark as Hostile</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const signalId = {{ signal.id|tojson }};
+  const apiBase = '/api/signals/' + signalId;
+
+  // Toggle selection
+  const toggleBtn = document.getElementById('toggle-select-btn');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', async function() {
+      try {
+        const resp = await fetch(apiBase + '/toggle-selected', { method: 'POST' });
+        if (resp.ok) {
+          const data = await resp.json();
+          toggleBtn.textContent = data.selected ? '★' : '☆';
+          toggleBtn.classList.toggle('text-sky-400', data.selected);
+          toggleBtn.classList.toggle('text-slate-500', !data.selected);
+        }
+      } catch (e) {
+        console.error('Toggle selection failed:', e);
+      }
+    });
+  }
+
+  // Form submission
+  const form = document.getElementById('signal-edit-form');
+  const saveStatus = document.getElementById('save-status');
+  const saveError = document.getElementById('save-error');
+
+  async function saveSignal(data) {
+    saveStatus.classList.add('hidden');
+    saveError.classList.add('hidden');
+    try {
+      const resp = await fetch(apiBase, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      if (resp.ok) {
+        saveStatus.classList.remove('hidden');
+        setTimeout(() => saveStatus.classList.add('hidden'), 3000);
+        return await resp.json();
+      } else {
+        const err = await resp.json();
+        saveError.textContent = err.error || 'Failed to save';
+        saveError.classList.remove('hidden');
+      }
+    } catch (e) {
+      saveError.textContent = 'Network error: ' + e.message;
+      saveError.classList.remove('hidden');
+    }
+    return null;
+  }
+
+  if (form) {
+    form.addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const formData = new FormData(form);
+      const data = {
+        label: formData.get('label') || null,
+        classification: formData.get('classification'),
+        user_bw_hz: formData.get('user_bw_hz') ? parseInt(formData.get('user_bw_hz'), 10) : null,
+        notes: formData.get('notes') || null
+      };
+      await saveSignal(data);
+    });
+  }
+
+  // Reset button
+  const resetBtn = document.getElementById('reset-btn');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', function() {
+      document.getElementById('signal-label').value = {{ (signal.label or '')|tojson }};
+      document.getElementById('signal-classification').value = {{ (signal.classification or 'unknown')|tojson }};
+      document.getElementById('signal-user-bw').value = {{ (signal.user_bw_hz or '')|tojson }};
+      document.getElementById('signal-notes').value = {{ (signal.notes or '')|tojson }};
+    });
+  }
+
+  // Quick action buttons
+  async function quickClassify(classification) {
+    const result = await saveSignal({ classification: classification });
+    if (result) {
+      document.getElementById('signal-classification').value = classification;
+      window.location.reload();
+    }
+  }
+
+  document.getElementById('mark-friendly-btn')?.addEventListener('click', () => quickClassify('friendly'));
+  document.getElementById('mark-ambient-btn')?.addEventListener('click', () => quickClassify('ambient'));
+  document.getElementById('mark-hostile-btn')?.addEventListener('click', () => quickClassify('hostile'));
+})();
+</script>
+{% endblock %}
