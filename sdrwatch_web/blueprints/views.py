@@ -587,7 +587,9 @@ def signal_detail(signal_id: str):
             """
             SELECT id, baseline_id, f_low_hz, f_high_hz, f_center_hz,
                    first_seen_utc, last_seen_utc, total_hits, total_windows,
-                   confidence, label, classification, user_bw_hz, notes, selected
+                   confidence, label, classification, user_bw_hz, notes, selected,
+                   missing_since_utc, peak_db, noise_db, snr_db,
+                   service, region, bandplan_notes
             FROM baseline_detections
             WHERE id = ?
             """,
@@ -637,6 +639,170 @@ def signal_detail(signal_id: str):
     total_windows = row.get("total_windows") or 0
     hit_ratio = total_hits / total_windows if total_windows > 0 else 0.0
 
+    # Get noise/occupancy data for this signal's frequency
+    noise_data = None
+    occupancy_data = None
+    if baseline and baseline_id and f_center:
+        bin_hz = baseline.get("bin_hz") or 1.0
+        freq_start = baseline.get("freq_start_hz") or 0
+        if bin_hz > 0:
+            bin_index = int(round((f_center - freq_start) / bin_hz))
+            try:
+                noise_row = q1(
+                    con,
+                    """
+                    SELECT noise_floor_ema, power_ema, last_seen_utc
+                    FROM baseline_noise
+                    WHERE baseline_id = ? AND bin_index = ?
+                    """,
+                    (baseline_id, bin_index),
+                )
+                if noise_row:
+                    noise_data = {
+                        "noise_floor_ema": noise_row.get("noise_floor_ema"),
+                        "power_ema": noise_row.get("power_ema"),
+                        "last_seen_utc": noise_row.get("last_seen_utc"),
+                    }
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                occ_row = q1(
+                    con,
+                    """
+                    SELECT occ_count, last_seen_utc
+                    FROM baseline_occupancy
+                    WHERE baseline_id = ? AND bin_index = ?
+                    """,
+                    (baseline_id, bin_index),
+                )
+                if occ_row:
+                    baseline_windows = baseline.get("total_windows") or 0
+                    occ_count = occ_row.get("occ_count") or 0
+                    occ_ratio = occ_count / baseline_windows if baseline_windows > 0 else 0.0
+                    occupancy_data = {
+                        "occ_count": occ_count,
+                        "occ_ratio": occ_ratio,
+                        "baseline_windows": baseline_windows,
+                        "last_seen_utc": occ_row.get("last_seen_utc"),
+                    }
+            except sqlite3.OperationalError:
+                pass
+
+    # Check if signal is near a spur
+    near_spur = False
+    spur_info = None
+    if f_center:
+        try:
+            spur_row = q1(
+                con,
+                """
+                SELECT bin_hz, mean_power_db, hits
+                FROM spur_map
+                WHERE bin_hz BETWEEN ? AND ?
+                ORDER BY ABS(bin_hz - ?)
+                LIMIT 1
+                """,
+                (f_center - 5000, f_center + 5000, f_center),
+            )
+            if spur_row:
+                near_spur = True
+                spur_info = {
+                    "bin_hz": spur_row.get("bin_hz"),
+                    "mean_power_db": spur_row.get("mean_power_db"),
+                    "hits": spur_row.get("hits"),
+                }
+        except sqlite3.OperationalError:
+            pass
+
+    # Get recent scan activity for this signal
+    scan_activity = None
+    if baseline_id:
+        try:
+            scan_rows = qa(
+                con,
+                """
+                SELECT timestamp_utc, num_hits, num_new_signals, duration_ms
+                FROM scan_updates
+                WHERE baseline_id = ?
+                ORDER BY timestamp_utc DESC
+                LIMIT 10
+                """,
+                (baseline_id,),
+            )
+            if scan_rows:
+                scan_activity = {
+                    "recent_scans": len(scan_rows),
+                    "latest_scan": scan_rows[0].get("timestamp_utc") if scan_rows else None,
+                    "avg_duration_ms": sum((r.get("duration_ms") or 0) for r in scan_rows) / len(scan_rows) if scan_rows else 0,
+                }
+        except sqlite3.OperationalError:
+            pass
+
+    # Compute threat assessment
+    threat_score = 0
+    threat_factors = []
+    
+    # Factor: unexpected allocation (no bandplan service)
+    service = row.get("service")
+    region = row.get("region")
+    if not service or service == "":
+        threat_score += 30
+        threat_factors.append("Out-of-band emission")
+    
+    # Factor: high SNR
+    snr_db = row.get("snr_db")
+    if snr_db is not None and snr_db > 20:
+        threat_score += 20
+        threat_factors.append(f"High power ({snr_db:.1f} dB SNR)")
+    
+    # Factor: intermittent pattern
+    missing_since = row.get("missing_since_utc")
+    if missing_since:
+        threat_score += 15
+        threat_factors.append("Intermittent/burst pattern")
+    
+    # Factor: low occupancy (new or rare)
+    if occupancy_data and occupancy_data.get("occ_ratio", 0) < 0.1:
+        threat_score += 15
+        threat_factors.append("Low duty cycle")
+    
+    # Factor: not near known spur (real signal vs artifact)
+    if near_spur:
+        threat_score -= 20  # Likely SDR artifact
+        threat_factors.append("Near known spur (likely artifact)")
+    
+    # Cap threat score
+    threat_score = max(0, min(100, threat_score))
+    
+    # Determine threat level
+    if threat_score >= 50:
+        threat_level = "high"
+        threat_label = "Suspicious"
+    elif threat_score >= 25:
+        threat_level = "medium"
+        threat_label = "Unclassified"
+    else:
+        threat_level = "low"
+        threat_label = "Likely Benign"
+
+    # Check for active scan covering this signal
+    from sdrwatch_web.controller import controller_active_job
+    active_job = controller_active_job()
+    realtime_available = False
+    if active_job and f_center:
+        job_params = active_job.get("params") or {}
+        job_start = job_params.get("start") or 0
+        job_stop = job_params.get("stop") or 0
+        if job_start and job_stop:
+            try:
+                job_start_hz = float(job_start)
+                job_stop_hz = float(job_stop)
+                if job_start_hz <= f_center <= job_stop_hz:
+                    realtime_available = True
+            except (ValueError, TypeError):
+                pass
+
     signal = {
         "id": det_id,
         "signal_id": format_signal_id(det_id),
@@ -659,11 +825,52 @@ def signal_detail(signal_id: str):
         "classification": row.get("classification") or "unknown",
         "notes": row.get("notes"),
         "selected": bool(row.get("selected")),
+        # Power metrics
+        "peak_db": row.get("peak_db"),
+        "noise_db": row.get("noise_db"),
+        "snr_db": snr_db,
+        "missing_since_utc": missing_since,
+        # Bandplan info
+        "service": service,
+        "region": region,
+        "bandplan_notes": row.get("bandplan_notes"),
+        # Baseline context
+        "baseline_noise": noise_data,
+        "baseline_occupancy": occupancy_data,
+        # Spur info
+        "near_spur": near_spur,
+        "spur_info": spur_info,
+        # Scan activity
+        "scan_activity": scan_activity,
+        # Threat assessment
+        "threat_score": threat_score,
+        "threat_level": threat_level,
+        "threat_label": threat_label,
+        "threat_factors": threat_factors,
+        # Real-time availability
+        "realtime_available": realtime_available,
     }
+
+    # Collection context from baseline
+    collection_context = None
+    if baseline:
+        collection_context = {
+            "sdr_serial": baseline.get("sdr_serial"),
+            "antenna": baseline.get("antenna"),
+            "location_lat": baseline.get("location_lat"),
+            "location_lon": baseline.get("location_lon"),
+            "baseline_notes": baseline.get("notes"),
+            "freq_start_hz": baseline.get("freq_start_hz"),
+            "freq_stop_hz": baseline.get("freq_stop_hz"),
+            "bin_hz": baseline.get("bin_hz"),
+            "bandplan_path": baseline.get("bandplan_path"),
+        }
 
     return render_template(
         "signal.html",
         signal=signal,
+        collection_context=collection_context,
+        active_job=active_job,
         db_status="ready",
         db_status_message="",
         format_ts_label=format_ts_label,

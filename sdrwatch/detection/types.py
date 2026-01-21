@@ -44,6 +44,12 @@ class PersistentDetection:
     total_windows: int
     confidence: float
     missing_since_utc: Optional[str] = None
+    peak_db: Optional[float] = None
+    noise_db: Optional[float] = None
+    snr_db: Optional[float] = None
+    service: Optional[str] = None
+    region: Optional[str] = None
+    bandplan_notes: Optional[str] = None
 
 
 @dataclass

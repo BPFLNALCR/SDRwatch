@@ -57,6 +57,10 @@ class ScannerRunner:
             self.store.set_baseline_bin(baseline_ctx.id, bin_hint)
             baseline_ctx.bin_hz = bin_hint
             _log.info("repaired baseline bin_hz to %.1f Hz based on current sweep", bin_hint)
+        # Store the bandplan path used for this baseline
+        bandplan_path = getattr(self.args, "bandplan", None)
+        if bandplan_path:
+            self.store.set_baseline_bandplan(baseline_ctx.id, bandplan_path)
         if baseline_ctx.freq_start_hz <= 0:
             baseline_ctx.freq_start_hz = planned_start
         if planned_stop > baseline_ctx.freq_stop_hz:

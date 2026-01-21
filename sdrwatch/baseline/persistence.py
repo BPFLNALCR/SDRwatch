@@ -94,7 +94,10 @@ class BaselinePersistence:
         region: Optional[str],
         notes: Optional[str],
     ) -> PersistResult:
-        is_new_detection = self._upsert_detection(cluster, combined_seg, confidence)
+        is_new_detection = self._upsert_detection(
+            cluster, combined_seg, confidence,
+            service=service, region=region, bandplan_notes=notes
+        )
         occ_ratio = self._lookup_occ_ratio(combined_seg.f_center_hz)
         occ_threshold = float(getattr(self.args, "new_ema_occ", 0.02) or 0.02)
         is_new_flag = bool(is_new_detection or (occ_ratio is not None and occ_ratio < occ_threshold))
@@ -268,7 +271,9 @@ class BaselinePersistence:
     # Internal helpers
     # -----------------
 
-    def _upsert_detection(self, cluster: DetectionCluster, seg: Segment, confidence: float) -> bool:
+    def _upsert_detection(self, cluster: DetectionCluster, seg: Segment, confidence: float,
+                          service: Optional[str] = None, region: Optional[str] = None,
+                          bandplan_notes: Optional[str] = None) -> bool:
         timestamp = utc_now_str()
         self.store.begin()
         try:
@@ -304,6 +309,17 @@ class BaselinePersistence:
                 match.total_hits += cluster.hits
                 match.total_windows += len(cluster.windows)
                 match.confidence = confidence
+                # Update power metrics with latest values
+                match.peak_db = seg.peak_db
+                match.noise_db = seg.noise_db
+                match.snr_db = seg.snr_db
+                # Update bandplan info if provided
+                if service is not None:
+                    match.service = service
+                if region is not None:
+                    match.region = region
+                if bandplan_notes is not None:
+                    match.bandplan_notes = bandplan_notes
                 self.store.update_baseline_detection(match)
                 is_new = False
             else:
@@ -317,6 +333,12 @@ class BaselinePersistence:
                     cluster.hits,
                     len(cluster.windows),
                     confidence,
+                    peak_db=seg.peak_db,
+                    noise_db=seg.noise_db,
+                    snr_db=seg.snr_db,
+                    service=service,
+                    region=region,
+                    bandplan_notes=bandplan_notes,
                 )
                 new_det = PersistentDetection(
                     id=detection_id,
@@ -329,6 +351,12 @@ class BaselinePersistence:
                     total_hits=cluster.hits,
                     total_windows=len(cluster.windows),
                     confidence=confidence,
+                    peak_db=seg.peak_db,
+                    noise_db=seg.noise_db,
+                    snr_db=seg.snr_db,
+                    service=service,
+                    region=region,
+                    bandplan_notes=bandplan_notes,
                 )
                 self._persisted.append(new_det)
                 self._seen_persistent.add(detection_id)

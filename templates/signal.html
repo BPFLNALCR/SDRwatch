@@ -11,6 +11,7 @@
     <a href="/signals" class="btn mt-4">Browse all signals</a>
   </div>
   {% else %}
+  <!-- Header with threat indicator -->
   <div class="card">
     <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
       <div>
@@ -30,9 +31,22 @@
         </h1>
         <p class="text-sm text-slate-400 mt-1">
           {% if signal.baseline_name %}Baseline: {{ signal.baseline_name }}{% endif %}
+          {% if signal.service %}<span class="mx-2">·</span><span class="text-amber-400">{{ signal.service }}</span>{% endif %}
+          {% if signal.region %}<span class="text-slate-500">({{ signal.region }})</span>{% endif %}
         </p>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-2">
+        <!-- Threat assessment badge -->
+        <div class="chip text-sm px-3 py-1 {% if signal.threat_level == 'high' %}bg-red-600/80 text-red-100{% elif signal.threat_level == 'medium' %}bg-amber-600/80 text-amber-100{% else %}bg-green-600/80 text-green-100{% endif %}">
+          <span class="font-semibold">{{ signal.threat_label }}</span>
+          <span class="text-xs opacity-75 ml-1">({{ signal.threat_score }}%)</span>
+        </div>
+        {% if signal.near_spur %}
+          <span class="chip text-xs bg-purple-600/60 text-purple-100" title="Signal is near a known SDR spur">⚡ Spur</span>
+        {% endif %}
+        {% if signal.missing_since_utc %}
+          <span class="chip text-xs bg-orange-600/60 text-orange-100" title="Signal went quiet at {{ signal.missing_since_utc }}">📡 Intermittent</span>
+        {% endif %}
         {% if signal.label %}
           <span class="chip text-sm bg-amber-600/60 text-amber-100">{{ signal.label }}</span>
         {% endif %}
@@ -43,80 +57,254 @@
     </div>
   </div>
 
+  <!-- View mode toggle -->
+  <div class="flex gap-2 mb-2">
+    <button type="button" id="view-historical" class="btn text-sm px-4 py-1">Historical Data</button>
+    <button type="button" id="view-realtime" class="btn text-sm px-4 py-1 {% if not signal.realtime_available %}opacity-50 cursor-not-allowed{% endif %}" {% if not signal.realtime_available %}disabled title="No active scan covers this frequency"{% endif %}>
+      Real-Time {% if signal.realtime_available %}<span class="inline-block w-2 h-2 bg-green-400 rounded-full ml-1 animate-pulse"></span>{% endif %}
+    </button>
+  </div>
+
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <!-- Signal properties -->
+    <!-- Left column: Signal analysis -->
     <div class="lg:col-span-2 space-y-6">
+      <!-- Threat factors panel -->
+      {% if signal.threat_factors %}
+      <section class="card border-l-4 {% if signal.threat_level == 'high' %}border-red-500{% elif signal.threat_level == 'medium' %}border-amber-500{% else %}border-green-500{% endif %}">
+        <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
+          <span>🎯 Threat Assessment</span>
+          <span class="text-xs font-normal text-slate-400">(Automated analysis)</span>
+        </h2>
+        <ul class="space-y-1 text-sm">
+          {% for factor in signal.threat_factors %}
+          <li class="flex items-center gap-2">
+            <span class="{% if 'artifact' in factor|lower %}text-slate-400{% elif 'High power' in factor or 'Out-of-band' in factor %}text-red-400{% else %}text-amber-400{% endif %}">•</span>
+            <span class="text-slate-300">{{ factor }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
+
+      <!-- Signal characterization -->
       <section class="card">
-        <h2 class="text-lg font-semibold mb-4">Signal properties</h2>
-        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <h2 class="text-lg font-semibold mb-4">📊 Signal Characterization</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div>
-            <div class="text-xs uppercase tracking-wide text-slate-400">Center frequency</div>
-            <div class="text-xl font-semibold">{{ '%.6f'|format(signal.f_center_mhz or 0) }} MHz</div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Peak Power</div>
+            <div class="text-xl font-semibold">{% if signal.peak_db is not none %}{{ '%.1f'|format(signal.peak_db) }} dB{% else %}—{% endif %}</div>
           </div>
           <div>
-            <div class="text-xs uppercase tracking-wide text-slate-400">Lower bound</div>
-            <div class="text-xl font-semibold">{{ '%.6f'|format((signal.f_low_hz or 0) / 1e6) }} MHz</div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Noise Floor</div>
+            <div class="text-xl font-semibold">{% if signal.noise_db is not none %}{{ '%.1f'|format(signal.noise_db) }} dB{% else %}—{% endif %}</div>
           </div>
           <div>
-            <div class="text-xs uppercase tracking-wide text-slate-400">Upper bound</div>
-            <div class="text-xl font-semibold">{{ '%.6f'|format((signal.f_high_hz or 0) / 1e6) }} MHz</div>
-          </div>
-          <div>
-            <div class="text-xs uppercase tracking-wide text-slate-400">Detected bandwidth</div>
-            <div class="text-xl font-semibold">{{ format_bandwidth_khz(signal.bandwidth_hz) or '—' }}</div>
-          </div>
-          <div>
-            <div class="text-xs uppercase tracking-wide text-slate-400">Display bandwidth{% if signal.user_bw_hz %} <span class="text-purple-400">(adj.)</span>{% endif %}</div>
-            <div class="text-xl font-semibold">{{ format_bandwidth_khz(signal.bandwidth_hz_display) or '—' }}</div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">SNR</div>
+            <div class="text-xl font-semibold {% if signal.snr_db and signal.snr_db > 20 %}text-amber-400{% endif %}">{% if signal.snr_db is not none %}{{ '%.1f'|format(signal.snr_db) }} dB{% else %}—{% endif %}</div>
           </div>
           <div>
             <div class="text-xs uppercase tracking-wide text-slate-400">Confidence</div>
             <div class="text-xl font-semibold">{% if signal.confidence is not none %}{{ (signal.confidence * 100)|round(1) }}%{% else %}—{% endif %}</div>
           </div>
         </div>
+        
+        {% if signal.baseline_noise or signal.baseline_occupancy %}
+        <div class="mt-4 pt-4 border-t border-slate-700">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Baseline Statistics</div>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            {% if signal.baseline_noise %}
+            <div>
+              <div class="text-slate-400">Avg Noise Floor</div>
+              <div class="font-medium">{{ '%.1f'|format(signal.baseline_noise.noise_floor_ema) }} dB</div>
+            </div>
+            <div>
+              <div class="text-slate-400">Avg Power</div>
+              <div class="font-medium">{{ '%.1f'|format(signal.baseline_noise.power_ema) }} dB</div>
+            </div>
+            {% endif %}
+            {% if signal.baseline_occupancy %}
+            <div>
+              <div class="text-slate-400">Occupancy</div>
+              <div class="font-medium">{{ (signal.baseline_occupancy.occ_ratio * 100)|round(1) }}%</div>
+            </div>
+            <div>
+              <div class="text-slate-400">Hit Count</div>
+              <div class="font-medium">{{ signal.baseline_occupancy.occ_count }}</div>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
       </section>
 
+      <!-- Frequency allocation context -->
       <section class="card">
-        <h2 class="text-lg font-semibold mb-4">Observation history</h2>
+        <h2 class="text-lg font-semibold mb-4">📡 Allocation Context</h2>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Center Frequency</div>
+            <div class="text-xl font-semibold">{{ '%.6f'|format(signal.f_center_mhz or 0) }} MHz</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Lower Bound</div>
+            <div class="text-lg font-semibold">{{ '%.6f'|format((signal.f_low_hz or 0) / 1e6) }} MHz</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Upper Bound</div>
+            <div class="text-lg font-semibold">{{ '%.6f'|format((signal.f_high_hz or 0) / 1e6) }} MHz</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Bandwidth</div>
+            <div class="text-xl font-semibold">{{ format_bandwidth_khz(signal.bandwidth_hz) or '—' }}</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Service</div>
+            <div class="text-lg font-semibold {% if not signal.service %}text-red-400{% endif %}">{{ signal.service or 'UNALLOCATED' }}</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Region</div>
+            <div class="text-lg font-semibold">{{ signal.region or '—' }}</div>
+          </div>
+        </div>
+        {% if signal.bandplan_notes %}
+        <div class="mt-3 text-sm text-slate-400">
+          <span class="font-medium">Notes:</span> {{ signal.bandplan_notes }}
+        </div>
+        {% endif %}
+        {% if signal.near_spur and signal.spur_info %}
+        <div class="mt-3 p-2 bg-purple-900/30 rounded text-sm">
+          <span class="text-purple-300 font-medium">⚡ SDR Spur Detected:</span>
+          <span class="text-slate-300">{{ '%.3f'|format(signal.spur_info.bin_hz / 1e6) }} MHz, {{ '%.1f'|format(signal.spur_info.mean_power_db) }} dB avg, {{ signal.spur_info.hits }} hits</span>
+        </div>
+        {% endif %}
+      </section>
+
+      <!-- Temporal behavior -->
+      <section class="card">
+        <h2 class="text-lg font-semibold mb-4">⏱️ Temporal Behavior</h2>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div>
-            <div class="text-xs uppercase tracking-wide text-slate-400">First seen</div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">First Seen</div>
             <div class="text-lg font-semibold">{{ format_ts_label(signal.first_seen_utc) }}</div>
           </div>
           <div>
-            <div class="text-xs uppercase tracking-wide text-slate-400">Last seen</div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Last Seen</div>
             <div class="text-lg font-semibold">{{ format_ts_label(signal.last_seen_utc) }}</div>
           </div>
           <div>
-            <div class="text-xs uppercase tracking-wide text-slate-400">Total hits</div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Total Hits</div>
             <div class="text-lg font-semibold">{{ signal.total_hits or 0 }}</div>
           </div>
           <div>
-            <div class="text-xs uppercase tracking-wide text-slate-400">Total windows</div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Total Windows</div>
             <div class="text-lg font-semibold">{{ signal.total_windows or 0 }}</div>
           </div>
         </div>
+        
         <div class="mt-4">
-          <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Hit ratio</div>
-          <div class="w-full bg-slate-800 rounded-full h-4">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Hit Ratio (Duty Cycle)</div>
+          <div class="w-full bg-slate-800 rounded-full h-4 relative">
             <div class="bg-sky-500 h-4 rounded-full" style="width: {{ (signal.hit_ratio * 100)|round(1) }}%"></div>
+            {% if signal.hit_ratio < 0.1 %}
+            <span class="absolute inset-0 flex items-center justify-center text-xs text-slate-400">Low duty cycle — may indicate burst transmission</span>
+            {% endif %}
           </div>
-          <div class="text-sm text-slate-400 mt-1">{{ (signal.hit_ratio * 100)|round(1) }}% of windows</div>
+          <div class="text-sm text-slate-400 mt-1">{{ (signal.hit_ratio * 100)|round(1) }}% of observation windows</div>
+        </div>
+
+        {% if signal.missing_since_utc %}
+        <div class="mt-3 p-2 bg-orange-900/30 rounded text-sm">
+          <span class="text-orange-300 font-medium">📡 Signal Quiet Since:</span>
+          <span class="text-slate-300">{{ format_ts_label(signal.missing_since_utc) }}</span>
+        </div>
+        {% endif %}
+
+        {% if signal.scan_activity %}
+        <div class="mt-3 pt-3 border-t border-slate-700 text-sm">
+          <span class="text-slate-400">Recent activity:</span>
+          <span class="text-slate-300">{{ signal.scan_activity.recent_scans }} scans, latest at {{ format_ts_label(signal.scan_activity.latest_scan) }}</span>
+        </div>
+        {% endif %}
+      </section>
+
+      <!-- Collection context -->
+      {% if collection_context %}
+      <section class="card">
+        <h2 class="text-lg font-semibold mb-4">🛰️ Collection Context</h2>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+          {% if collection_context.sdr_serial %}
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">SDR Serial</div>
+            <div class="font-mono">{{ collection_context.sdr_serial }}</div>
+          </div>
+          {% endif %}
+          {% if collection_context.antenna %}
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Antenna</div>
+            <div>{{ collection_context.antenna }}</div>
+          </div>
+          {% endif %}
+          {% if collection_context.location_lat and collection_context.location_lon %}
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Location</div>
+            <div>{{ '%.5f'|format(collection_context.location_lat) }}, {{ '%.5f'|format(collection_context.location_lon) }}</div>
+          </div>
+          {% endif %}
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Scan Range</div>
+            <div>{{ '%.3f'|format((collection_context.freq_start_hz or 0) / 1e6) }} – {{ '%.3f'|format((collection_context.freq_stop_hz or 0) / 1e6) }} MHz</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Bin Width</div>
+            <div>{{ '%.1f'|format((collection_context.bin_hz or 0) / 1000) }} kHz</div>
+          </div>
+          {% if collection_context.bandplan_path %}
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Bandplan</div>
+            <div class="text-xs">{{ collection_context.bandplan_path }}</div>
+          </div>
+          {% endif %}
+        </div>
+        {% if collection_context.baseline_notes %}
+        <div class="mt-3 text-sm text-slate-400">
+          <span class="font-medium">Baseline notes:</span> {{ collection_context.baseline_notes }}
+        </div>
+        {% endif %}
+      </section>
+      {% endif %}
+
+      <!-- Real-time data panel (hidden by default) -->
+      <section class="card hidden" id="realtime-panel">
+        <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+          <span>📈 Real-Time Data</span>
+          <span class="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+        </h2>
+        <div id="realtime-content" class="space-y-4">
+          <div class="text-center text-slate-400 py-8">
+            <p>Loading real-time data...</p>
+          </div>
+        </div>
+        <div class="mt-4 flex items-center gap-4 text-sm text-slate-400">
+          <label class="flex items-center gap-2">
+            <input type="checkbox" id="realtime-auto-refresh" checked class="rounded border-slate-600">
+            <span>Auto-refresh</span>
+          </label>
+          <span id="realtime-last-update">—</span>
         </div>
       </section>
 
       {% if signal.notes %}
       <section class="card">
-        <h2 class="text-lg font-semibold mb-2">Notes</h2>
+        <h2 class="text-lg font-semibold mb-2">📝 Notes</h2>
         <p class="text-sm text-slate-300 whitespace-pre-wrap">{{ signal.notes }}</p>
       </section>
       {% endif %}
     </div>
 
-    <!-- Edit panel -->
+    <!-- Right column: Actions and editing -->
     <div class="space-y-6">
       <section class="card">
-        <h2 class="text-lg font-semibold mb-4">Classification & labeling</h2>
+        <h2 class="text-lg font-semibold mb-4">Classification & Labeling</h2>
         <form id="signal-edit-form" class="space-y-4">
           <div class="field">
             <label for="signal-label">Label</label>
@@ -135,7 +323,7 @@
           </div>
 
           <div class="field">
-            <label for="signal-user-bw">Corrected bandwidth (Hz)</label>
+            <label for="signal-user-bw">Corrected Bandwidth (Hz)</label>
             <input type="number" id="signal-user-bw" name="user_bw_hz" class="input w-full" placeholder="e.g., 25000" value="{{ signal.user_bw_hz or '' }}" min="0" step="1000" />
             <div class="hint">Override display bandwidth (leave empty to use detected)</div>
           </div>
@@ -147,7 +335,7 @@
           </div>
 
           <div class="flex gap-2">
-            <button type="submit" class="btn">Save changes</button>
+            <button type="submit" class="btn">Save Changes</button>
             <button type="button" id="reset-btn" class="btn" style="background:#475569">Reset</button>
           </div>
           <div id="save-status" class="text-sm text-green-400 hidden">Changes saved successfully.</div>
@@ -156,11 +344,22 @@
       </section>
 
       <section class="card">
-        <h2 class="text-lg font-semibold mb-4">Quick actions</h2>
+        <h2 class="text-lg font-semibold mb-4">Quick Actions</h2>
         <div class="space-y-2">
-          <button type="button" class="btn w-full justify-center" id="mark-friendly-btn">Mark as Friendly</button>
-          <button type="button" class="btn w-full justify-center" id="mark-ambient-btn" style="background:#64748b">Mark as Ambient</button>
-          <button type="button" class="btn w-full justify-center red" id="mark-hostile-btn">Mark as Hostile</button>
+          <button type="button" class="btn w-full justify-center" id="mark-friendly-btn">✓ Mark as Friendly</button>
+          <button type="button" class="btn w-full justify-center" id="mark-ambient-btn" style="background:#64748b">◯ Mark as Ambient</button>
+          <button type="button" class="btn w-full justify-center red" id="mark-hostile-btn">⚠ Mark as Hostile</button>
+        </div>
+      </section>
+
+      <!-- EP/COMSEC quick reference -->
+      <section class="card bg-slate-800/50">
+        <h2 class="text-sm font-semibold mb-2 text-slate-400">EP/COMSEC Quick Reference</h2>
+        <div class="text-xs text-slate-500 space-y-1">
+          <p><strong class="text-red-400">Hostile:</strong> Confirmed adversary emissions, jammers, surveillance</p>
+          <p><strong class="text-green-400">Friendly:</strong> Own-force communications, authorized equipment</p>
+          <p><strong class="text-slate-400">Ambient:</strong> Expected background (broadcast, nav aids)</p>
+          <p><strong class="text-amber-400">Unknown:</strong> Requires further analysis</p>
         </div>
       </section>
     </div>
@@ -171,6 +370,109 @@
 (function() {
   const signalId = {{ signal.id|tojson }};
   const apiBase = '/api/signals/' + signalId;
+  const realtimeAvailable = {{ signal.realtime_available|tojson }};
+  const centerHz = {{ signal.f_center_hz|tojson }};
+  
+  let realtimeInterval = null;
+  let currentView = 'historical';
+
+  // View mode toggle
+  const viewHistorical = document.getElementById('view-historical');
+  const viewRealtime = document.getElementById('view-realtime');
+  const realtimePanel = document.getElementById('realtime-panel');
+
+  function setView(mode) {
+    currentView = mode;
+    if (mode === 'historical') {
+      viewHistorical.classList.add('ring-2', 'ring-sky-400');
+      viewRealtime.classList.remove('ring-2', 'ring-sky-400');
+      realtimePanel.classList.add('hidden');
+      stopRealtimePolling();
+    } else if (mode === 'realtime' && realtimeAvailable) {
+      viewRealtime.classList.add('ring-2', 'ring-sky-400');
+      viewHistorical.classList.remove('ring-2', 'ring-sky-400');
+      realtimePanel.classList.remove('hidden');
+      startRealtimePolling();
+    }
+  }
+
+  viewHistorical.addEventListener('click', () => setView('historical'));
+  viewRealtime.addEventListener('click', () => {
+    if (realtimeAvailable) setView('realtime');
+  });
+
+  // Real-time polling
+  async function fetchRealtimeData() {
+    try {
+      const resp = await fetch('/api/live/windows?limit=50');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const windows = data.windows || [];
+      
+      // Find windows near our signal's frequency
+      const tolerance = 500000; // 500 kHz tolerance
+      const nearbyWindows = windows.filter(w => {
+        const wCenter = w.center_hz || 0;
+        return Math.abs(wCenter - centerHz) < tolerance;
+      });
+      
+      const content = document.getElementById('realtime-content');
+      if (nearbyWindows.length === 0) {
+        content.innerHTML = '<div class="text-center text-slate-400 py-4">No recent observations at this frequency</div>';
+      } else {
+        const latest = nearbyWindows[nearbyWindows.length - 1];
+        content.innerHTML = `
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <div class="text-xs uppercase tracking-wide text-slate-400">Center</div>
+              <div class="text-lg font-semibold">${(latest.center_mhz || 0).toFixed(3)} MHz</div>
+            </div>
+            <div>
+              <div class="text-xs uppercase tracking-wide text-slate-400">Detections</div>
+              <div class="text-lg font-semibold">${latest.det_count || 0}</div>
+            </div>
+            <div>
+              <div class="text-xs uppercase tracking-wide text-slate-400">Mean Power</div>
+              <div class="text-lg font-semibold">${(latest.mean_db || 0).toFixed(1)} dB</div>
+            </div>
+            <div>
+              <div class="text-xs uppercase tracking-wide text-slate-400">P90 Power</div>
+              <div class="text-lg font-semibold ${latest.anomalous ? 'text-red-400' : ''}">${(latest.p90_db || 0).toFixed(1)} dB</div>
+            </div>
+          </div>
+          <div class="mt-4 text-sm">
+            <span class="text-slate-400">Recent observations:</span>
+            <span class="font-semibold ml-2">${nearbyWindows.length}</span>
+          </div>
+        `;
+      }
+      
+      document.getElementById('realtime-last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      console.error('Real-time fetch failed:', e);
+    }
+  }
+
+  function startRealtimePolling() {
+    if (realtimeInterval) return;
+    fetchRealtimeData();
+    realtimeInterval = setInterval(() => {
+      const autoRefresh = document.getElementById('realtime-auto-refresh');
+      if (autoRefresh && autoRefresh.checked) {
+        fetchRealtimeData();
+      }
+    }, 2000);
+  }
+
+  function stopRealtimePolling() {
+    if (realtimeInterval) {
+      clearInterval(realtimeInterval);
+      realtimeInterval = null;
+    }
+  }
+
+  // Initialize with historical view
+  setView('historical');
 
   // Toggle selection
   const toggleBtn = document.getElementById('toggle-select-btn');

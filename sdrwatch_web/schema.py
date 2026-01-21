@@ -30,6 +30,13 @@ def migrate_detection_classification(conn: sqlite3.Connection) -> None:
       - user_bw_hz INTEGER: user-corrected bandwidth (display only)
       - notes TEXT: freeform user notes
       - selected INTEGER: boolean flag for highlighting
+      - missing_since_utc TEXT: timestamp when signal went quiet
+      - peak_db REAL: peak power at last detection
+      - noise_db REAL: noise floor at last detection
+      - snr_db REAL: signal-to-noise ratio at last detection
+      - service TEXT: bandplan service allocation
+      - region TEXT: bandplan region
+      - bandplan_notes TEXT: bandplan notes
 
     Args:
         conn: Writable SQLite connection.
@@ -44,6 +51,13 @@ def migrate_detection_classification(conn: sqlite3.Connection) -> None:
         ("user_bw_hz", "ALTER TABLE baseline_detections ADD COLUMN user_bw_hz INTEGER"),
         ("notes", "ALTER TABLE baseline_detections ADD COLUMN notes TEXT"),
         ("selected", "ALTER TABLE baseline_detections ADD COLUMN selected INTEGER DEFAULT 0"),
+        ("missing_since_utc", "ALTER TABLE baseline_detections ADD COLUMN missing_since_utc TEXT"),
+        ("peak_db", "ALTER TABLE baseline_detections ADD COLUMN peak_db REAL"),
+        ("noise_db", "ALTER TABLE baseline_detections ADD COLUMN noise_db REAL"),
+        ("snr_db", "ALTER TABLE baseline_detections ADD COLUMN snr_db REAL"),
+        ("service", "ALTER TABLE baseline_detections ADD COLUMN service TEXT"),
+        ("region", "ALTER TABLE baseline_detections ADD COLUMN region TEXT"),
+        ("bandplan_notes", "ALTER TABLE baseline_detections ADD COLUMN bandplan_notes TEXT"),
     ]
 
     for col_name, alter_stmt in migrations:
@@ -53,6 +67,23 @@ def migrate_detection_classification(conn: sqlite3.Connection) -> None:
             except sqlite3.OperationalError:
                 # Column may already exist from a partial migration
                 pass
+
+
+def migrate_baselines_bandplan(conn: sqlite3.Connection) -> None:
+    """
+    Add bandplan_path column to baselines if missing.
+
+    Args:
+        conn: Writable SQLite connection.
+    """
+    cursor = conn.execute("PRAGMA table_info(baselines)")
+    existing = {row[1] for row in cursor.fetchall()}
+
+    if "bandplan_path" not in existing:
+        try:
+            conn.execute("ALTER TABLE baselines ADD COLUMN bandplan_path TEXT")
+        except sqlite3.OperationalError:
+            pass
 
 
 def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
@@ -77,7 +108,8 @@ def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
             freq_stop_hz INTEGER NOT NULL,
             bin_hz REAL NOT NULL,
             baseline_version INTEGER NOT NULL DEFAULT 1,
-            total_windows INTEGER NOT NULL DEFAULT 0
+            total_windows INTEGER NOT NULL DEFAULT 0,
+            bandplan_path TEXT
         )
         """,
         """
@@ -182,6 +214,7 @@ def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
 
     # Run migrations for existing tables
     migrate_detection_classification(conn)
+    migrate_baselines_bandplan(conn)
 
 
 def create_baseline_entry(data: Dict[str, Any]) -> Dict[str, Any]:

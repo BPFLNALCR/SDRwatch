@@ -155,10 +155,17 @@ class Store:
         self.con.commit()
 
         self._ensure_column("baseline_detections", "missing_since_utc", "TEXT")
+        self._ensure_column("baseline_detections", "peak_db", "REAL")
+        self._ensure_column("baseline_detections", "noise_db", "REAL")
+        self._ensure_column("baseline_detections", "snr_db", "REAL")
+        self._ensure_column("baseline_detections", "service", "TEXT")
+        self._ensure_column("baseline_detections", "region", "TEXT")
+        self._ensure_column("baseline_detections", "bandplan_notes", "TEXT")
         self._ensure_column("scan_updates", "num_revisits", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("scan_updates", "num_confirmed", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("scan_updates", "num_false_positive", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("scan_updates", "duration_ms", "REAL")
+        self._ensure_column("baselines", "bandplan_path", "TEXT")
         self._migrate_baseline_stats()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -350,6 +357,17 @@ class Store:
         )
         self.con.commit()
 
+    def set_baseline_bandplan(self, baseline_id: int, bandplan_path: str) -> None:
+        """Store the bandplan file path used for this baseline."""
+
+        if not bandplan_path:
+            return
+        self.con.execute(
+            "UPDATE baselines SET bandplan_path = ? WHERE id = ?",
+            (str(bandplan_path), int(baseline_id)),
+        )
+        self.con.commit()
+
     def update_baseline_stats(
         self,
         baseline_id: int,
@@ -433,7 +451,8 @@ class Store:
             """
             SELECT id, baseline_id, f_low_hz, f_high_hz, f_center_hz,
                    first_seen_utc, last_seen_utc, total_hits, total_windows,
-                   confidence, missing_since_utc
+                   confidence, missing_since_utc, peak_db, noise_db, snr_db,
+                   service, region, bandplan_notes
             FROM baseline_detections
             WHERE baseline_id = ?
             ORDER BY f_center_hz
@@ -455,6 +474,12 @@ class Store:
                     total_windows=int(row[8]),
                     confidence=float(row[9]),
                     missing_since_utc=row[10],
+                    peak_db=float(row[11]) if row[11] is not None else None,
+                    noise_db=float(row[12]) if row[12] is not None else None,
+                    snr_db=float(row[13]) if row[13] is not None else None,
+                    service=row[14],
+                    region=row[15],
+                    bandplan_notes=row[16],
                 )
             )
         return detections
@@ -472,15 +497,22 @@ class Store:
         confidence: float,
         *,
         missing_since_utc: Optional[str] = None,
+        peak_db: Optional[float] = None,
+        noise_db: Optional[float] = None,
+        snr_db: Optional[float] = None,
+        service: Optional[str] = None,
+        region: Optional[str] = None,
+        bandplan_notes: Optional[str] = None,
     ) -> int:
         cur = self.con.cursor()
         cur.execute(
             """
             INSERT INTO baseline_detections(
                 baseline_id, f_low_hz, f_high_hz, f_center_hz,
-                first_seen_utc, last_seen_utc, total_hits, total_windows, confidence, missing_since_utc
+                first_seen_utc, last_seen_utc, total_hits, total_windows, confidence,
+                missing_since_utc, peak_db, noise_db, snr_db, service, region, bandplan_notes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(baseline_id),
@@ -493,6 +525,12 @@ class Store:
                 int(total_windows),
                 float(confidence),
                 missing_since_utc,
+                peak_db,
+                noise_db,
+                snr_db,
+                service,
+                region,
+                bandplan_notes,
             ),
         )
         if cur.lastrowid is None:
@@ -506,7 +544,8 @@ class Store:
             SET f_low_hz = ?, f_high_hz = ?, f_center_hz = ?,
                 first_seen_utc = ?, last_seen_utc = ?,
                 total_hits = ?, total_windows = ?, confidence = ?,
-                missing_since_utc = ?
+                missing_since_utc = ?, peak_db = ?, noise_db = ?, snr_db = ?,
+                service = ?, region = ?, bandplan_notes = ?
             WHERE id = ? AND baseline_id = ?
             """,
             (
@@ -519,6 +558,12 @@ class Store:
                 int(detection.total_windows),
                 float(detection.confidence),
                 detection.missing_since_utc,
+                detection.peak_db,
+                detection.noise_db,
+                detection.snr_db,
+                detection.service,
+                detection.region,
+                detection.bandplan_notes,
                 int(detection.id),
                 int(detection.baseline_id),
             ),
