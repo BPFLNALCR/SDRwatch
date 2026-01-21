@@ -20,7 +20,7 @@
       {% if event.f_center_hz is not none %}
         <span>Center {{ '%.3f'|format(event.f_center_hz / 1e6) }} MHz</span>
       {% endif %}
-      {% set bw_value = event.bandwidth_hz_display if event.bandwidth_hz_display is defined and event.bandwidth_hz_display is not none else event.bandwidth_hz %}
+      {% set bw_value = event.get('bandwidth_hz_display') or event.get('bandwidth_hz') %}
       {% if bw_value %}
         <span>BW {{ '%.0f'|format(bw_value / 1e3) }} kHz</span>
       {% endif %}

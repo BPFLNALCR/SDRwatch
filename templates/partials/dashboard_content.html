@@ -183,7 +183,7 @@
                   {% if event.f_center_hz is not none %}
                     <span>{{ format_freq_label(event.f_center_hz) }} MHz</span>
                   {% endif %}
-                  {% set event_bw = format_bandwidth_khz(event.bandwidth_hz_display if event.bandwidth_hz_display is defined and event.bandwidth_hz_display is not none else event.bandwidth_hz) %}
+                  {% set event_bw = format_bandwidth_khz(event.get('bandwidth_hz_display') or event.get('bandwidth_hz')) %}
                   {% if event_bw is not none %}
                     <span>{{ event_bw|round(0) }} kHz</span>
                   {% endif %}
@@ -216,7 +216,7 @@
       {% if signal_cards %}
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           {% for sig in signal_cards %}
-            {% set bw = format_bandwidth_khz(sig.bandwidth_hz_display if sig.bandwidth_hz_display is defined and sig.bandwidth_hz_display is not none else sig.bandwidth_hz) %}
+            {% set bw = format_bandwidth_khz(sig.get('bandwidth_hz_display') or sig.get('bandwidth_hz')) %}
             {% set conf = sig.confidence %}
             {% set hits = sig.total_hits or 0 %}
             {% set windows = sig.total_windows or 0 %}
