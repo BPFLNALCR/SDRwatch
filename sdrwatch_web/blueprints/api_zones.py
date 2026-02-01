@@ -8,15 +8,70 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from flask import Blueprint, abort, jsonify, request
+from flask import Blueprint, abort, current_app, jsonify, request
 
 from sdrwatch_web.auth import require_auth
 from sdrwatch_web.db import get_con, q1, qa
 from sdrwatch_web.schema import PRESET_MONITORING_ZONES, ZONE_CATEGORIES, seed_preset_zones
 
 bp = Blueprint("api_zones", __name__)
+
+
+# ---------------------------------------------------------------------------
+# Bandplan Detection
+# ---------------------------------------------------------------------------
+
+
+@bp.get("/api/bandplans")
+def api_bandplans():
+    """
+    Detect available bandplan CSV files.
+    
+    Scans for files matching bandplan_*.csv in the project directory.
+    Returns a list of bandplan files with display names derived from filenames.
+    """
+    require_auth()
+    bandplans = []
+    
+    # Look in multiple possible locations
+    search_paths = []
+    
+    # 1. Project root (where sdrwatch-control.py is)
+    project_root = Path(__file__).resolve().parent.parent.parent
+    search_paths.append(project_root)
+    
+    # 2. Current working directory
+    search_paths.append(Path.cwd())
+    
+    # 3. /opt/sdrwatch if it exists
+    opt_path = Path("/opt/sdrwatch")
+    if opt_path.exists():
+        search_paths.append(opt_path)
+    
+    seen = set()
+    for base in search_paths:
+        for f in base.glob("bandplan_*.csv"):
+            if f.name in seen:
+                continue
+            seen.add(f.name)
+            
+            # Derive display name from filename
+            # bandplan_eu.csv -> "EU"
+            # bandplan_us_na.csv -> "US NA"
+            name_part = f.stem.replace("bandplan_", "").replace("_", " ").upper()
+            bandplans.append({
+                "filename": f.name,
+                "path": str(f),
+                "display_name": name_part or f.stem,
+            })
+    
+    # Sort by display name
+    bandplans.sort(key=lambda x: x["display_name"])
+    
+    return jsonify({"bandplans": bandplans})
 
 
 # ---------------------------------------------------------------------------

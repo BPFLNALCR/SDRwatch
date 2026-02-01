@@ -253,6 +253,7 @@ def discover_rtlsdr() -> List[Device]:
     except Exception:
         pass
     # Fallback: pyrtlsdr quick-probe by index
+    # Note: This actually opens the device briefly, which can cause race conditions
     try:
         from rtlsdr import RtlSdr  # type: ignore
     except Exception:
@@ -266,8 +267,14 @@ def discover_rtlsdr() -> List[Device]:
                                   label=f"RTL-SDR #{i}" + (f" (SN {serial})" if serial else ""),
                                   extra={"index": i, "serial": serial}))
             sdr.close()
+            # Explicit cleanup to release USB handle
+            del sdr
         except Exception:
             break
+    # Force garbage collection to ensure USB handles are released
+    import gc
+    gc.collect()
+    return devices
     return devices
 
 
@@ -448,11 +455,16 @@ class JobManager:
         self._acquire_device(device_key, owner="pending")
         try:
             # If we have discovery metadata for this device, attach it for downstream
+            # Note: discovery may briefly probe the device, so we add a delay after
             discover_map = {d.key: d for d in discover_devices()}
             if device_key in discover_map:
                 meta = discover_map[device_key].extra
                 sdrwatch_args = dict(sdrwatch_args)  # copy
                 sdrwatch_args["__discover_meta"] = meta
+
+            # Brief delay to ensure device is fully released after discovery probe
+            import time as _time
+            _time.sleep(0.3)
 
             jid = short_uuid()
             log_path = str(LOGS_DIR / f"{jid}.log")
