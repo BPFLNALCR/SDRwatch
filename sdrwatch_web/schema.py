@@ -2,17 +2,239 @@
 Schema DDL and baseline creation for SDRwatch Web.
 
 Provides functions for ensuring database schema exists and creating
-new baseline entries.
+new baseline entries. Includes monitoring zones and friendly signals
+for simplified spectrum monitoring.
 """
 from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from flask import current_app
 
 from sdrwatch_web.db import reset_ro_connection
+
+
+# ---------------------------------------------------------------------------
+# Preset monitoring zones (RTL-SDR range: ~24 MHz - ~1766 MHz)
+# ---------------------------------------------------------------------------
+
+
+PRESET_MONITORING_ZONES: List[Dict[str, Any]] = [
+    # Broad surveillance zones
+    {
+        "name": "Full Sweep",
+        "description": "Complete RTL-SDR range scan",
+        "f_start_hz": 24_000_000,
+        "f_stop_hz": 1_700_000_000,
+        "category": "surveillance",
+        "priority": 1,
+    },
+    {
+        "name": "VHF/UHF General",
+        "description": "Common VHF/UHF activity bands",
+        "f_start_hz": 118_000_000,
+        "f_stop_hz": 470_000_000,
+        "category": "surveillance",
+        "priority": 2,
+    },
+    # Broadcast
+    {
+        "name": "FM Broadcast",
+        "description": "Commercial FM radio stations",
+        "f_start_hz": 88_000_000,
+        "f_stop_hz": 108_000_000,
+        "category": "broadcast",
+        "priority": 3,
+    },
+    # Aviation
+    {
+        "name": "VHF Airband",
+        "description": "Civil aviation voice communications",
+        "f_start_hz": 118_000_000,
+        "f_stop_hz": 137_000_000,
+        "category": "aviation",
+        "priority": 4,
+    },
+    {
+        "name": "UHF MilAir",
+        "description": "Military aviation UHF frequencies",
+        "f_start_hz": 225_000_000,
+        "f_stop_hz": 400_000_000,
+        "category": "aviation",
+        "priority": 5,
+    },
+    {
+        "name": "ADS-B",
+        "description": "Aircraft transponder tracking",
+        "f_start_hz": 1_089_000_000,
+        "f_stop_hz": 1_091_000_000,
+        "category": "aviation",
+        "priority": 6,
+    },
+    # Amateur radio
+    {
+        "name": "2m Amateur",
+        "description": "VHF amateur radio band",
+        "f_start_hz": 144_000_000,
+        "f_stop_hz": 148_000_000,
+        "category": "amateur",
+        "priority": 7,
+    },
+    {
+        "name": "70cm Amateur",
+        "description": "UHF amateur radio band",
+        "f_start_hz": 420_000_000,
+        "f_stop_hz": 450_000_000,
+        "category": "amateur",
+        "priority": 8,
+    },
+    # Marine
+    {
+        "name": "Marine VHF",
+        "description": "Maritime ship-to-shore communications",
+        "f_start_hz": 156_000_000,
+        "f_stop_hz": 163_000_000,
+        "category": "marine",
+        "priority": 9,
+    },
+    {
+        "name": "AIS",
+        "description": "Automatic Identification System for ships",
+        "f_start_hz": 161_900_000,
+        "f_stop_hz": 162_100_000,
+        "category": "marine",
+        "priority": 10,
+    },
+    # Weather
+    {
+        "name": "NOAA Weather",
+        "description": "NOAA weather broadcast stations",
+        "f_start_hz": 162_400_000,
+        "f_stop_hz": 162_600_000,
+        "category": "weather",
+        "priority": 11,
+    },
+    # Public safety / Land mobile
+    {
+        "name": "Public Safety VHF",
+        "description": "Police, fire, EMS VHF channels",
+        "f_start_hz": 150_000_000,
+        "f_stop_hz": 174_000_000,
+        "category": "public_safety",
+        "priority": 12,
+    },
+    {
+        "name": "Public Safety UHF",
+        "description": "Police, fire, EMS UHF channels",
+        "f_start_hz": 450_000_000,
+        "f_stop_hz": 470_000_000,
+        "category": "public_safety",
+        "priority": 13,
+    },
+    {
+        "name": "TETRA",
+        "description": "European public safety digital trunking",
+        "f_start_hz": 380_000_000,
+        "f_stop_hz": 400_000_000,
+        "category": "public_safety",
+        "priority": 14,
+    },
+    # Personal/consumer
+    {
+        "name": "PMR446",
+        "description": "European license-free walkie-talkies",
+        "f_start_hz": 446_000_000,
+        "f_stop_hz": 446_200_000,
+        "category": "consumer",
+        "priority": 15,
+    },
+    {
+        "name": "FRS/GMRS",
+        "description": "US family/general mobile radio",
+        "f_start_hz": 462_000_000,
+        "f_stop_hz": 467_700_000,
+        "category": "consumer",
+        "priority": 16,
+    },
+    # ISM bands
+    {
+        "name": "ISM 433 MHz",
+        "description": "Industrial/scientific devices, car remotes",
+        "f_start_hz": 433_000_000,
+        "f_stop_hz": 435_000_000,
+        "category": "ism",
+        "priority": 17,
+    },
+    {
+        "name": "ISM 868 MHz",
+        "description": "European IoT, LoRa, smart meters",
+        "f_start_hz": 863_000_000,
+        "f_stop_hz": 870_000_000,
+        "category": "ism",
+        "priority": 18,
+    },
+    {
+        "name": "ISM 915 MHz",
+        "description": "US IoT, LoRa, smart meters",
+        "f_start_hz": 902_000_000,
+        "f_stop_hz": 928_000_000,
+        "category": "ism",
+        "priority": 19,
+    },
+    # Cellular (downlink only - what you can receive)
+    {
+        "name": "LTE 700 MHz",
+        "description": "LTE Band 12/13/17 downlink",
+        "f_start_hz": 728_000_000,
+        "f_stop_hz": 756_000_000,
+        "category": "cellular",
+        "priority": 20,
+    },
+    {
+        "name": "LTE 850 MHz",
+        "description": "LTE Band 5/26 downlink",
+        "f_start_hz": 869_000_000,
+        "f_stop_hz": 894_000_000,
+        "category": "cellular",
+        "priority": 21,
+    },
+    # Paging
+    {
+        "name": "Pager VHF",
+        "description": "VHF paging systems",
+        "f_start_hz": 148_000_000,
+        "f_stop_hz": 150_000_000,
+        "category": "paging",
+        "priority": 22,
+    },
+    {
+        "name": "POCSAG/FLEX",
+        "description": "UHF paging (hospital, fire)",
+        "f_start_hz": 929_000_000,
+        "f_stop_hz": 932_000_000,
+        "category": "paging",
+        "priority": 23,
+    },
+]
+
+
+# Zone categories for UI grouping
+ZONE_CATEGORIES = {
+    "surveillance": {"label": "Surveillance", "icon": "🔍", "color": "slate"},
+    "broadcast": {"label": "Broadcast", "icon": "📻", "color": "purple"},
+    "aviation": {"label": "Aviation", "icon": "✈️", "color": "sky"},
+    "amateur": {"label": "Amateur Radio", "icon": "📡", "color": "amber"},
+    "marine": {"label": "Marine", "icon": "🚢", "color": "blue"},
+    "weather": {"label": "Weather", "icon": "🌤️", "color": "teal"},
+    "public_safety": {"label": "Public Safety", "icon": "🚔", "color": "red"},
+    "consumer": {"label": "Consumer", "icon": "📱", "color": "green"},
+    "ism": {"label": "ISM/IoT", "icon": "📶", "color": "violet"},
+    "cellular": {"label": "Cellular", "icon": "📶", "color": "orange"},
+    "paging": {"label": "Paging", "icon": "📟", "color": "pink"},
+    "custom": {"label": "Custom", "icon": "⚙️", "color": "gray"},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +305,69 @@ def migrate_baselines_bandplan(conn: sqlite3.Connection) -> None:
         try:
             conn.execute("ALTER TABLE baselines ADD COLUMN bandplan_path TEXT")
         except sqlite3.OperationalError:
+            pass
+
+
+def ensure_monitoring_zones_schema(conn: sqlite3.Connection) -> None:
+    """
+    Ensure monitoring_zones and friendly_signals tables exist.
+
+    Args:
+        conn: Writable SQLite connection.
+    """
+    stmts = [
+        # Monitoring zones: user-configured frequency ranges to monitor
+        """
+        CREATE TABLE IF NOT EXISTS monitoring_zones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            baseline_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            f_start_hz INTEGER NOT NULL,
+            f_stop_hz INTEGER NOT NULL,
+            category TEXT DEFAULT 'custom',
+            priority INTEGER DEFAULT 100,
+            enabled INTEGER DEFAULT 1,
+            is_preset INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (baseline_id) REFERENCES baselines(id) ON DELETE CASCADE
+        )
+        """,
+        # Index for efficient baseline lookups
+        """
+        CREATE INDEX IF NOT EXISTS idx_monitoring_zones_baseline
+        ON monitoring_zones(baseline_id, enabled)
+        """,
+        # Friendly signals: known-good signals to suppress in alerts
+        """
+        CREATE TABLE IF NOT EXISTS friendly_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            baseline_id INTEGER NOT NULL,
+            f_center_hz INTEGER NOT NULL,
+            f_tolerance_hz INTEGER DEFAULT 5000,
+            label TEXT NOT NULL,
+            notes TEXT,
+            source TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (baseline_id) REFERENCES baselines(id) ON DELETE CASCADE
+        )
+        """,
+        # Index for efficient baseline lookups
+        """
+        CREATE INDEX IF NOT EXISTS idx_friendly_signals_baseline
+        ON friendly_signals(baseline_id)
+        """,
+        # Index for frequency range matching
+        """
+        CREATE INDEX IF NOT EXISTS idx_friendly_signals_freq
+        ON friendly_signals(f_center_hz)
+        """,
+    ]
+    for stmt in stmts:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            # Index/table may already exist
             pass
 
 
@@ -215,6 +500,55 @@ def ensure_baseline_schema(conn: sqlite3.Connection) -> None:
     # Run migrations for existing tables
     migrate_detection_classification(conn)
     migrate_baselines_bandplan(conn)
+    ensure_monitoring_zones_schema(conn)
+
+
+def seed_preset_zones(conn: sqlite3.Connection, baseline_id: int) -> int:
+    """
+    Seed preset monitoring zones for a new baseline.
+
+    Only seeds if no zones exist for the baseline yet.
+
+    Args:
+        conn: Writable SQLite connection.
+        baseline_id: The baseline to seed zones for.
+
+    Returns:
+        Number of zones created.
+    """
+    # Check if zones already exist for this baseline
+    cursor = conn.execute(
+        "SELECT COUNT(*) FROM monitoring_zones WHERE baseline_id = ?",
+        (baseline_id,),
+    )
+    count = cursor.fetchone()[0]
+    if count > 0:
+        return 0
+
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat() + "Z"
+    created = 0
+    for zone in PRESET_MONITORING_ZONES:
+        conn.execute(
+            """
+            INSERT INTO monitoring_zones (
+                baseline_id, name, description, f_start_hz, f_stop_hz,
+                category, priority, enabled, is_preset, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (
+                baseline_id,
+                zone["name"],
+                zone.get("description", ""),
+                zone["f_start_hz"],
+                zone["f_stop_hz"],
+                zone.get("category", "custom"),
+                zone.get("priority", 100),
+                0,  # Presets start disabled - user enables what they want
+                now,
+            ),
+        )
+        created += 1
+    return created
 
 
 def create_baseline_entry(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -302,6 +636,10 @@ def create_baseline_entry(data: Dict[str, Any]) -> Dict[str, Any]:
         if lastrow is None:
             raise RuntimeError("baseline insert did not return a row id")
         baseline_id = int(lastrow)
+
+        # Seed preset monitoring zones for this baseline
+        seed_preset_zones(conn, baseline_id)
+
         conn.commit()
         row = conn.execute(
             """

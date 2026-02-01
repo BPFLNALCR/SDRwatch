@@ -6,301 +6,245 @@
 {% set baseline_summary_map = baseline_summaries or {} %}
 {% block content %}
 <section class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+  <!-- Main control panel -->
   <div class="card lg:col-span-2">
-    <div class="flex items-center justify-between mb-2">
-      <h2 class="text-lg font-semibold">SDRwatch Control</h2>
-      <div><span class="muted">State:</span> <span id="state-pill" class="pill idle">Idle</span></div>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold">Spectrum Monitor</h2>
+      <div class="flex items-center gap-3">
+        <span class="muted text-sm">Status:</span>
+        <span id="state-pill" class="pill idle">Idle</span>
+      </div>
     </div>
 
-    <form id="ctl" class="grid gap-4">
-      <div>
-        <div class="section-title">Baseline</div>
-        <div class="subgrid">
-          <div class="field">
-            <label for="baseline_select">Active baseline</label>
-            <select id="baseline_select" class="input" {% if not has_baselines %}disabled{% endif %}>
-              <option value="">{% if has_baselines %}(select baseline){% else %}(no baselines yet){% endif %}</option>
-              {% for b in baseline_list %}
-              {% set span_start = b.stats_min_hz or b.freq_start_hz %}
-              {% set span_stop = b.stats_max_hz or b.freq_stop_hz %}
-              {% if span_start and span_stop and span_stop > span_start %}
-                {% set range_label = '%.1f–%.1f MHz' % ((span_start / 1e6), (span_stop / 1e6)) %}
-              {% elif span_stop %}
-                {% set range_label = '≤ %.1f MHz' % (span_stop / 1e6) %}
-              {% else %}
-                {% set range_label = 'auto span' %}
-              {% endif %}
-              <option value="{{ b.id }}">#{{ b.id }} · {{ b.name }} ({{ range_label }})</option>
-              {% endfor %}
-            </select>
-            <div class="hint mt-1 text-xs" id="baselineHint">
-              {% if has_baselines %}
-                Select a baseline to tie each scan to persistent history.
-              {% else %}
-                Create a baseline before starting scans.
-              {% endif %}
-            </div>
-          </div>
-          <div class="field">
-            <label>Baseline info</label>
-            <div class="text-sm border border-slate-700/60 rounded-lg p-3 bg-slate-900/40" id="baselineSummary">
-              {% if has_baselines %}
-                Select a baseline to view metadata and recent activity.
-              {% else %}
-                No baselines yet. Use the create form to add one.
-              {% endif %}
-            </div>
-          </div>
-        </div>
-        <input type="hidden" id="activeBaselineId" value="" />
+    <!-- Baseline selection -->
+    <div class="mb-4 p-4 bg-slate-900/50 rounded-lg border border-slate-700/50">
+      <div class="flex items-center justify-between mb-2">
+        <label class="font-medium" for="baseline_select">Monitoring Location</label>
+        <button type="button" class="text-xs text-cyan-400 hover:text-cyan-300" onclick="showBaselineModal()">+ New location</button>
       </div>
-
-      <!-- Device -->
-      <div>
-        <div class="section-title">Device</div>
-        <div class="subgrid">
-          <div class="field"><label for="device_key">Select SDR</label>
-            <select id="device_key" class="input" name="device_key"></select>
-          </div>
-          <div class="field"><label for="driver">Driver (hint)</label><input id="driver" class="input" name="driver" value="rtlsdr_native" /></div>
-          <div class="field"><label for="gain">Gain (dB or auto)</label><input id="gain" class="input" name="gain" value="auto" placeholder="auto or number" /></div>
-          <div class="field"><label for="samp_rate">Sample rate (Hz)</label><input id="samp_rate" class="input" name="samp_rate" value="2.4e6" inputmode="numeric" /></div>
-          <div class="field"><label for="bandplan">Bandplan CSV (optional)</label><input id="bandplan" class="input" name="bandplan" value="" placeholder="bandplan.csv" /></div>
-        </div>
-        <div class="hint mt-1">Devices are enumerated from the controller. If empty, start the controller or attach an SDR.</div>
+      <select id="baseline_select" class="input w-full" {% if not has_baselines %}disabled{% endif %}>
+        <option value="">{% if has_baselines %}Select a location...{% else %}No locations configured{% endif %}</option>
+        {% for b in baseline_list %}
+        <option value="{{ b.id }}">#{{ b.id }} · {{ b.name }}{% if b.antenna %} ({{ b.antenna }}){% endif %}</option>
+        {% endfor %}
+      </select>
+      <div class="text-xs text-slate-400 mt-2" id="baselineInfo">
+        {% if has_baselines %}
+          Each location represents a unique antenna/site configuration.
+        {% else %}
+          Create a location to start monitoring.
+        {% endif %}
       </div>
+    </div>
 
-      <div>
-        <div class="section-title">Profile & Modes</div>
-        <div class="subgrid">
-          <div class="field">
-            <label for="profile">Profile</label>
-            <select id="profile" class="input" name="profile" {% if not has_profiles %}disabled{% endif %}>
-              <option value="">(manual selection)</option>
+    <!-- Device selection -->
+    <div class="mb-4 p-4 bg-slate-900/50 rounded-lg border border-slate-700/50">
+      <label class="font-medium block mb-2">SDR Device</label>
+      <div class="flex gap-2">
+        <select id="device_key" class="input flex-1"></select>
+        <button type="button" class="btn text-sm" id="refreshDevicesBtn" title="Refresh devices">🔄</button>
+      </div>
+      <div class="text-xs text-slate-400 mt-2">Detected RTL-SDR and other compatible devices.</div>
+    </div>
+
+    <!-- Monitoring Zones -->
+    <div class="mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-semibold text-base">Monitoring Zones</h3>
+        <div class="flex gap-2">
+          <button type="button" class="btn text-xs" onclick="toggleAllZones(true)">Enable All</button>
+          <button type="button" class="btn text-xs" onclick="toggleAllZones(false)">Disable All</button>
+          <button type="button" class="btn text-xs" onclick="showAddZoneModal()">+ Custom zone</button>
+        </div>
+      </div>
+      <p class="text-sm text-slate-400 mb-3">Select the frequency ranges you want to monitor. Enable zones that are relevant to your location and interests.</p>
+      
+      <div id="zonesContainer" class="grid gap-2">
+        <div class="text-center py-8 text-slate-500">
+          <span class="loading">Loading zones...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scan controls -->
+    <div class="flex flex-wrap gap-3 mt-6 pt-4 border-t border-slate-700/50">
+      <button class="btn btn-primary text-base px-6" type="button" id="startBtn" disabled>
+        ▶ Start Monitoring
+      </button>
+      <button class="btn btn-danger text-base px-6" type="button" id="stopBtn">
+        ■ Stop
+      </button>
+      <div class="flex items-center gap-2 ml-auto">
+        <label class="text-sm text-slate-400">Mode:</label>
+        <select id="run_mode" class="input text-sm">
+          <option value="loop">Continuous</option>
+          <option value="single">Single sweep</option>
+          <option value="duration">Timed run</option>
+        </select>
+        <input type="text" id="duration_value" class="input w-20 text-sm hidden" placeholder="e.g. 30m" />
+      </div>
+    </div>
+
+    <!-- Live logs -->
+    <details class="mt-4">
+      <summary class="text-sm text-slate-400 cursor-pointer hover:text-slate-300">Show live logs</summary>
+      <pre id="log" class="mt-2" style="height:200px;overflow:auto;background:#0b1220;color:#c7f9ff;padding:8px;border-radius:.75rem;font-size:12px"></pre>
+    </details>
+
+    <!-- Advanced settings (hidden by default) -->
+    <details class="mt-4">
+      <summary class="text-sm text-slate-400 cursor-pointer hover:text-slate-300">⚙️ Advanced settings</summary>
+      <div class="mt-3 p-4 bg-slate-900/30 rounded-lg border border-slate-700/30">
+        <p class="text-xs text-slate-500 mb-3">These settings control the internal sweep parameters. The defaults work well for most RTL-SDR setups.</p>
+        <form id="advancedForm" class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+          <div class="field"><label for="samp_rate">Sample rate (Hz)</label><input id="samp_rate" class="input" value="2.4e6" /></div>
+          <div class="field"><label for="fft">FFT bins</label><input id="fft" class="input" value="4096" /></div>
+          <div class="field"><label for="avg">Averaging</label><input id="avg" class="input" value="8" /></div>
+          <div class="field"><label for="gain">Gain</label><input id="gain" class="input" value="auto" /></div>
+          <div class="field"><label for="threshold_db">Threshold (dB)</label><input id="threshold_db" class="input" value="8" /></div>
+          <div class="field"><label for="profile">Profile</label>
+            <select id="profile" class="input">
+              <option value="">(auto)</option>
               {% for prof in profile_list %}
               <option value="{{ prof.name }}">{{ prof.name }}</option>
               {% endfor %}
             </select>
-            <div class="hint mt-1 text-xs" id="profileMeta">
-              {% if has_profiles %}
-                Select a profile to preview its range and defaults, or leave manual.
-              {% else %}
-                Profiles unavailable (controller offline?); enter parameters manually.
-              {% endif %}
-            </div>
           </div>
-          <div class="field">
-            <label for="scan_mode">Scan mode</label>
-            <select id="scan_mode" class="input" name="scan_mode">
-              <option value="normal">Normal scan</option>
-              <option value="spur">Spur calibration</option>
-            </select>
-            <div class="hint mt-1 text-xs">Spur calibration populates the spur map and suppresses detections.</div>
+          <div class="field"><label for="bandplan">Bandplan CSV</label><input id="bandplan" class="input" placeholder="bandplan.csv" /></div>
+          <div class="field"><label for="db">Database path</label><input id="db" class="input" value="{{ db_path }}" /></div>
+          <div class="field col-span-full">
+            <label class="flex items-center gap-2">
+              <input type="checkbox" id="two_pass" />
+              <span>Enable two-pass verification</span>
+            </label>
           </div>
-        </div>
+        </form>
       </div>
-
-      <!-- Sweep -->
-      <div>
-        <div class="section-title">Sweep</div>
-        <div class="subgrid">
-          <div class="field"><label for="start">Start frequency (Hz)</label><input id="start" class="input" name="start" value="88e6" inputmode="numeric" required /></div>
-          <div class="field"><label for="stop">Stop frequency (Hz)</label><input id="stop" class="input" name="stop" value="108e6" inputmode="numeric" required /></div>
-          <div class="field"><label for="step">Step (Hz)</label><input id="step" class="input" name="step" value="2.4e6" inputmode="numeric" /></div>
-          <div class="field"><label for="fft">FFT bins</label><input id="fft" class="input" name="fft" value="4096" inputmode="numeric" /></div>
-          <div class="field"><label for="avg">Averaging (frames)</label><input id="avg" class="input" name="avg" value="8" inputmode="numeric" /></div>
-          <div class="field"><label for="sleep_between_sweeps">Sleep between sweeps (s)</label><input id="sleep_between_sweeps" class="input" name="sleep_between_sweeps" value="0" inputmode="numeric" /></div>
-        </div>
-      </div>
-
-      <!-- Detection -->
-      <div>
-        <div class="section-title">Detection</div>
-        <div class="subgrid">
-          <div class="field"><label for="threshold_db">Threshold (dB above noise)</label><input id="threshold_db" class="input" name="threshold_db" value="8" inputmode="numeric" /></div>
-          <div class="field"><label for="guard_bins">Guard bins</label><input id="guard_bins" class="input" name="guard_bins" value="1" inputmode="numeric" /></div>
-          <div class="field"><label for="min_width_bins">Min width (bins)</label><input id="min_width_bins" class="input" name="min_width_bins" value="2" inputmode="numeric" /></div>
-          <div class="field"><label for="new_ema_occ">New EMA occ (0–1)</label><input id="new_ema_occ" class="input" name="new_ema_occ" value="0.02" inputmode="decimal" /></div>
-          <div class="field"><label for="cluster_merge_hz">Cluster merge span (Hz)</label><input id="cluster_merge_hz" class="input" name="cluster_merge_hz" value="" inputmode="numeric" placeholder="(auto)" /><div class="hint mt-1 text-xs">Overrides how close segments must be to merge; blank keeps scanner default.</div></div>
-          <div class="field"><label for="max_detection_width_ratio">Max width ratio</label><input id="max_detection_width_ratio" class="input" name="max_detection_width_ratio" value="3" inputmode="decimal" step="0.1" /><div class="hint mt-1 text-xs">Rejects merges when a new span is wider than ratio × persisted width.</div></div>
-          <div class="field"><label for="max_detection_width_hz">Max detection width (Hz)</label><input id="max_detection_width_hz" class="input" name="max_detection_width_hz" value="" inputmode="numeric" placeholder="(unbounded)" /><div class="hint mt-1 text-xs">Optional hard cap for persistent bandwidth. Leave empty to disable.</div></div>
-        </div>
-      </div>
-
-      <!-- Verification / Two-pass -->
-      <div>
-        <div class="section-title">Verification</div>
-        <div class="subgrid">
-          <label class="field">
-            <span class="flex items-center gap-2"><input type="checkbox" id="two_pass" name="two_pass" /> Enable two-pass revisit</span>
-            <div class="hint mt-1 text-xs">Run a second targeted pass on tagged signals to refine bandwidths and reject false positives.</div>
-          </label>
-          <div class="field"><label for="revisit_fft">Revisit FFT (bins)</label><input id="revisit_fft" class="input" name="revisit_fft" value="" inputmode="numeric" placeholder="(auto)" /></div>
-          <div class="field"><label for="revisit_avg">Revisit averaging</label><input id="revisit_avg" class="input" name="revisit_avg" value="" inputmode="numeric" placeholder="(auto)" /></div>
-          <div class="field"><label for="revisit_margin_hz">Revisit margin (Hz)</label><input id="revisit_margin_hz" class="input" name="revisit_margin_hz" value="150000" inputmode="numeric" /></div>
-          <div class="field"><label for="revisit_span_limit_hz">Revisit span limit (Hz)</label><input id="revisit_span_limit_hz" class="input" name="revisit_span_limit_hz" value="" inputmode="numeric" placeholder="(auto)" /></div>
-          <div class="field"><label for="revisit_max_bands">Max revisit targets</label><input id="revisit_max_bands" class="input" name="revisit_max_bands" value="40" inputmode="numeric" /></div>
-          <div class="field"><label for="revisit_floor_threshold_db">Revisit threshold (dB)</label><input id="revisit_floor_threshold_db" class="input" name="revisit_floor_threshold_db" value="" inputmode="decimal" placeholder="(inherit)" /></div>
-        </div>
-      </div>
-
-      <!-- Persistence -->
-      <div>
-        <div class="section-title">Persistence</div>
-        <div class="subgrid">
-          <div class="field">
-            <label for="persistence_mode">Persistence mode</label>
-            <select id="persistence_mode" class="input" name="persistence_mode">
-              <option value="hits" selected>Hits / window ratio</option>
-              <option value="duration">Wall-clock duration</option>
-              <option value="both">Require both</option>
-            </select>
-            <div class="hint mt-1 text-xs">Select how clusters become persistent: coverage-based, duration-based, or both.</div>
-          </div>
-          <div class="field">
-            <label for="persistence_hit_ratio">Hit ratio (0–1)</label>
-            <input id="persistence_hit_ratio" class="input" name="persistence_hit_ratio" value="0.6" inputmode="decimal" step="0.05" />
-            <div class="hint mt-1 text-xs">Minimum coverage of occupied windows across the cluster span.</div>
-          </div>
-          <div class="field">
-            <label for="persistence_min_seconds">Min duration (s)</label>
-            <input id="persistence_min_seconds" class="input" name="persistence_min_seconds" value="10" inputmode="decimal" />
-            <div class="hint mt-1 text-xs">Used when duration-based modes are selected.</div>
-          </div>
-          <div class="field">
-            <label for="persistence_min_hits">Min hits</label>
-            <input id="persistence_min_hits" class="input" name="persistence_min_hits" value="2" inputmode="numeric" />
-          </div>
-          <div class="field">
-            <label for="persistence_min_windows">Min windows</label>
-            <input id="persistence_min_windows" class="input" name="persistence_min_windows" value="2" inputmode="numeric" />
-          </div>
-        </div>
-      </div>
-
-      <!-- CFAR -->
-      <div>
-        <div class="section-title">CFAR</div>
-        <div class="subgrid">
-          <div class="field"><label for="cfar">CFAR mode</label>
-            <select id="cfar" class="input" name="cfar">
-              <option value="os" selected>os (ordered-statistics)</option>
-              <option value="off">off</option>
-            </select>
-          </div>
-          <div class="field"><label for="cfar_train">Train cells</label><input id="cfar_train" class="input" name="cfar_train" value="24" inputmode="numeric" /></div>
-          <div class="field"><label for="cfar_guard">Guard cells</label><input id="cfar_guard" class="input" name="cfar_guard" value="4" inputmode="numeric" /></div>
-          <div class="field"><label for="cfar_quantile">Quantile (0–1)</label><input id="cfar_quantile" class="input" name="cfar_quantile" value="0.75" inputmode="decimal" /></div>
-          <div class="field"><label for="cfar_alpha_db">Alpha (dB, optional)</label><input id="cfar_alpha_db" class="input" name="cfar_alpha_db" value="" inputmode="decimal" placeholder="e.g. 2.5" /></div>
-        </div>
-        <div class="hint mt-1">If CFAR is <span class="chip">off</span>, fixed threshold is used.</div>
-      </div>
-
-      <!-- Output & Logs -->
-      <div>
-        <div class="section-title">Output & Logs</div>
-        <div class="subgrid">
-          <div class="field"><label for="db">Database path</label><input id="db" class="input" name="db" value="{{ db_path }}" /></div>
-          <div class="field"><label for="jsonl">JSONL log (optional)</label><input id="jsonl" class="input" name="jsonl" value="" placeholder="file.jsonl" /></div>
-          <label class="field"><label for="notify">Desktop notifications</label>
-            <div class="flex items-center gap-2"><input id="notify" type="checkbox" name="notify" /> <span class="hint">Browser must allow notifications</span></div>
-          </label>
-        </div>
-      </div>
-
-      <!-- Run -->
-      <div>
-        <div class="section-title">Run</div>
-        <div class="subgrid">
-          <div class="field"><label for="mode">Mode</label>
-            <select id="mode" class="input" name="mode">
-              <option value="single">Single sweep</option>
-              <option value="loop">Loop</option>
-              <option value="repeat">Repeat N</option>
-              <option value="duration">Duration</option>
-            </select>
-          </div>
-          <div class="field"><label for="repeat">Repeat count</label><input id="repeat" class="input" name="repeat" value="" inputmode="numeric" placeholder="N" /></div>
-          <div class="field"><label for="duration">Duration (e.g. 10m)</label><input id="duration" class="input" name="duration" value="" placeholder="e.g. 10m" /></div>
-        </div>
-      </div>
-
-      <div class="flex flex-wrap gap-2 mt-1">
-        <button class="btn" type="submit">▶ Start</button>
-        <button class="btn red" type="button" id="stopBtn">■ Stop</button>
-        <button class="btn" type="button" id="resetBtn">↺ Reset</button>
-        <button class="btn" type="button" id="refreshDevicesBtn">🔄 Refresh devices</button>
-      </div>
-    </form>
-
-    <div class="mt-4">
-      <div class="text-xs muted mb-1">Live logs</div>
-      <pre id="log" style="height:260px;overflow:auto;background:#0b1220;color:#c7f9ff;padding:8px;border-radius:.75rem"></pre>
-    </div>
+    </details>
   </div>
 
-  <div class="card">
-    <h3 class="text-lg font-semibold mb-2">Create baseline</h3>
-    <p class="text-sm muted mb-3">Define the antenna/location pair. The baseline's frequency span grows automatically as scans add data.</p>
-    <form id="baselineForm" class="grid gap-3">
-      <div class="field"><label for="baseline_name">Name</label><input id="baseline_name" class="input" name="name" placeholder="Roof VHF" required /></div>
-      <div class="subgrid">
-        <div class="field"><label for="baseline_location_lat">Latitude</label><input id="baseline_location_lat" class="input" name="location_lat" inputmode="decimal" placeholder="41.878" /></div>
-        <div class="field"><label for="baseline_location_lon">Longitude</label><input id="baseline_location_lon" class="input" name="location_lon" inputmode="decimal" placeholder="-87.629" /></div>
+  <!-- Sidebar -->
+  <div class="space-y-4">
+    <!-- Friendly signals -->
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-semibold">Known Signals</h3>
+        <button type="button" class="btn text-xs" onclick="showAddFriendlyModal()">+ Add</button>
       </div>
-      <div class="subgrid">
-        <div class="field"><label for="baseline_sdr_serial">SDR serial</label><input id="baseline_sdr_serial" class="input" name="sdr_serial" placeholder="rtl0001" /></div>
-        <div class="field"><label for="baseline_antenna">Antenna</label><input id="baseline_antenna" class="input" name="antenna" placeholder="Discone" /></div>
+      <p class="text-xs text-slate-400 mb-3">Mark signals you recognize as friendly. These won't trigger alerts.</p>
+      <div id="friendlyContainer" class="space-y-2 max-h-64 overflow-y-auto">
+        <div class="text-center py-4 text-slate-500 text-sm">
+          Select a location to view known signals.
+        </div>
       </div>
-      <div class="field"><label for="baseline_notes">Notes</label><textarea id="baseline_notes" class="input" name="notes" rows="2" placeholder="Roof mount, 50ft LMR-400."></textarea></div>
-      <div class="flex flex-wrap gap-2">
-        <button class="btn" type="submit">＋ Create baseline</button>
-      </div>
-      <div class="text-xs muted" id="baselineFormStatus">Baselines tie scans to one hardware/site. Range is derived automatically from future sweeps.</div>
-    </form>
-  </div>
-
-  <div class="card">
-    <h3 class="text-lg font-semibold mb-2">Quick presets</h3>
-    <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
-      <button class="btn" onclick="preset('FULL')">Full sweep (24–1766 MHz)</button>
-      <button class="btn" onclick="preset('FM')">FM 88–108 MHz</button>
-      <button class="btn" onclick="preset('VHF_AIR')">VHF Air 118–137</button>
-      <button class="btn" onclick="preset('UHF_MILAIR')">UHF MilAir 225–400</button>
-      <button class="btn" onclick="preset('2m')">2 m 144–146</button>
-      <button class="btn" onclick="preset('70cm')">70 cm 430–440</button>
-      <button class="btn" onclick="preset('MARINE')">Marine VHF 156–162.6</button>
-      <button class="btn" onclick="preset('NOAA')">NOAA WX 162.4–162.55</button>
-      <button class="btn" onclick="preset('AIS')">AIS 161.975–162.025</button>
-      <button class="btn" onclick="preset('ADSB')">ADS‑B 1090</button>
-      <button class="btn" onclick="preset('PMR446')">PMR446 446.0–446.2</button>
-      <button class="btn" onclick="preset('TETRA')">TETRA 390–430</button>
-      <button class="btn" onclick="preset('LTE800')">LTE 800 DL 791–821</button>
     </div>
 
-    <h3 class="text-lg font-semibold mt-6 mb-2">Scan parameter presets</h3>
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-sm">
-      <button class="btn" onclick="scanPreset('FAST')">Fast Recon</button>
-      <button class="btn" onclick="scanPreset('BALANCED')">Balanced</button>
-      <button class="btn" onclick="scanPreset('FIDELITY')">High Fidelity Baseline</button>
+    <!-- Quick actions -->
+    <div class="card">
+      <h3 class="font-semibold mb-3">Quick Start</h3>
+      <div class="space-y-2">
+        <button class="btn w-full text-left justify-start" onclick="enableZonesByCategory('broadcast')">
+          📻 Monitor Broadcasts
+          <span class="text-xs text-slate-400 ml-auto">FM, AM stations</span>
+        </button>
+        <button class="btn w-full text-left justify-start" onclick="enableZonesByCategory('aviation')">
+          ✈️ Monitor Aviation
+          <span class="text-xs text-slate-400 ml-auto">Airband, ADS-B</span>
+        </button>
+        <button class="btn w-full text-left justify-start" onclick="enableZonesByCategory('public_safety')">
+          🚔 Monitor Public Safety
+          <span class="text-xs text-slate-400 ml-auto">Police, Fire, EMS</span>
+        </button>
+        <button class="btn w-full text-left justify-start" onclick="enableZonesByCategory('amateur')">
+          📡 Monitor Ham Radio
+          <span class="text-xs text-slate-400 ml-auto">2m, 70cm bands</span>
+        </button>
+        <button class="btn w-full text-left justify-start" onclick="enableZonesByCategory('ism')">
+          📶 Monitor IoT/ISM
+          <span class="text-xs text-slate-400 ml-auto">LoRa, smart devices</span>
+        </button>
+      </div>
     </div>
 
-    <div class="mt-4 text-xs muted">Page auth token (optional) is stored as <code>SDRWATCH_TOKEN</code> in localStorage. Server uses its own controller token.</div>
+    <!-- Create baseline modal content (hidden) -->
+    <div id="baselineModal" class="card hidden">
+      <h3 class="font-semibold mb-3">New Monitoring Location</h3>
+      <form id="baselineForm" class="space-y-3">
+        <div class="field"><label>Name</label><input id="baseline_name" class="input" name="name" placeholder="e.g. Roof antenna" required /></div>
+        <div class="grid grid-cols-2 gap-2">
+          <div class="field"><label>Latitude</label><input id="baseline_lat" class="input" name="location_lat" placeholder="41.878" /></div>
+          <div class="field"><label>Longitude</label><input id="baseline_lon" class="input" name="location_lon" placeholder="-87.629" /></div>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div class="field"><label>SDR Serial</label><input id="baseline_serial" class="input" name="sdr_serial" placeholder="rtl0001" /></div>
+          <div class="field"><label>Antenna</label><input id="baseline_antenna" class="input" name="antenna" placeholder="Discone" /></div>
+        </div>
+        <div class="field"><label>Notes</label><textarea id="baseline_notes" class="input" name="notes" rows="2" placeholder="Description of this monitoring setup"></textarea></div>
+        <div class="flex gap-2">
+          <button type="submit" class="btn btn-primary">Create</button>
+          <button type="button" class="btn" onclick="hideBaselineModal()">Cancel</button>
+        </div>
+      </form>
+    </div>
   </div>
 </section>
+
+<!-- Add Zone Modal -->
+<div id="addZoneModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center z-50" onclick="if(event.target===this)hideAddZoneModal()">
+  <div class="card max-w-md w-full mx-4" onclick="event.stopPropagation()">
+    <h3 class="font-semibold mb-4">Add Custom Monitoring Zone</h3>
+    <form id="addZoneForm" class="space-y-3">
+      <div class="field"><label>Zone Name</label><input id="zone_name" class="input" required placeholder="My custom zone" /></div>
+      <div class="field"><label>Description</label><input id="zone_desc" class="input" placeholder="What this zone covers" /></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="field"><label>Start Frequency (MHz)</label><input id="zone_start" class="input" type="number" step="0.001" required placeholder="88.0" /></div>
+        <div class="field"><label>Stop Frequency (MHz)</label><input id="zone_stop" class="input" type="number" step="0.001" required placeholder="108.0" /></div>
+      </div>
+      <div class="field">
+        <label>Category</label>
+        <select id="zone_category" class="input">
+          <option value="custom">Custom</option>
+          <option value="surveillance">Surveillance</option>
+          <option value="broadcast">Broadcast</option>
+          <option value="aviation">Aviation</option>
+          <option value="amateur">Amateur Radio</option>
+          <option value="marine">Marine</option>
+          <option value="public_safety">Public Safety</option>
+          <option value="consumer">Consumer</option>
+          <option value="ism">ISM/IoT</option>
+        </select>
+      </div>
+      <div class="flex gap-2 mt-4">
+        <button type="submit" class="btn btn-primary">Add Zone</button>
+        <button type="button" class="btn" onclick="hideAddZoneModal()">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Add Friendly Signal Modal -->
+<div id="addFriendlyModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center z-50" onclick="if(event.target===this)hideAddFriendlyModal()">
+  <div class="card max-w-md w-full mx-4" onclick="event.stopPropagation()">
+    <h3 class="font-semibold mb-4">Add Known Signal</h3>
+    <form id="addFriendlyForm" class="space-y-3">
+      <div class="field"><label>Label</label><input id="friendly_label" class="input" required placeholder="Local FM station" /></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="field"><label>Center Frequency (MHz)</label><input id="friendly_freq" class="input" type="number" step="0.001" required placeholder="101.5" /></div>
+        <div class="field"><label>Tolerance (kHz)</label><input id="friendly_tolerance" class="input" type="number" value="10" placeholder="10" /></div>
+      </div>
+      <div class="field"><label>Notes</label><textarea id="friendly_notes" class="input" rows="2" placeholder="Why this signal is known/expected"></textarea></div>
+      <div class="flex gap-2 mt-4">
+        <button type="submit" class="btn btn-primary">Add Signal</button>
+        <button type="button" class="btn" onclick="hideAddFriendlyModal()">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
 <script>
-const PROFILE_DATA = {{ profile_list|tojson }};
-const PROFILE_MAP = Array.isArray(PROFILE_DATA)
-  ? PROFILE_DATA.reduce((acc, prof) => {
-      if (prof?.name) { acc[prof.name] = prof; }
-      return acc;
-    }, {})
-  : {};
-let BASELINE_DATA = {{ baseline_list|default([], true)|tojson }};
-let BASELINE_SUMMARIES = {{ baseline_summary_map|default({}, true)|tojson }};
 const TOKEN = localStorage.getItem("SDRWATCH_TOKEN") || "";
 function authHeaders(isJson=true){
   const headers = {};
@@ -309,347 +253,371 @@ function authHeaders(isJson=true){
   return headers;
 }
 
-const pill = document.getElementById('state-pill');
-function setState(s){ pill.textContent = s; pill.className = 'pill ' + (s==='running'?'run':'idle'); }
+// State
+let activeBaselineId = null;
+let zones = [];
+let friendlySignals = [];
 let activeJob = null;
 let lastJobId = null;
-let cachedLogs = '';
-
-function applyActiveResponse(resp){
-  if(resp && resp.job){
-    activeJob = resp.job;
-    if(activeJob?.id){ lastJobId = activeJob.id; }
-    setState(resp.state || 'running');
-    return;
-  }
-  activeJob = null;
-  if(resp && resp.state){ setState(resp.state); } else { setState('idle'); }
-}
-
-async function refreshActiveState(){
-  try{
-    const r = await fetch('/api/jobs/active', { headers: authHeaders(false) });
-    if(!r.ok){ throw new Error('state fetch failed'); }
-    const data = await r.json();
-    applyActiveResponse(data);
-    return data;
-  }catch(err){
-    console.error(err);
-    return null;
-  }
-}
-
-// Form persistence
-const FORM_STORAGE_KEY = 'SDRWATCH_CTL_FORM';
-const f = document.getElementById('ctl');
-const profileSelect = document.getElementById('profile');
-const profileMeta = document.getElementById('profileMeta');
-const scanModeSelect = document.getElementById('scan_mode');
-const baselineSelect = document.getElementById('baseline_select');
-const baselineSummaryBox = document.getElementById('baselineSummary');
-const baselineHiddenInput = document.getElementById('activeBaselineId');
-const baselineHint = document.getElementById('baselineHint');
-const baselineForm = document.getElementById('baselineForm');
-const baselineFormStatus = document.getElementById('baselineFormStatus');
 const BASELINE_STORAGE_KEY = 'SDRWATCH_ACTIVE_BASELINE_ID';
-let activeBaselineId = null;
-const startBtn = f?.querySelector('button[type="submit"]');
 
-function escapeHtml(str){
-  if(str === undefined || str === null){ return ''; }
-  return String(str).replace(/[&<>"']/g, (ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
+// Category display info
+const CATEGORY_INFO = {
+  surveillance: { icon: '🔍', color: 'slate' },
+  broadcast: { icon: '📻', color: 'purple' },
+  aviation: { icon: '✈️', color: 'sky' },
+  amateur: { icon: '📡', color: 'amber' },
+  marine: { icon: '🚢', color: 'blue' },
+  weather: { icon: '🌤️', color: 'teal' },
+  public_safety: { icon: '🚔', color: 'red' },
+  consumer: { icon: '📱', color: 'green' },
+  ism: { icon: '📶', color: 'violet' },
+  cellular: { icon: '📶', color: 'orange' },
+  paging: { icon: '📟', color: 'pink' },
+  custom: { icon: '⚙️', color: 'gray' }
+};
+
+// Elements
+const pill = document.getElementById('state-pill');
+const baselineSelect = document.getElementById('baseline_select');
+const zonesContainer = document.getElementById('zonesContainer');
+const friendlyContainer = document.getElementById('friendlyContainer');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const runModeSelect = document.getElementById('run_mode');
+const durationInput = document.getElementById('duration_value');
+const log = document.getElementById('log');
+
+// Utility functions
+function setState(s){ 
+  pill.textContent = s; 
+  pill.className = 'pill ' + (s==='running'?'run':'idle'); 
 }
-function hzToMHz(val){
-  const num = Number(val);
-  if(!Number.isFinite(num)){ return '—'; }
-  return (num/1e6).toFixed(3);
+
+function formatFreq(hz) {
+  const mhz = hz / 1e6;
+  if (mhz >= 1000) return (mhz / 1000).toFixed(2) + ' GHz';
+  if (mhz >= 1) return mhz.toFixed(3) + ' MHz';
+  return (hz / 1000).toFixed(1) + ' kHz';
 }
-function formatBaselineRange(record){
-  if(!record) return '—';
-  const start = Number(record.stats_min_hz ?? record.freq_start_hz ?? 0);
-  const stop = Number(record.stats_max_hz ?? record.freq_stop_hz ?? 0);
-  if(start > 0 && stop > start){
-    return `${hzToMHz(start)}–${hzToMHz(stop)} MHz`;
-  }
-  if(stop > 0){
-    return `≤ ${hzToMHz(stop)} MHz`;
-  }
-  return 'Auto range (pending scans)';
+
+// Modal functions
+function showBaselineModal() {
+  document.getElementById('baselineModal').classList.remove('hidden');
 }
-function getBaselineSummaryEntry(id){
-  if(!id){ return null; }
-  return BASELINE_SUMMARIES?.[id] || BASELINE_SUMMARIES?.[String(id)] || null;
+function hideBaselineModal() {
+  document.getElementById('baselineModal').classList.add('hidden');
 }
-function renderBaselineSummary(record){
-  if(!baselineSummaryBox){ return; }
-  if(!record){
-    baselineSummaryBox.textContent = 'Create or select a baseline to enable scans.';
+function showAddZoneModal() {
+  if (!activeBaselineId) { alert('Select a location first'); return; }
+  document.getElementById('addZoneModal').classList.remove('hidden');
+  document.getElementById('addZoneModal').classList.add('flex');
+}
+function hideAddZoneModal() {
+  document.getElementById('addZoneModal').classList.add('hidden');
+  document.getElementById('addZoneModal').classList.remove('flex');
+  document.getElementById('addZoneForm').reset();
+}
+function showAddFriendlyModal() {
+  if (!activeBaselineId) { alert('Select a location first'); return; }
+  document.getElementById('addFriendlyModal').classList.remove('hidden');
+  document.getElementById('addFriendlyModal').classList.add('flex');
+}
+function hideAddFriendlyModal() {
+  document.getElementById('addFriendlyModal').classList.add('hidden');
+  document.getElementById('addFriendlyModal').classList.remove('flex');
+  document.getElementById('addFriendlyForm').reset();
+}
+
+// Zones rendering
+function renderZones() {
+  if (!zones.length) {
+    zonesContainer.innerHTML = '<div class="text-center py-6 text-slate-500">No monitoring zones configured for this location.</div>';
     return;
   }
-  const summary = getBaselineSummaryEntry(record.id) || {};
-  const detCount = summary.persistent_detections || 0;
-  const totalWindows = summary.total_windows || 0;
-  const detectionLine = `${detCount} persistent detections · ${totalWindows} windows`;
-  const lastUpdate = summary.last_update_utc || summary.last_detection_utc || 'No scans yet';
-  const notes = record.notes ? `<div class="mt-2 text-xs text-slate-200">${escapeHtml(record.notes)}</div>` : '';
-  baselineSummaryBox.innerHTML = `
-    <div class="font-semibold text-base">${escapeHtml(record.name)} <span class="text-xs text-slate-400">#${record.id}</span></div>
-    <div class="text-xs text-slate-300">${formatBaselineRange(record)}</div>
-    <div class="text-xs text-slate-400">Created ${escapeHtml(record.created_at || '—')}</div>
-    <div class="text-xs text-cyan-300 mt-2">${escapeHtml(detectionLine)}</div>
-    <div class="text-xs text-lime-300">Last update: ${escapeHtml(lastUpdate)}</div>
-    ${notes}
-  `;
-}
-function renderBaselineOptions(){
-  if(!baselineSelect){ return; }
-  const current = String(baselineSelect.value || '');
-  baselineSelect.innerHTML = '';
-  const placeholder = document.createElement('option');
-  placeholder.value = '';
-  placeholder.textContent = BASELINE_DATA.length ? '(select baseline)' : '(no baselines yet)';
-  baselineSelect.appendChild(placeholder);
-  for(const b of BASELINE_DATA){
-    const opt = document.createElement('option');
-    opt.value = b.id;
-    opt.textContent = `#${b.id} · ${b.name} (${formatBaselineRange(b)})`;
-    baselineSelect.appendChild(opt);
-  }
-  baselineSelect.disabled = BASELINE_DATA.length === 0;
-  if(current && BASELINE_DATA.some(b => String(b.id) === current)){
-    baselineSelect.value = current;
-  }
-}
-function updateStartButtonState(){
-  if(startBtn){
-    const enabled = Boolean(activeBaselineId);
-    startBtn.disabled = !enabled;
-    startBtn.classList.toggle('opacity-50', !enabled);
-  }
-  if(baselineHint){
-    baselineHint.textContent = activeBaselineId ? 'Baseline selected. Jobs will include this baseline_id.' : 'Create or select a baseline before starting scans.';
-  }
-}
-function setActiveBaseline(value, opts = {}){
-  const persist = opts.persist !== false;
-  const strVal = value === undefined || value === null ? '' : String(value);
-  const record = BASELINE_DATA.find(b => String(b.id) === strVal);
-  if(!record){
-    activeBaselineId = null;
-    if(baselineHiddenInput){ baselineHiddenInput.value = ''; }
-    if(baselineSelect && baselineSelect.value !== ''){ baselineSelect.value = ''; }
-    if(persist){ localStorage.removeItem(BASELINE_STORAGE_KEY); }
-    renderBaselineSummary(null);
-    updateStartButtonState();
-    return;
-  }
-  activeBaselineId = record.id;
-  if(baselineHiddenInput){ baselineHiddenInput.value = String(record.id); }
-  if(baselineSelect && baselineSelect.value !== String(record.id)){
-    baselineSelect.value = String(record.id);
-  }
-  if(persist){ localStorage.setItem(BASELINE_STORAGE_KEY, String(record.id)); }
-  renderBaselineSummary(record);
-  updateStartButtonState();
-}
-async function fetchBaselines(){
-  try{
-    const resp = await fetch('/api/baselines', { headers: authHeaders(false) });
-    if(!resp.ok){ throw new Error('failed to fetch baselines'); }
-    const data = await resp.json();
-    if(Array.isArray(data.baselines)){ BASELINE_DATA = data.baselines; }
-    if(data.summaries){ BASELINE_SUMMARIES = data.summaries; }
-    renderBaselineOptions();
-    if(activeBaselineId && !BASELINE_DATA.some(b => Number(b.id) === Number(activeBaselineId))){
-      setActiveBaseline(null, {persist:false});
-    }else if(activeBaselineId){
-      setActiveBaseline(String(activeBaselineId), {persist:false});
-    }
-  }catch(err){ console.error(err); }
-}
-renderBaselineOptions();
-const savedBaselineId = localStorage.getItem(BASELINE_STORAGE_KEY);
-if(savedBaselineId && BASELINE_DATA.some(b => String(b.id) === savedBaselineId)){
-  setActiveBaseline(savedBaselineId, {persist:false});
-}else if(BASELINE_DATA.length){
-  setActiveBaseline(String(BASELINE_DATA[0].id), {persist:false});
-}else{
-  setActiveBaseline(null, {persist:false});
-}
-baselineSelect?.addEventListener('change', (ev)=>{
-  setActiveBaseline(ev.target.value || '', {persist:true});
-});
-baselineForm?.addEventListener('submit', async (ev)=>{
-  ev.preventDefault();
-  if(!baselineForm){ return; }
-  if(baselineFormStatus){ baselineFormStatus.textContent = 'Creating baseline...'; }
-  const fd = new FormData(baselineForm);
-  const payload = Object.fromEntries(fd.entries());
-  const numericFields = ['location_lat','location_lon','bin_hz'];
-  numericFields.forEach((field)=>{
-    if(payload[field] !== undefined && payload[field] !== ''){
-      payload[field] = Number(payload[field]);
-    } else {
-      delete payload[field];
-    }
+
+  // Group by category
+  const byCategory = {};
+  zones.forEach(z => {
+    const cat = z.category || 'custom';
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(z);
   });
-  try{
-    const resp = await fetch('/api/baselines', { method:'POST', headers: authHeaders(), body: JSON.stringify(payload) });
-    const data = await resp.json().catch(()=>({}));
-    if(!resp.ok){
-      const errMsg = data?.error || data?.detail || 'baseline create failed';
-      throw new Error(errMsg);
-    }
-    if(data.summaries){ BASELINE_SUMMARIES = data.summaries; }
-    const created = data.baseline;
-    if(created){
-      const existingIdx = BASELINE_DATA.findIndex(b => Number(b.id) === Number(created.id));
-      if(existingIdx >= 0){
-        BASELINE_DATA[existingIdx] = created;
-      } else {
-        BASELINE_DATA = [created, ...BASELINE_DATA];
-      }
-      renderBaselineOptions();
-      setActiveBaseline(String(created.id));
-    }else{
-      await fetchBaselines();
-    }
-    baselineForm.reset();
-    if(baselineFormStatus){ baselineFormStatus.textContent = 'Baseline created. It is now active.'; }
-  }catch(err){
+
+  let html = '';
+  for (const [cat, catZones] of Object.entries(byCategory)) {
+    const info = CATEGORY_INFO[cat] || CATEGORY_INFO.custom;
+    html += `<div class="mb-3">
+      <div class="text-xs font-medium text-slate-400 mb-1 flex items-center gap-1">
+        <span>${info.icon}</span>
+        <span>${cat.replace('_', ' ').toUpperCase()}</span>
+      </div>
+      <div class="space-y-1">`;
+    
+    catZones.forEach(z => {
+      const freqRange = `${formatFreq(z.f_start_hz)} – ${formatFreq(z.f_stop_hz)}`;
+      html += `
+        <label class="flex items-center gap-3 p-2 rounded-lg bg-slate-800/50 hover:bg-slate-800 cursor-pointer transition-colors ${z.enabled ? 'border border-cyan-500/40' : 'border border-transparent'}">
+          <input type="checkbox" class="zone-checkbox" data-zone-id="${z.id}" ${z.enabled ? 'checked' : ''} onchange="toggleZone(${z.id}, this.checked)" />
+          <div class="flex-1 min-w-0">
+            <div class="font-medium text-sm truncate">${z.name}</div>
+            <div class="text-xs text-slate-400">${freqRange}</div>
+          </div>
+          ${z.is_preset ? '' : `<button type="button" class="text-red-400 hover:text-red-300 text-xs" onclick="event.preventDefault();deleteZone(${z.id})">✕</button>`}
+        </label>`;
+    });
+    html += '</div></div>';
+  }
+  zonesContainer.innerHTML = html;
+  updateStartButton();
+}
+
+function renderFriendly() {
+  if (!friendlySignals.length) {
+    friendlyContainer.innerHTML = '<div class="text-center py-4 text-slate-500 text-sm">No known signals configured.</div>';
+    return;
+  }
+
+  let html = '';
+  friendlySignals.forEach(s => {
+    html += `
+      <div class="flex items-center gap-2 p-2 rounded-lg bg-slate-800/50 text-sm">
+        <span class="text-green-400">✓</span>
+        <div class="flex-1 min-w-0">
+          <div class="font-medium truncate">${s.label}</div>
+          <div class="text-xs text-slate-400">${formatFreq(s.f_center_hz)} ±${(s.f_tolerance_hz/1000).toFixed(1)}kHz</div>
+        </div>
+        <button type="button" class="text-red-400 hover:text-red-300 text-xs" onclick="deleteFriendly(${s.id})">✕</button>
+      </div>`;
+  });
+  friendlyContainer.innerHTML = html;
+}
+
+function updateStartButton() {
+  const enabledZones = zones.filter(z => z.enabled);
+  startBtn.disabled = !activeBaselineId || enabledZones.length === 0;
+  if (!activeBaselineId) {
+    startBtn.title = 'Select a location first';
+  } else if (enabledZones.length === 0) {
+    startBtn.title = 'Enable at least one monitoring zone';
+  } else {
+    startBtn.title = `Monitor ${enabledZones.length} zone(s)`;
+  }
+}
+
+// API calls
+async function loadZones() {
+  if (!activeBaselineId) {
+    zones = [];
+    renderZones();
+    return;
+  }
+  try {
+    const resp = await fetch(`/api/baseline/${activeBaselineId}/zones`, { headers: authHeaders(false) });
+    if (!resp.ok) throw new Error('Failed to load zones');
+    const data = await resp.json();
+    zones = data.zones || [];
+    renderZones();
+  } catch (err) {
     console.error(err);
-    if(baselineFormStatus){ baselineFormStatus.textContent = `Failed to create baseline: ${err.message}`; }
+    zonesContainer.innerHTML = '<div class="text-red-400 text-sm">Failed to load zones</div>';
+  }
+}
+
+async function loadFriendly() {
+  if (!activeBaselineId) {
+    friendlySignals = [];
+    renderFriendly();
+    return;
+  }
+  try {
+    const resp = await fetch(`/api/baseline/${activeBaselineId}/friendly`, { headers: authHeaders(false) });
+    if (!resp.ok) throw new Error('Failed to load friendly signals');
+    const data = await resp.json();
+    friendlySignals = data.friendly_signals || [];
+    renderFriendly();
+  } catch (err) {
+    console.error(err);
+    friendlyContainer.innerHTML = '<div class="text-red-400 text-sm">Failed to load</div>';
+  }
+}
+
+async function toggleZone(zoneId, enabled) {
+  try {
+    await fetch(`/api/zones/${zoneId}`, {
+      method: 'PATCH',
+      headers: authHeaders(),
+      body: JSON.stringify({ enabled })
+    });
+    const z = zones.find(z => z.id === zoneId);
+    if (z) z.enabled = enabled;
+    renderZones();
+  } catch (err) {
+    console.error(err);
+    loadZones(); // Reload on error
+  }
+}
+
+async function toggleAllZones(enabled) {
+  if (!activeBaselineId) return;
+  const zoneIds = zones.map(z => z.id);
+  try {
+    await fetch(`/api/baseline/${activeBaselineId}/zones/bulk-enable`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ zone_ids: zoneIds, enabled })
+    });
+    await loadZones();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function enableZonesByCategory(category) {
+  if (!activeBaselineId) { alert('Select a location first'); return; }
+  // First disable all, then enable matching category
+  const allIds = zones.map(z => z.id);
+  const catIds = zones.filter(z => z.category === category).map(z => z.id);
+  
+  if (catIds.length === 0) {
+    alert(`No ${category} zones available`);
+    return;
+  }
+
+  try {
+    // Disable all
+    await fetch(`/api/baseline/${activeBaselineId}/zones/bulk-enable`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ zone_ids: allIds, enabled: false })
+    });
+    // Enable category
+    await fetch(`/api/baseline/${activeBaselineId}/zones/bulk-enable`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ zone_ids: catIds, enabled: true })
+    });
+    await loadZones();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function deleteZone(zoneId) {
+  if (!confirm('Delete this custom zone?')) return;
+  try {
+    await fetch(`/api/zones/${zoneId}`, { method: 'DELETE', headers: authHeaders() });
+    await loadZones();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function deleteFriendly(signalId) {
+  if (!confirm('Remove this known signal?')) return;
+  try {
+    await fetch(`/api/friendly/${signalId}`, { method: 'DELETE', headers: authHeaders() });
+    await loadFriendly();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+// Baseline selection
+function onBaselineChange() {
+  const val = baselineSelect.value;
+  activeBaselineId = val ? parseInt(val, 10) : null;
+  if (activeBaselineId) {
+    localStorage.setItem(BASELINE_STORAGE_KEY, String(activeBaselineId));
+  } else {
+    localStorage.removeItem(BASELINE_STORAGE_KEY);
+  }
+  loadZones();
+  loadFriendly();
+  updateStartButton();
+}
+baselineSelect.addEventListener('change', onBaselineChange);
+
+// Run mode toggle
+runModeSelect.addEventListener('change', () => {
+  durationInput.classList.toggle('hidden', runModeSelect.value !== 'duration');
+});
+
+// Forms
+document.getElementById('baselineForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const payload = {
+    name: form.name.value,
+    location_lat: form.location_lat.value || null,
+    location_lon: form.location_lon.value || null,
+    sdr_serial: form.sdr_serial.value || null,
+    antenna: form.antenna.value || null,
+    notes: form.notes.value || null, 
+  };
+  try {
+    const resp = await fetch('/api/baselines', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data?.error || 'Failed');
+    // Reload page to get new baseline in list
+    location.reload();
+  } catch (err) {
+    alert('Failed to create location: ' + err.message);
   }
 });
-fetchBaselines();
 
-function saveForm(){
-  const fd = new FormData(f);
-  const obj = Object.fromEntries(fd.entries());
-  obj.notify = f.notify?.checked ? 'on' : '';
-  localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(obj));
-}
-function loadForm(){
-  try{
-    const obj = JSON.parse(localStorage.getItem(FORM_STORAGE_KEY)||'{}');
-    for(const [k,v] of Object.entries(obj)){
-      const el = f.elements[k];
-      if(!el) continue;
-      if(el.type==='checkbox'){
-        el.checked = (v==='on');
-      } else {
-        el.value = v;
-      }
-    }
-  }catch(e){}
-}
-function updateProfileMeta(){
-  if(!profileMeta){ return; }
-  if(!profileSelect || profileSelect.disabled || PROFILE_DATA.length === 0){
-    profileMeta.textContent = PROFILE_DATA.length === 0 ? 'Profiles unavailable (controller offline?).' : 'Custom/manual parameters.';
-    return;
+document.getElementById('addZoneForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const payload = {
+    name: document.getElementById('zone_name').value,
+    description: document.getElementById('zone_desc').value,
+    f_start_hz: Math.round(parseFloat(document.getElementById('zone_start').value) * 1e6),
+    f_stop_hz: Math.round(parseFloat(document.getElementById('zone_stop').value) * 1e6),
+    category: document.getElementById('zone_category').value,
+    enabled: true
+  };
+  try {
+    const resp = await fetch(`/api/baseline/${activeBaselineId}/zones`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) throw new Error('Failed');
+    hideAddZoneModal();
+    await loadZones();
+  } catch (err) {
+    alert('Failed to add zone: ' + err.message);
   }
-  const selected = profileSelect.value;
-  if(!selected){
-    profileMeta.textContent = 'Custom/manual parameters.';
-    return;
-  }
-  const prof = PROFILE_MAP?.[selected];
-  if(!prof){
-    profileMeta.textContent = 'Custom/manual parameters.';
-    return;
-  }
-  const span = `${(prof.f_low_hz/1e6).toFixed(3)}–${(prof.f_high_hz/1e6).toFixed(3)} MHz`;
-  const samp = prof.samp_rate ? `${(Number(prof.samp_rate)/1e6).toFixed(2)} MS/s` : null;
-  const parts = [span];
-  if(samp){ parts.push(`samp ${samp}`); }
-  parts.push(`FFT ${prof.fft}`, `avg ${prof.avg}`);
-  if(prof.step_hz){ parts.push(`step ${(Number(prof.step_hz)/1e6).toFixed(2)} MHz`); }
-  if(prof.gain_db !== undefined && prof.gain_db !== null){
-    parts.push(`gain ${prof.gain_db} dB`);
-  }
-  if(prof.threshold_db !== undefined && prof.threshold_db !== null){
-    parts.push(`thr ${prof.threshold_db} dB`);
-  }
-  profileMeta.textContent = parts.join(' · ');
-}
-
-function setFieldValue(field, value){
-  if(value === undefined || value === null){ return; }
-  const el = f?.elements?.[field];
-  if(!el){ return; }
-  if(el.type === 'checkbox'){
-    el.checked = Boolean(value);
-    return;
-  }
-  el.value = typeof value === 'number' ? value.toString() : value;
-}
-
-function getProfileRecord(name){
-  if(!name){ return null; }
-  return PROFILE_MAP?.[name] || null;
-}
-
-function applyProfileDefaults(){
-  if(!profileSelect){ return; }
-  const prof = getProfileRecord(profileSelect.value);
-  if(!prof){ return; }
-  setFieldValue('start', prof.f_low_hz);
-  setFieldValue('stop', prof.f_high_hz);
-  setFieldValue('step', prof.step_hz);
-  setFieldValue('samp_rate', prof.samp_rate);
-  setFieldValue('fft', prof.fft);
-  setFieldValue('avg', prof.avg);
-  setFieldValue('gain', prof.gain_db);
-  setFieldValue('threshold_db', prof.threshold_db);
-  setFieldValue('guard_bins', prof.guard_bins);
-  setFieldValue('min_width_bins', prof.min_width_bins);
-  setFieldValue('cfar_train', prof.cfar_train);
-  setFieldValue('cfar_guard', prof.cfar_guard);
-  setFieldValue('cfar_quantile', prof.cfar_quantile);
-  setFieldValue('persistence_hit_ratio', prof.persistence_hit_ratio);
-  setFieldValue('persistence_min_seconds', prof.persistence_min_seconds);
-  setFieldValue('persistence_min_hits', prof.persistence_min_hits);
-  setFieldValue('persistence_min_windows', prof.persistence_min_windows);
-  setFieldValue('cluster_merge_hz', prof.cluster_merge_hz);
-  setFieldValue('max_detection_width_ratio', prof.max_detection_width_ratio);
-  setFieldValue('max_detection_width_hz', prof.max_detection_width_hz);
-  setFieldValue('revisit_fft', prof.revisit_fft);
-  setFieldValue('revisit_avg', prof.revisit_avg);
-  setFieldValue('revisit_margin_hz', prof.revisit_margin_hz);
-  setFieldValue('revisit_span_limit_hz', prof.revisit_span_limit_hz);
-  setFieldValue('revisit_max_bands', prof.revisit_max_bands);
-  setFieldValue('revisit_floor_threshold_db', prof.revisit_floor_threshold_db);
-  if(typeof prof.two_pass === 'boolean'){
-    setFieldValue('two_pass', prof.two_pass);
-  }
-}
-
-f.addEventListener('input', saveForm);
-profileSelect?.addEventListener('change', ()=>{
-  const selected = profileSelect.value?.trim();
-  if(selected){
-    applyProfileDefaults();
-  }
-  updateProfileMeta();
-  saveForm();
 });
-scanModeSelect?.addEventListener('change', saveForm);
-document.getElementById('resetBtn')?.addEventListener('click', ()=>{ localStorage.removeItem(FORM_STORAGE_KEY); location.reload(); });
-loadForm();
-// If a profile is already selected (e.g., restored from localStorage),
-// sync the visible form fields to that profile's defaults so the submitted
-// params don't accidentally override the profile in the scanner.
-if(profileSelect?.value){
-  const prof = getProfileRecord(profileSelect.value);
-  if(prof){
-    applyProfileDefaults();
-    saveForm();
-  }
-}
-updateProfileMeta();
 
-// Devices
+document.getElementById('addFriendlyForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const payload = {
+    label: document.getElementById('friendly_label').value,
+    f_center_hz: Math.round(parseFloat(document.getElementById('friendly_freq').value) * 1e6),
+    f_tolerance_hz: Math.round(parseFloat(document.getElementById('friendly_tolerance').value || 10) * 1000),
+    notes: document.getElementById('friendly_notes').value
+  };
+  try {
+    const resp = await fetch(`/api/baseline/${activeBaselineId}/friendly`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) throw new Error('Failed');
+    hideAddFriendlyModal();
+    await loadFriendly();
+  } catch (err) {
+    alert('Failed to add signal: ' + err.message);
+  }
+});
+
+// Device enumeration
 async function loadDevices(){
   try{
     const r = await fetch('/ctl/devices');
@@ -659,17 +627,20 @@ async function loadDevices(){
     if (!Array.isArray(data)) {
       const opt = document.createElement('option');
       opt.value = '';
-      opt.textContent = `(${data?.error || 'controller_error'})`;
+      opt.textContent = `(${data?.error || 'controller error'})`;
       sel.appendChild(opt);
-      console.error('Controller error:', data);
       return;
     }
-    if (data.length===0){
-      const opt = document.createElement('option'); opt.value=''; opt.textContent='(no devices)'; sel.appendChild(opt);
+    if (data.length === 0){
+      const opt = document.createElement('option'); 
+      opt.value = ''; 
+      opt.textContent = '(no devices found)'; 
+      sel.appendChild(opt);
     } else {
       for(const d of data){
         const opt = document.createElement('option');
-        opt.value = d.key; opt.textContent = d.label + ' [' + d.kind + ']';
+        opt.value = d.key; 
+        opt.textContent = d.label + ' [' + d.kind + ']';
         sel.appendChild(opt);
       }
     }
@@ -678,163 +649,145 @@ async function loadDevices(){
 loadDevices();
 document.getElementById('refreshDevicesBtn')?.addEventListener('click', loadDevices);
 
-// Presets
-function preset(k){
-  f.samp_rate.value = '2.4e6'; f.fft.value = '4096'; f.avg.value = '8'; f.gain.value = f.gain.value || 'auto';
-  if(k==='FULL'){ f.start.value='24e6'; f.stop.value='1766e6'; f.step.value='2.4e6'; }
-  if(k==='FM'){
-    const fmProfileName = 'fm_broadcast';
-    if(profileSelect && PROFILE_MAP?.[fmProfileName]){
-      profileSelect.value = fmProfileName;
-      applyProfileDefaults();
-    } else {
-      f.threshold_db.value = '6';
-      f.guard_bins.value = '3';
-      f.min_width_bins.value = '5';
-      f.cluster_merge_hz.value = '12000';
-      f.max_detection_width_ratio.value = '2.5';
-      f.max_detection_width_hz.value = '270000';
-      // Keep fallback in sync with the built-in fm_broadcast profile.
-      f.cfar.value = 'os';
-      f.cfar_train.value = '32';
-      f.cfar_guard.value = '6';
-      f.cfar_quantile.value = '0.6';
-      f.persistence_mode.value = 'hits';
-      f.persistence_hit_ratio.value = '0.25';
-      f.persistence_min_seconds.value = '2.0';
-      f.persistence_min_hits.value = '1';
-      f.persistence_min_windows.value = '1';
-      f.two_pass.checked = true;
-      f.revisit_fft.value = '32768';
-      f.revisit_avg.value = '4';
-      f.revisit_margin_hz.value = '200000';
-      f.revisit_span_limit_hz.value = '420000';
-      f.revisit_max_bands.value = '40';
-      f.revisit_floor_threshold_db.value = '6.0';
-      f.fft.value = '8192';
-      f.avg.value = '10';
-    }
-    f.start.value='88e6'; f.stop.value='108e6'; f.step.value='1.2e6';
-  }
-  if(k==='VHF_AIR'){ f.start.value='118e6'; f.stop.value='137e6'; f.step.value='500e3'; }
-  if(k==='UHF_MILAIR'){ f.start.value='225e6'; f.stop.value='400e6'; f.step.value='2.4e6'; }
-  if(k==='2m'){ f.start.value='144e6'; f.stop.value='146e6'; f.step.value='1.2e6'; }
-  if(k==='70cm'){ f.start.value='430e6'; f.stop.value='440e6'; f.step.value='2.4e6'; }
-  if(k==='MARINE'){ f.start.value='156e6'; f.stop.value='162.6e6'; f.step.value='1.2e6'; }
-  if(k==='NOAA'){ f.start.value='162.4e6'; f.stop.value='162.55e6'; f.step.value='100e3'; }
-  if(k==='AIS'){ f.start.value='161.975e6'; f.stop.value='162.025e6'; f.step.value='200e3'; }
-  if(k==='ADSB'){ f.start.value='1089e6'; f.stop.value='1091e6'; f.step.value='2.4e6'; }
-  if(k==='PMR446'){ f.start.value='446.0e6'; f.stop.value='446.2e6'; f.step.value='200e3'; }
-  if(k==='TETRA'){ f.start.value='390e6'; f.stop.value='430e6'; f.step.value='2.4e6'; }
-  if(k==='LTE800'){ f.start.value='791e6'; f.stop.value='821e6'; f.step.value='2.4e6'; }
-  saveForm();
-}
-function scanPreset(p) {
-  if (p === 'FAST') { f.fft.value = '1024'; f.avg.value = '2'; f.step.value = '2.4e6'; f.samp_rate.value = '2.4e6'; f.threshold_db.value = '10'; f.guard_bins.value = '1'; f.min_width_bins.value = '2'; }
-  if (p === 'BALANCED') { f.fft.value = '4096'; f.avg.value = '8'; f.step.value = '1.2e6'; f.samp_rate.value = '2.4e6'; f.threshold_db.value = '8'; f.guard_bins.value = '1'; f.min_width_bins.value = '2'; }
-  if (p === 'FIDELITY') { f.fft.value = '16384'; f.avg.value = '32'; f.step.value = '600e3'; f.samp_rate.value = '2.4e6'; f.threshold_db.value = '6'; f.guard_bins.value = '1'; f.min_width_bins.value = '2'; }
-  saveForm();
-}
+// Start/Stop scan
+startBtn.addEventListener('click', async () => {
+  if (!activeBaselineId) { alert('Select a location first'); return; }
+  
+  const enabledZones = zones.filter(z => z.enabled);
+  if (enabledZones.length === 0) { alert('Enable at least one monitoring zone'); return; }
 
-// Start/Stop via webapp proxy -> controller
-f.addEventListener('submit', async (e)=>{
-  e.preventDefault();
-  if(!activeBaselineId){
-    alert('Create or select a baseline before starting a scan.');
+  // Calculate combined frequency range from enabled zones
+  const startHz = Math.min(...enabledZones.map(z => z.f_start_hz));
+  const stopHz = Math.max(...enabledZones.map(z => z.f_stop_hz));
+
+  // Get advanced settings
+  const params = {
+    start: startHz,
+    stop: stopHz,
+    step: parseFloat(document.getElementById('samp_rate').value) || 2.4e6,
+    samp_rate: parseFloat(document.getElementById('samp_rate').value) || 2.4e6,
+    fft: parseInt(document.getElementById('fft').value) || 4096,
+    avg: parseInt(document.getElementById('avg').value) || 8,
+    gain: document.getElementById('gain').value || 'auto',
+    threshold_db: parseFloat(document.getElementById('threshold_db').value) || 8,
+  };
+
+  const profile = document.getElementById('profile').value;
+  if (profile) params.profile = profile;
+
+  const bandplan = document.getElementById('bandplan').value;
+  if (bandplan) params.bandplan = bandplan;
+
+  const db = document.getElementById('db').value;
+  if (db) params.db = db;
+
+  if (document.getElementById('two_pass').checked) {
+    params.two_pass = true;
+  }
+
+  const mode = runModeSelect.value;
+  if (mode === 'loop') params.loop = true;
+  if (mode === 'duration') params.duration = durationInput.value || '30m';
+
+  const device_key = document.getElementById('device_key').value;
+  const payload = {
+    device_key,
+    label: 'web',
+    baseline_id: activeBaselineId,
+    params
+  };
+
+  try {
+    const r = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data?.error || 'start failed');
+    if (data.job) {
+      activeJob = data.job;
+      lastJobId = data.job.id;
+    }
+    setState('running');
+  } catch (err) {
+    alert('Failed to start: ' + err.message);
+  }
+});
+
+stopBtn.addEventListener('click', async () => {
+  if (!activeJob?.id) {
+    await refreshActiveState();
+  }
+  if (!activeJob?.id) {
+    setState('idle');
     return;
   }
-  const fd = new FormData(e.target);
-  const body = Object.fromEntries(fd.entries());
-  const maybeNum = (k)=>{
-    if(!(k in body) || body[k] === undefined || body[k] === null){
-      return;
-    }
-    if(typeof body[k] === 'string' && body[k].trim() === ''){
-      delete body[k];
-      return;
-    }
-    const num = Number(body[k]);
-    if(Number.isFinite(num)){
-      body[k] = num;
-    } else {
-      delete body[k];
-    }
-  };
-  ['start','stop','step','samp_rate','fft','avg','threshold_db','guard_bins','min_width_bins','cfar_train','cfar_guard','cfar_quantile','cfar_alpha_db','new_ema_occ','sleep_between_sweeps','repeat','persistence_hit_ratio','persistence_min_seconds','persistence_min_hits','persistence_min_windows','cluster_merge_hz','max_detection_width_ratio','max_detection_width_hz','revisit_fft','revisit_avg','revisit_margin_hz','revisit_span_limit_hz','revisit_max_bands','revisit_floor_threshold_db'].forEach(maybeNum);
-  if(body.mode==='loop'){ body.loop = true; }
-  if(body.mode==='repeat'){ body.repeat = body.repeat||1; }
-  delete body.mode;
-  if(body.notify==='on'){ body.notify = true; } else { delete body.notify; }
-  const profile = (body.profile || '').toString().trim();
-  if(profile){ body.profile = profile; } else { delete body.profile; }
-  const scanMode = (body.scan_mode || '').toString();
-  if(scanMode === 'spur'){
-    body.spur_calibration = true;
-  } else {
-    delete body.spur_calibration;
-  }
-  delete body.scan_mode;
-  if(body.two_pass === 'on'){
-    body.two_pass = true;
-  } else {
-    delete body.two_pass;
-  }
-
-  const device_key = body.device_key; delete body.device_key;
-  const payload = { device_key, label: body.label || 'web', baseline_id: Number(activeBaselineId), params: body };
-
-  try{
-    const r = await fetch('/api/jobs', { method:'POST', headers: authHeaders(), body: JSON.stringify(payload) });
-    const data = await r.json();
-    if(!r.ok){ throw new Error(data?.error || 'start failed'); }
-    applyActiveResponse(data);
-  }catch(err){
+  try {
+    await fetch(`/api/jobs/${encodeURIComponent(activeJob.id)}`, {
+      method: 'DELETE',
+      headers: authHeaders()
+    });
+    activeJob = null;
+    setState('idle');
+  } catch (err) {
     console.error(err);
-    alert('Failed to start scan: ' + err.message);
   }
 });
-document.getElementById('stopBtn')?.addEventListener('click', async ()=>{
-  try{
-    if(!activeJob){ await refreshActiveState(); }
-    if(!activeJob?.id){ setState('idle'); return; }
-    const r = await fetch(`/api/jobs/${encodeURIComponent(activeJob.id)}`, { method:'DELETE', headers: authHeaders() });
-    if(!r.ok){ throw new Error('stop failed'); }
-    applyActiveResponse({state:'idle'});
-  }catch(err){ console.error(err); }
-});
 
-// Poll status
+// Polling
+async function refreshActiveState(){
+  try{
+    const r = await fetch('/api/jobs/active', { headers: authHeaders(false) });
+    if(!r.ok) return;
+    const data = await r.json();
+    if(data?.job){
+      activeJob = data.job;
+      if(activeJob?.id) lastJobId = activeJob.id;
+      setState(data.state || 'running');
+    } else {
+      activeJob = null;
+      setState(data?.state || 'idle');
+    }
+  }catch(err){ console.error(err); }
+}
+
 async function poll(){
   await refreshActiveState();
-  setTimeout(poll, 1000);
+  setTimeout(poll, 2000);
 }
 poll();
 
 // Logs
-const log = document.getElementById('log');
 let userScrolling = false;
-log.addEventListener('scroll', ()=>{
-  // Consider user as scrolling if not within 24px of bottom
+log?.addEventListener('scroll', () => {
   const nearBottom = (log.scrollHeight - log.scrollTop - log.clientHeight) < 24;
   userScrolling = !nearBottom;
 });
+
 async function pollLogs(){
   const jobId = activeJob?.id || lastJobId;
   if(!jobId){
-    setTimeout(pollLogs, 1000);
+    setTimeout(pollLogs, 2000);
     return;
   }
   try{
-    const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/logs?tail=500`, { headers: authHeaders(false) });
+    const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/logs?tail=200`, { headers: authHeaders(false) });
     if(r.ok){
       const t = await r.text();
-      if(t && t.length > 0){ cachedLogs = t; }
-      log.textContent = cachedLogs;
-      if (!userScrolling) { log.scrollTop = log.scrollHeight; }
+      if(t) log.textContent = t;
+      if(!userScrolling) log.scrollTop = log.scrollHeight;
     }
-  }catch(e){ console.error(e); }
-  setTimeout(pollLogs, 1000);
+  }catch(e){}
+  setTimeout(pollLogs, 2000);
 }
 pollLogs();
+
+// Initialize
+const savedBaseline = localStorage.getItem(BASELINE_STORAGE_KEY);
+if (savedBaseline) {
+  baselineSelect.value = savedBaseline;
+}
+onBaselineChange();
 </script>
 {% endblock %}

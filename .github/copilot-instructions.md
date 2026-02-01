@@ -166,6 +166,8 @@ Tables referenced by code/UI (column names are contract). Ownership lives in `sd
 * **`baseline_summary_meta`**: `baseline_id`, `band_count`, `band_width_hz`, `recent_minutes`, `occ_threshold`, `updated_at`.
 * **`scan_updates`**: `id`, `baseline_id`, `timestamp_utc`, `num_hits`, `num_segments`, `num_new_signals`, `num_revisits`, `num_confirmed`, `num_false_positive`, `duration_ms`.
 * **`spur_map`**: `bin_hz INTEGER PRIMARY KEY`, `mean_power_db REAL`, `hits INTEGER`, `last_seen_utc TEXT` (populated via spur calibration mode).
+* **`monitoring_zones`**: `id`, `baseline_id`, `name`, `description`, `f_start_hz`, `f_stop_hz`, `category`, `priority`, `enabled`, `is_preset`, `created_at`. Stores user-configured frequency ranges to monitor. Preset zones are seeded automatically when creating a baseline (RTL-SDR range ~24 MHz - 1.7 GHz).
+* **`friendly_signals`**: `id`, `baseline_id`, `f_center_hz`, `f_tolerance_hz`, `label`, `notes`, `source`, `created_at`. Stores known-good signals that should not trigger alerts (per-baseline whitelist).
 
 Baseline math should continue to flow through the context/persistence helpers rather than issuing ad-hoc SQL in new code.
 
@@ -335,6 +337,19 @@ Baseline math should continue to flow through the context/persistence helpers ra
 * `DELETE /api/jobs/<id>` + `/api/scans/active` shim → stop job
 * `GET /api/jobs/<id>/logs` + `/api/logs` shim → streaming logs (requires auth)
 * `GET/POST/PATCH /api/baselines` → passthrough baseline CRUD
+* `GET /api/baseline/<id>/zones` → list monitoring zones for baseline
+* `POST /api/baseline/<id>/zones` → create custom monitoring zone
+* `PATCH /api/zones/<id>` → update zone (enable/disable, rename, etc.)
+* `DELETE /api/zones/<id>` → delete custom zone
+* `POST /api/baseline/<id>/zones/bulk-enable` → enable/disable multiple zones
+* `POST /api/baseline/<id>/zones/reset-presets` → reset preset zones to defaults
+* `GET /api/zones/categories` → get zone category metadata
+* `GET /api/zones/presets` → get list of preset zone definitions
+* `GET /api/baseline/<id>/friendly` → list friendly (known-good) signals
+* `POST /api/baseline/<id>/friendly` → add friendly signal
+* `PATCH /api/friendly/<id>` → update friendly signal
+* `DELETE /api/friendly/<id>` → delete friendly signal
+* `POST /api/baseline/<id>/friendly/from-detection/<det_id>` → create friendly signal from detection
 * Always keep these endpoints stateless and aligned with the controller. When adding UI features, extend the REST layer first, then build UI on top.
 
 ---

@@ -89,6 +89,12 @@ def _run_startup_migrations(db_path: str) -> None:
             from sdrwatch_web.schema import migrate_detection_classification
             migrate_detection_classification(conn)
             conn.commit()
+
+        # Ensure monitoring_zones and friendly_signals tables exist
+        from sdrwatch_web.schema import ensure_monitoring_zones_schema
+        ensure_monitoring_zones_schema(conn)
+        conn.commit()
+
         conn.close()
     except Exception:
         # Migration failure is non-fatal; columns may already exist or table missing
