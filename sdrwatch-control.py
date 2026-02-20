@@ -33,9 +33,12 @@ import sys
 import time
 import uuid
 import threading
+import traceback
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
+
+from sdrwatch.util.logging import get_logger
 
 # ---------- Configuration ----------
 BASE_DIR = Path(os.environ.get("SDRWATCH_CONTROL_BASE", "/tmp/sdrwatch-control"))
@@ -52,6 +55,9 @@ _SCRIPT_CACHE: Optional[Tuple[Path, Optional[Path]]] = None  # (project_dir, scr
 _PROFILE_CACHE: Optional[Dict[str, Any]] = None
 _PROFILE_CACHE_TS: float = 0.0
 _PROFILE_CACHE_TTL = 30.0
+_DISCOVERY_MAX_EVENTS = 100
+_DISCOVERY_EVENTS: List[Dict[str, Any]] = []
+logger = get_logger(__name__)
 
 
 def _scanner_invocation(script_path: Optional[Path]) -> List[str]:
@@ -198,6 +204,42 @@ def now_ts() -> float:
     return time.time()
 
 
+def _record_discovery_event(
+    *,
+    component: str,
+    backend: str,
+    status: str,
+    detail: str,
+    extra: Optional[Dict[str, Any]] = None,
+    exc: Optional[Exception] = None,
+) -> None:
+    event: Dict[str, Any] = {
+        "ts": now_ts(),
+        "component": component,
+        "backend": backend,
+        "status": status,
+        "detail": detail,
+    }
+    if extra:
+        event["extra"] = dict(extra)
+    if exc is not None:
+        event["error_type"] = type(exc).__name__
+        event["error"] = str(exc)
+        event["traceback"] = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    _DISCOVERY_EVENTS.append(event)
+    while len(_DISCOVERY_EVENTS) > _DISCOVERY_MAX_EVENTS:
+        _DISCOVERY_EVENTS.pop(0)
+
+
+def get_discovery_debug(limit: int = 50) -> Dict[str, Any]:
+    bounded = max(1, min(int(limit), _DISCOVERY_MAX_EVENTS))
+    events = list(reversed(_DISCOVERY_EVENTS[-bounded:]))
+    return {
+        "events": events,
+        "total_captured": len(_DISCOVERY_EVENTS),
+    }
+
+
 def read_state() -> Dict[str, Any]:
     if STATE_PATH.exists():
         try:
@@ -244,19 +286,47 @@ def discover_rtlsdr() -> List[Device]:
     try:
         import SoapySDR  # type: ignore
         devs = SoapySDR.Device.enumerate(dict(driver="rtlsdr"))
+        _record_discovery_event(
+            component="rtl_discovery",
+            backend="soapy",
+            status="ok",
+            detail="Soapy enumeration completed",
+            extra={"count": len(devs)},
+        )
         for i, d in enumerate(devs):
             serial = d.get("serial", None)
             label = d.get("label", f"RTL-SDR #{i}")
             devices.append(Device(key=f"rtl:{i}", kind="rtlsdr", label=label + (f" (SN {serial})" if serial else ""), extra={"index": i, "serial": serial, "soapy_args": d}))
         if devices:
             return devices
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.exception("RTL discovery via Soapy failed")
+        _record_discovery_event(
+            component="rtl_discovery",
+            backend="soapy",
+            status="error",
+            detail="Soapy enumeration raised exception",
+            exc=exc,
+        )
     # Fallback: pyrtlsdr quick-probe by index
     # Note: This actually opens the device briefly, which can cause race conditions
     try:
         from rtlsdr import RtlSdr  # type: ignore
-    except Exception:
+        _record_discovery_event(
+            component="rtl_discovery",
+            backend="rtlsdr_native",
+            status="ok",
+            detail="Imported pyrtlsdr backend",
+        )
+    except Exception as exc:
+        logger.exception("RTL discovery could not import pyrtlsdr backend")
+        _record_discovery_event(
+            component="rtl_discovery",
+            backend="rtlsdr_native",
+            status="error",
+            detail="Failed to import pyrtlsdr backend",
+            exc=exc,
+        )
         return devices
 
     for i in range(8):
@@ -269,12 +339,27 @@ def discover_rtlsdr() -> List[Device]:
             sdr.close()
             # Explicit cleanup to release USB handle
             del sdr
-        except Exception:
+        except Exception as exc:
+            # Stop on first failing index as before, but preserve diagnostic context.
+            _record_discovery_event(
+                component="rtl_discovery",
+                backend="rtlsdr_native",
+                status="probe-stop",
+                detail=f"Stopped native index probe at {i}",
+                exc=exc,
+                extra={"index": i, "found_so_far": len(devices)},
+            )
             break
     # Force garbage collection to ensure USB handles are released
     import gc
     gc.collect()
-    return devices
+    _record_discovery_event(
+        component="rtl_discovery",
+        backend="rtlsdr_native",
+        status="ok",
+        detail="Native enumeration completed",
+        extra={"count": len(devices)},
+    )
     return devices
 
 
@@ -284,14 +369,28 @@ def discover_hackrf() -> List[Device]:
     try:
         import SoapySDR  # type: ignore
         devs = SoapySDR.Device.enumerate(dict(driver="hackrf"))
+        _record_discovery_event(
+            component="hackrf_discovery",
+            backend="soapy",
+            status="ok",
+            detail="Soapy enumeration completed",
+            extra={"count": len(devs)},
+        )
         for i, d in enumerate(devs):
             serial = d.get("serial", None)
             label = d.get("label", f"HackRF One #{i}")
             devices.append(Device(key=f"hackrf:{i}", kind="hackrf", label=label + (f" (SN {serial})" if serial else ""), extra={"index": i, "serial": serial, "soapy_args": d}))
         if devices:
             return devices
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.exception("HackRF discovery via Soapy failed")
+        _record_discovery_event(
+            component="hackrf_discovery",
+            backend="soapy",
+            status="error",
+            detail="Soapy enumeration raised exception",
+            exc=exc,
+        )
     # Fallback: hackrf_info parsing
     try:
         cp = subprocess.run(["hackrf_info"], capture_output=True, text=True, timeout=2)
@@ -310,8 +409,22 @@ def discover_hackrf() -> List[Device]:
                 label = f"HackRF One #{idx}" + (f" (SN {serial})" if serial else "")
                 devices.append(Device(key=key, kind="hackrf", label=label, extra={"serial": serial, "index": idx}))
                 idx += 1
-    except Exception:
-        pass
+        _record_discovery_event(
+            component="hackrf_discovery",
+            backend="hackrf_info",
+            status="ok",
+            detail="hackrf_info fallback completed",
+            extra={"count": len(devices), "returncode": cp.returncode},
+        )
+    except Exception as exc:
+        logger.exception("HackRF discovery via hackrf_info failed")
+        _record_discovery_event(
+            component="hackrf_discovery",
+            backend="hackrf_info",
+            status="error",
+            detail="hackrf_info fallback raised exception",
+            exc=exc,
+        )
     return devices
 
 
@@ -322,6 +435,14 @@ def discover_devices() -> List[Device]:
     # TODO: add KrakenSDR/SoapySDR/etc. as needed
     # Deduplicate by key
     uniq: Dict[str, Device] = {d.key: d for d in devs}
+    if not uniq:
+        logger.warning("No SDR devices discovered")
+        _record_discovery_event(
+            component="device_discovery",
+            backend="aggregate",
+            status="empty",
+            detail="No SDR devices discovered",
+        )
     return list(uniq.values())
 
 
@@ -751,6 +872,11 @@ def make_app(manager: JobManager, token: Optional[str] = None):
     def devices():
         devs = [asdict(d) for d in discover_devices()]
         return jsonify(devs)
+
+    @app.get("/debug/discovery")
+    def debug_discovery():
+        limit = request.args.get("limit", default=50, type=int)
+        return jsonify(get_discovery_debug(limit=limit))
 
     @app.get("/profiles")
     def profiles():

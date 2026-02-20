@@ -93,6 +93,11 @@ class ControllerClient:
         """List available SDR devices."""
         return self._req('GET', '/devices')
 
+    def discovery_debug(self, limit: int = 50) -> Any:
+        """Fetch controller-side device discovery debug events."""
+        params = {"limit": int(limit)}
+        return self._req('GET', '/debug/discovery', params=params)
+
     # -----------------------------------------------------------------------
     # Job management
     # -----------------------------------------------------------------------
