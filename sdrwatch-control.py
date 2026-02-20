@@ -280,6 +280,31 @@ class Device:
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
+def _soapy_kwargs_to_dict(raw: Any) -> Dict[str, Any]:
+    """Normalize SoapySDRKwargs-like objects to a plain dict."""
+    if isinstance(raw, dict):
+        return dict(raw)
+
+    # Many Soapy bindings expose keys() + __getitem__ but no .get().
+    out: Dict[str, Any] = {}
+    try:
+        keys = list(raw.keys())
+    except Exception:
+        keys = []
+    for key in keys:
+        try:
+            out[str(key)] = raw[key]
+        except Exception:
+            continue
+    if out:
+        return out
+
+    try:
+        return {str(k): v for k, v in dict(raw).items()}
+    except Exception:
+        return {}
+
+
 def discover_rtlsdr() -> List[Device]:
     devices: List[Device] = []
     # Try Soapy first for robust enumeration (if available)
@@ -294,9 +319,17 @@ def discover_rtlsdr() -> List[Device]:
             extra={"count": len(devs)},
         )
         for i, d in enumerate(devs):
-            serial = d.get("serial", None)
-            label = d.get("label", f"RTL-SDR #{i}")
-            devices.append(Device(key=f"rtl:{i}", kind="rtlsdr", label=label + (f" (SN {serial})" if serial else ""), extra={"index": i, "serial": serial, "soapy_args": d}))
+            meta = _soapy_kwargs_to_dict(d)
+            serial = meta.get("serial", None)
+            label = meta.get("label", f"RTL-SDR #{i}")
+            devices.append(
+                Device(
+                    key=f"rtl:{i}",
+                    kind="rtlsdr",
+                    label=label + (f" (SN {serial})" if serial else ""),
+                    extra={"index": i, "serial": serial, "soapy_args": meta},
+                )
+            )
         if devices:
             return devices
     except Exception as exc:
@@ -377,9 +410,17 @@ def discover_hackrf() -> List[Device]:
             extra={"count": len(devs)},
         )
         for i, d in enumerate(devs):
-            serial = d.get("serial", None)
-            label = d.get("label", f"HackRF One #{i}")
-            devices.append(Device(key=f"hackrf:{i}", kind="hackrf", label=label + (f" (SN {serial})" if serial else ""), extra={"index": i, "serial": serial, "soapy_args": d}))
+            meta = _soapy_kwargs_to_dict(d)
+            serial = meta.get("serial", None)
+            label = meta.get("label", f"HackRF One #{i}")
+            devices.append(
+                Device(
+                    key=f"hackrf:{i}",
+                    kind="hackrf",
+                    label=label + (f" (SN {serial})" if serial else ""),
+                    extra={"index": i, "serial": serial, "soapy_args": meta},
+                )
+            )
         if devices:
             return devices
     except Exception as exc:
