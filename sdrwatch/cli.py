@@ -59,7 +59,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         argv = sys.argv[1:]
 
     p = argparse.ArgumentParser(
-        description="Wideband scanner & baseline builder using SoapySDR or native RTL-SDR",
+        description="Wideband scanner & baseline builder (native RTL-SDR by default)",
         argument_default=argparse.SUPPRESS,
     )
     p.add_argument("--start", type=float, help="Start frequency in Hz (e.g., 88e6)")
@@ -70,7 +70,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--fft", type=int, help="FFT size (per Welch segment) (default 4096)")
     p.add_argument("--avg", type=int, help="Averaging factor (segments per PSD) (default 8)")
 
-    p.add_argument("--driver", type=str, help="Soapy driver key (e.g., rtlsdr, hackrf, airspy, etc.) or 'rtlsdr_native' for direct librtlsdr (default rtlsdr)")
+    p.add_argument("--driver", type=str, help="Driver key (default rtlsdr_native). Use Soapy keys like rtlsdr/hackrf only when SoapySDR is installed.")
     p.add_argument("--soapy-args", type=str, help="Comma-separated Soapy device args (e.g., 'serial=00000001,index=0')")
     p.add_argument("--gain", type=str, help='Gain in dB or "auto" (default auto)')
 
@@ -184,7 +184,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     _set_default(args, args._cli_overrides, "samp_rate", 2.4e6)
     _set_default(args, args._cli_overrides, "fft", 4096)
     _set_default(args, args._cli_overrides, "avg", 8)
-    _set_default(args, args._cli_overrides, "driver", "rtlsdr")
+    _set_default(args, args._cli_overrides, "driver", "rtlsdr_native")
     _set_default(args, args._cli_overrides, "soapy_args", None)
     _set_default(args, args._cli_overrides, "gain", "auto")
     _set_default(args, args._cli_overrides, "threshold_db", 8.0)

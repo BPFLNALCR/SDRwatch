@@ -4,7 +4,7 @@
 # install-sdrwatch.sh — One‑shot installer for SDRwatch (Pi 4/5, Raspberry Pi OS 64‑bit / Debian 13 "Trixie")
 #
 # What this does
-#  1) Installs system deps for RTL‑SDR, HackRF, SoapySDR, NumPy/SciPy, Flask, etc. 
+#  1) Installs system deps for RTL‑SDR, HackRF, NumPy/SciPy, Flask, etc.
 #  2) Creates a Python venv that can see APT packages via --system-site-packages
 #  3) Pip‑installs lightweight Python deps (Flask, pyrtlsdr, rich)
 #  4) Verifies rtl_test / hackrf_info; applies udev rules + kernel blacklist for RTL2832U
@@ -83,22 +83,11 @@ prompt_yn(){
 require sudo
 require python3
 
-# Detect SoapySDR core library package (versioned name varies by repo)
-SOAPY_CORE_PKG=""
-for candidate in libsoapysdr0.10 libsoapysdr0.9 libsoapysdr; do
-  if apt-cache show "$candidate" >/dev/null 2>&1; then
-    SOAPY_CORE_PKG="$candidate"
-    break
-  fi
-done
-SOAPY_DEV_PKG=""
-if apt-cache show libsoapysdr-dev >/dev/null 2>&1; then
-  SOAPY_DEV_PKG="libsoapysdr-dev"
-fi
-if [[ -z "$SOAPY_CORE_PKG" ]]; then
-  log "WARNING: No versioned libsoapysdr package found (will rely on python3-soapysdr pulling it or existing install)."
-else
-  log "Detected SoapySDR core package: $SOAPY_CORE_PKG"
+# Optional: install distro pyrtlsdr binding too when available.
+PYTHON3_RTLSDR_PKG=""
+if apt-cache show python3-rtlsdr >/dev/null 2>&1; then
+  PYTHON3_RTLSDR_PKG="python3-rtlsdr"
+  log "Detected optional package: python3-rtlsdr"
 fi
 
 log "Updating APT and installing system packages (Trixie)…"
@@ -108,10 +97,8 @@ sudo apt install -y \
   libusb-1.0-0 libusb-1.0-0-dev \
   python3-venv python3-dev \
   python3-numpy python3-scipy \
-  python3-soapysdr $SOAPY_CORE_PKG $SOAPY_DEV_PKG \
+  $PYTHON3_RTLSDR_PKG \
   librtlsdr0 librtlsdr-dev rtl-sdr \
-  soapysdr-module-rtlsdr soapysdr-module-hackrf \
-  soapysdr-tools \
   hackrf || die "APT install failed (see above)."
 
 # -----------------------------
@@ -179,7 +166,7 @@ $PIP_BIN install -U pip setuptools wheel
 # Keep pip light; heavy numerics come from APT
 REQS_FILE="$PROJECT_DIR/requirements.sdrwatch.txt"
 cat > "$REQS_FILE" <<'REQS'
-# Light Python deps; NumPy/SciPy/SoapySDR come from APT via system site packages
+# Light Python deps; heavy numerics come from APT via system site packages
 flask>=3.0.0
 pyrtlsdr
 rich>=13.0.0
@@ -209,10 +196,10 @@ fi
 log "Python import checks:"
 $PYTHON_BIN - <<'PY'
 try:
-    import numpy, scipy, SoapySDR
-    print('[check] numpy/scipy/SoapySDR import: OK')
+  import numpy, scipy
+  print('[check] numpy/scipy import: OK')
 except Exception as e:
-    print(f'[check] numpy/scipy/SoapySDR: {e}')
+  print(f'[check] numpy/scipy: {e}')
 try:
     import flask
     print('[check] Flask import: OK')
@@ -405,7 +392,7 @@ Next steps:
   • Reboot recommended so udev + blacklist take effect:   sudo reboot
   • Activate venv in your shell:                          source "$VENV_DIR/bin/activate"
   • Quick scan sanity (FM band):
-      $PYTHON_BIN -m "$SCANNER_MODULE" --baseline-id latest --driver rtlsdr --start 88e6 --stop 108e6 --fft 4096 --avg 8 --db "$DB_PATH_DEFAULT"
+      $PYTHON_BIN -m "$SCANNER_MODULE" --baseline-id latest --driver rtlsdr_native --start 88e6 --stop 108e6 --fft 4096 --avg 8 --db "$DB_PATH_DEFAULT"
 
 If you enabled services:
   • Control API:  http://${SDRWATCH_CONTROL_HOST_DEFAULT}:${SDRWATCH_CONTROL_PORT_DEFAULT}

@@ -307,42 +307,7 @@ def _soapy_kwargs_to_dict(raw: Any) -> Dict[str, Any]:
 
 def discover_rtlsdr() -> List[Device]:
     devices: List[Device] = []
-    # Try Soapy first for robust enumeration (if available)
-    try:
-        import SoapySDR  # type: ignore
-        devs = SoapySDR.Device.enumerate(dict(driver="rtlsdr"))
-        _record_discovery_event(
-            component="rtl_discovery",
-            backend="soapy",
-            status="ok",
-            detail="Soapy enumeration completed",
-            extra={"count": len(devs)},
-        )
-        for i, d in enumerate(devs):
-            meta = _soapy_kwargs_to_dict(d)
-            serial = meta.get("serial", None)
-            label = meta.get("label", f"RTL-SDR #{i}")
-            devices.append(
-                Device(
-                    key=f"rtl:{i}",
-                    kind="rtlsdr",
-                    label=label + (f" (SN {serial})" if serial else ""),
-                    extra={"index": i, "serial": serial, "soapy_args": meta},
-                )
-            )
-        if devices:
-            return devices
-    except Exception as exc:
-        logger.exception("RTL discovery via Soapy failed")
-        _record_discovery_event(
-            component="rtl_discovery",
-            backend="soapy",
-            status="error",
-            detail="Soapy enumeration raised exception",
-            exc=exc,
-        )
-    # Fallback: pyrtlsdr quick-probe by index
-    # Note: This actually opens the device briefly, which can cause race conditions
+    # Native first: enumerate via pyrtlsdr and avoid Soapy dependency for RTL workflows.
     try:
         from rtlsdr import RtlSdr  # type: ignore
         _record_discovery_event(
@@ -357,7 +322,7 @@ def discover_rtlsdr() -> List[Device]:
             component="rtl_discovery",
             backend="rtlsdr_native",
             status="error",
-            detail="Failed to import pyrtlsdr backend",
+            detail="Failed to import pyrtlsdr backend; RTL discovery unavailable",
             exc=exc,
         )
         return devices
@@ -724,18 +689,10 @@ class JobManager:
 
         # Device mapping with override support
         if device_key.startswith("rtl:"):
-            if explicit_driver == "rtlsdr_native":
-                cmd += ["--driver", "rtlsdr_native"]
-                # native path uses librtlsdr; no --soapy-args
-                soapy_args_kv = {}
-            else:
-                cmd += ["--driver", explicit_driver or "rtlsdr"]  # default to Soapy rtlsdr
-                # Prefer serial; if not available, use index
-                idx = device_key.split(":", 1)[-1]
-                if args.get("__discover_meta") and args["__discover_meta"].get("serial"):
-                    soapy_args_kv["serial"] = args["__discover_meta"]["serial"]
-                else:
-                    soapy_args_kv["index"] = idx
+            # Default RTL jobs to native backend unless an explicit driver override is set.
+            cmd += ["--driver", explicit_driver or "rtlsdr_native"]
+            # Native path uses librtlsdr; no --soapy-args.
+            soapy_args_kv = {}
         elif device_key.startswith("hackrf:"):
             cmd += ["--driver", explicit_driver or "hackrf"]
             if args.get("__discover_meta") and args["__discover_meta"].get("serial"):
