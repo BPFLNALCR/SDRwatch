@@ -280,34 +280,9 @@ class Device:
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
-def _soapy_kwargs_to_dict(raw: Any) -> Dict[str, Any]:
-    """Normalize SoapySDRKwargs-like objects to a plain dict."""
-    if isinstance(raw, dict):
-        return dict(raw)
-
-    # Many Soapy bindings expose keys() + __getitem__ but no .get().
-    out: Dict[str, Any] = {}
-    try:
-        keys = list(raw.keys())
-    except Exception:
-        keys = []
-    for key in keys:
-        try:
-            out[str(key)] = raw[key]
-        except Exception:
-            continue
-    if out:
-        return out
-
-    try:
-        return {str(k): v for k, v in dict(raw).items()}
-    except Exception:
-        return {}
-
-
 def discover_rtlsdr() -> List[Device]:
     devices: List[Device] = []
-    # Native first: enumerate via pyrtlsdr and avoid Soapy dependency for RTL workflows.
+    # Native first: enumerate via pyrtlsdr.
     try:
         from rtlsdr import RtlSdr  # type: ignore
         _record_discovery_event(
@@ -363,41 +338,7 @@ def discover_rtlsdr() -> List[Device]:
 
 def discover_hackrf() -> List[Device]:
     devices: List[Device] = []
-    # Try Soapy first
-    try:
-        import SoapySDR  # type: ignore
-        devs = SoapySDR.Device.enumerate(dict(driver="hackrf"))
-        _record_discovery_event(
-            component="hackrf_discovery",
-            backend="soapy",
-            status="ok",
-            detail="Soapy enumeration completed",
-            extra={"count": len(devs)},
-        )
-        for i, d in enumerate(devs):
-            meta = _soapy_kwargs_to_dict(d)
-            serial = meta.get("serial", None)
-            label = meta.get("label", f"HackRF One #{i}")
-            devices.append(
-                Device(
-                    key=f"hackrf:{i}",
-                    kind="hackrf",
-                    label=label + (f" (SN {serial})" if serial else ""),
-                    extra={"index": i, "serial": serial, "soapy_args": meta},
-                )
-            )
-        if devices:
-            return devices
-    except Exception as exc:
-        logger.exception("HackRF discovery via Soapy failed")
-        _record_discovery_event(
-            component="hackrf_discovery",
-            backend="soapy",
-            status="error",
-            detail="Soapy enumeration raised exception",
-            exc=exc,
-        )
-    # Fallback: hackrf_info parsing
+    # Enumerate via hackrf_info parsing.
     try:
         cp = subprocess.run(["hackrf_info"], capture_output=True, text=True, timeout=2)
         out = cp.stdout
@@ -437,8 +378,7 @@ def discover_hackrf() -> List[Device]:
 def discover_devices() -> List[Device]:
     devs = []
     devs.extend(discover_rtlsdr())
-    devs.extend(discover_hackrf())
-    # TODO: add KrakenSDR/SoapySDR/etc. as needed
+    # Native-only mode: enumerate RTL-SDR devices only.
     # Deduplicate by key
     uniq: Dict[str, Device] = {d.key: d for d in devs}
     if not uniq:
@@ -683,7 +623,6 @@ class JobManager:
         if baseline_id is None:
             raise ValueError("baseline_id is required for scanner command")
         cmd = _scanner_invocation(script_path) + ["--baseline-id", str(int(baseline_id))]
-        soapy_args_kv: Dict[str, Any] = {}
         # Respect explicit driver override from caller (e.g., 'rtlsdr_native')
         explicit_driver = str(args.get("driver", "")).strip() if args.get("driver") is not None else ""
 
@@ -691,12 +630,8 @@ class JobManager:
         if device_key.startswith("rtl:"):
             # Default RTL jobs to native backend unless an explicit driver override is set.
             cmd += ["--driver", explicit_driver or "rtlsdr_native"]
-            # Native path uses librtlsdr; no --soapy-args.
-            soapy_args_kv = {}
         elif device_key.startswith("hackrf:"):
             cmd += ["--driver", explicit_driver or "hackrf"]
-            if args.get("__discover_meta") and args["__discover_meta"].get("serial"):
-                soapy_args_kv["serial"] = args["__discover_meta"]["serial"]
         else:
             # Unknown key: fall back to caller-provided driver (if any)
             if explicit_driver:
@@ -779,13 +714,6 @@ class JobManager:
 
         # Booleans
         # (keep list in sync with scanner CLI flags)
-
-        # Soapy device selection hints
-        if args.get("soapy_args"):
-            cmd += ["--soapy-args", str(args["soapy_args"])]
-        elif soapy_args_kv:
-            kv = ",".join(f"{k}={v}" for k, v in soapy_args_kv.items())
-            cmd += ["--soapy-args", kv]
 
         # Passthrough for any additional raw args
         extra: List[str] = args.get("extra_args", [])

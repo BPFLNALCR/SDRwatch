@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from flask import Blueprint, Response, abort, jsonify, request
+from werkzeug.exceptions import HTTPException
 
 from sdrwatch_web.auth import require_auth
 from sdrwatch_web.controller import controller_active_job, get_controller
@@ -148,10 +149,13 @@ def job_logs_response(job_id: str, tail: Optional[int] = None) -> Response:
 def start_job_response():
     """Handle job start request and return response."""
     require_auth()
-    payload = request.get_json(force=True, silent=False) or {}
-    job = start_job_from_payload(payload)
-    state_val = job.get("status", "running") if isinstance(job, dict) else "running"
-    return jsonify({"state": state_val, "job": job})
+    try:
+        payload = request.get_json(force=True, silent=False) or {}
+        job = start_job_from_payload(payload)
+        state_val = job.get("status", "running") if isinstance(job, dict) else "running"
+        return jsonify({"state": state_val, "job": job})
+    except HTTPException as exc:
+        return jsonify({"error": exc.description}), int(exc.code or 400)
 
 
 # ---------------------------------------------------------------------------

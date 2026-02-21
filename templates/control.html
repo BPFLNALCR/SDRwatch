@@ -105,12 +105,7 @@
               <div class="field">
                 <label for="driver">Driver</label>
                 <select id="driver" class="input">
-                  <option value="">Auto (SoapySDR)</option>
-                  <option value="rtlsdr">RTL-SDR (SoapySDR)</option>
-                  <option value="rtlsdr_native">RTL-SDR (Native)</option>
-                  <option value="hackrf">HackRF</option>
-                  <option value="airspy">Airspy</option>
-                  <option value="sdrplay">SDRPlay</option>
+                  <option value="rtlsdr_native" selected>RTL-SDR (Native)</option>
                 </select>
               </div>
               <div class="field">
@@ -125,10 +120,6 @@
               <div class="field">
                 <label for="gain">Gain</label>
                 <input id="gain" class="input" value="auto" placeholder="auto or dB value" />
-              </div>
-              <div class="field">
-                <label for="soapy_args">Soapy Args</label>
-                <input id="soapy_args" class="input" placeholder="serial=00000001" />
               </div>
             </div>
           </fieldset>
@@ -952,9 +943,6 @@ startBtn.addEventListener('click', async () => {
   const gain = getSelect('gain') || getVal('gain', String);
   if (gain) params.gain = gain;
   
-  const soapyArgs = getVal('soapy_args', String);
-  if (soapyArgs) params.soapy_args = soapyArgs;
-
   // FFT & Averaging
   const fft = getVal('fft', parseInt);
   if (fft) params.fft = fft;
@@ -1085,8 +1073,17 @@ startBtn.addEventListener('click', async () => {
       headers: authHeaders(),
       body: JSON.stringify(payload)
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data?.error || 'start failed');
+    const raw = await r.text();
+    let data = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      data = null;
+    }
+    if (!r.ok) {
+      const detail = data?.error || data?.description || raw || `HTTP ${r.status}`;
+      throw new Error(detail);
+    }
     if (data.job) {
       activeJob = data.job;
       lastJobId = data.job.id;

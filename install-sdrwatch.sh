@@ -4,7 +4,7 @@
 # install-sdrwatch.sh — One‑shot installer for SDRwatch (Pi 4/5, Raspberry Pi OS 64‑bit / Debian 13 "Trixie")
 #
 # What this does
-#  1) Installs system deps for RTL‑SDR, HackRF, NumPy/SciPy, Flask, etc.
+#  1) Installs system deps for RTL‑SDR, NumPy/SciPy, Flask, etc.
 #  2) Creates a Python venv that can see APT packages via --system-site-packages
 #  3) Pip‑installs lightweight Python deps (Flask, pyrtlsdr, rich)
 #  4) Verifies rtl_test / hackrf_info; applies udev rules + kernel blacklist for RTL2832U
@@ -99,7 +99,7 @@ sudo apt install -y \
   python3-numpy python3-scipy \
   $PYTHON3_RTLSDR_PKG \
   librtlsdr0 librtlsdr-dev rtl-sdr \
-  hackrf || die "APT install failed (see above)."
+  || die "APT install failed (see above)."
 
 # -----------------------------
 # Verify / (optional) build rtl-sdr if broken
@@ -219,7 +219,6 @@ PY
 
 log "Verifying SDR CLIs…"
 if rtl_test -t >/dev/null 2>&1; then log "rtl_test: OK"; else log "rtl_test: NOT OK (replug/reboot may be required)"; fi
-if hackrf_info >/dev/null 2>&1; then log "hackrf_info: OK"; else log "hackrf_info: NOT FOUND/ERROR (only needed for HackRF)"; fi
 
 # =============================================================
 # Interactive systemd services setup (Recommended)

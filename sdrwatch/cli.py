@@ -10,7 +10,6 @@ import sys
 from typing import Any, List, Optional, Set
 
 from sdrwatch.drivers.rtlsdr import HAVE_RTLSDR
-from sdrwatch.drivers.soapy import HAVE_SOAPY
 from sdrwatch.io.profiles import default_scan_profiles, serialize_profiles
 from sdrwatch.sweep.runner import run_scan
 from sdrwatch.util.duration import parse_duration_to_seconds
@@ -44,7 +43,7 @@ def run(args: argparse.Namespace) -> int:
         if "baseline" in msg and ("not found" in msg or "does not exist" in msg):
             _log.error("baseline not found: %s", exc)
             return ExitCode.BASELINE_NOT_FOUND
-        if "device" in msg or "sdr" in msg or "rtlsdr" in msg or "soapy" in msg:
+        if "device" in msg or "sdr" in msg or "rtlsdr" in msg:
             _log.error("device unavailable: %s", exc)
             return ExitCode.DEVICE_UNAVAILABLE
         _log.exception("runtime error")
@@ -70,8 +69,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--fft", type=int, help="FFT size (per Welch segment) (default 4096)")
     p.add_argument("--avg", type=int, help="Averaging factor (segments per PSD) (default 8)")
 
-    p.add_argument("--driver", type=str, help="Driver key (default rtlsdr_native). Use Soapy keys like rtlsdr/hackrf only when SoapySDR is installed.")
-    p.add_argument("--soapy-args", type=str, help="Comma-separated Soapy device args (e.g., 'serial=00000001,index=0')")
+    p.add_argument("--driver", type=str, help="Driver key (default rtlsdr_native).")
     p.add_argument("--gain", type=str, help='Gain in dB or "auto" (default auto)')
 
     p.add_argument("--threshold-db", dest="threshold_db", type=float, help="Detection threshold above noise floor [dB] (default 8.0)")
@@ -185,7 +183,6 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     _set_default(args, args._cli_overrides, "fft", 4096)
     _set_default(args, args._cli_overrides, "avg", 8)
     _set_default(args, args._cli_overrides, "driver", "rtlsdr_native")
-    _set_default(args, args._cli_overrides, "soapy_args", None)
     _set_default(args, args._cli_overrides, "gain", "auto")
     _set_default(args, args._cli_overrides, "threshold_db", 8.0)
     _set_default(args, args._cli_overrides, "guard_bins", 1)
@@ -254,8 +251,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         delattr(args, "_cli_overrides")
 
     if not args.list_profiles:
-        if args.driver != "rtlsdr_native" and not HAVE_SOAPY:
-            p.error("python3-soapysdr not installed. Install it (or use --driver rtlsdr_native).")
+        if args.driver != "rtlsdr_native":
+            p.error("unsupported driver. This build supports only --driver rtlsdr_native")
         if args.driver == "rtlsdr_native" and not HAVE_RTLSDR:
             p.error("pyrtlsdr not installed. Install with: pip3 install pyrtlsdr")
         if args.stop < args.start:

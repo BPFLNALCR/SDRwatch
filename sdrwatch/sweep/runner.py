@@ -10,7 +10,6 @@ from typing import Dict, Optional
 from sdrwatch.baseline.context import resolve_baseline_context
 from sdrwatch.baseline.store import Store
 from sdrwatch.drivers.rtlsdr import RTLSDRSource
-from sdrwatch.drivers.soapy import SDRSource
 from sdrwatch.io.bandplan import Bandplan
 from sdrwatch.sweep.sweeper import Sweeper
 from sdrwatch.util.duration import parse_duration_to_seconds
@@ -80,84 +79,11 @@ class ScannerRunner:
 
     def _select_source(self):
         args = self.args
-        soapy_args_dict: Optional[Dict[str, str]] = None
-        if getattr(args, "soapy_args", None):
-            soapy_args_dict = {}
-            for kv in str(args.soapy_args).split(","):
-                if "=" in kv:
-                    k, v = kv.split("=", 1)
-                    soapy_args_dict[k.strip()] = v.strip()
-
-        if args.driver == "rtlsdr_native":
-            src = RTLSDRSource(samp_rate=args.samp_rate, gain=args.gain)
-            setattr(src, "device", "RTL-SDR (native)")
-            return src
-
-        # Small delay to allow any device discovery/enumeration to release the device
-        time.sleep(0.5)
-
-        last_error = None
-        max_retries = 5
-        retry_delays = [0.5, 1.0, 1.5, 2.0, 3.0]  # progressive backoff
-
-        for attempt in range(max_retries):
-            try:
-                src = SDRSource(driver=args.driver, samp_rate=args.samp_rate, gain=args.gain, soapy_args=soapy_args_dict)
-                return src
-            except Exception as exc:
-                last_error = exc
-                msg = str(exc).lower()
-                # Check if this is a device-busy or no-match error that might be transient
-                is_transient = any(x in msg for x in ["busy", "claim", "no match", "device::make", "-6"])
-
-                if is_transient and attempt < max_retries - 1:
-                    _log.warning(f"SoapySDR device open failed (attempt {attempt+1}/{max_retries}): {exc}")
-                    time.sleep(retry_delays[attempt])
-                    continue
-
-                # For rtlsdr driver, try native fallback
-                if args.driver == "rtlsdr" and (
-                    "no match" in msg or "device::make" in msg or "rtlsdr" in msg
-                ):
-                    idx_hint = None
-                    serial_hint = None
-                    if soapy_args_dict:
-                        if "serial" in soapy_args_dict:
-                            serial_hint = soapy_args_dict.get("serial")
-                        if "index" in soapy_args_dict:
-                            try:
-                                val = soapy_args_dict.get("index")
-                                if val is not None:
-                                    idx_hint = int(val)
-                            except Exception:
-                                idx_hint = None
-
-                    _log.info("Attempting native RTL-SDR fallback...")
-                    for native_attempt in range(max_retries):
-                        try:
-                            src = RTLSDRSource(
-                                samp_rate=args.samp_rate,
-                                gain=args.gain,
-                                device_index=idx_hint,
-                                serial_number=serial_hint,
-                            )
-                            setattr(src, "device", "RTL-SDR (native fallback)")
-                            args.driver = "rtlsdr_native"
-                            return src
-                        except Exception as retry_exc:  # pragma: no cover - hardware specific
-                            last_error = retry_exc
-                            err_msg = str(retry_exc).lower()
-                            if "busy" in err_msg or "-6" in err_msg:
-                                if native_attempt < max_retries - 1:
-                                    _log.warning(f"Native RTL-SDR busy (attempt {native_attempt+1}/{max_retries}), waiting...")
-                                    time.sleep(retry_delays[native_attempt])
-                                    continue
-                            raise
-                raise
-
-        if last_error:
-            raise last_error
-        raise RuntimeError("Failed to open SDR device after retries")
+        if args.driver != "rtlsdr_native":
+            raise RuntimeError("unsupported driver. Use --driver rtlsdr_native")
+        src = RTLSDRSource(samp_rate=args.samp_rate, gain=args.gain)
+        setattr(src, "device", "RTL-SDR (native)")
+        return src
 
     def _termination_policy(self):
         duration_s = parse_duration_to_seconds(self.args.duration)
