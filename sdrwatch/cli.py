@@ -9,7 +9,7 @@ import os
 import sys
 from typing import Any, List, Optional, Set
 
-from sdrwatch.drivers.rtlsdr import HAVE_RTLSDR
+from sdrwatch.drivers.rtlsdr import HAVE_RTLSDR, RTLSDR_IMPORT_ERROR
 from sdrwatch.io.profiles import default_scan_profiles, serialize_profiles
 from sdrwatch.sweep.runner import run_scan
 from sdrwatch.util.duration import parse_duration_to_seconds
@@ -254,7 +254,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         if args.driver != "rtlsdr_native":
             p.error("unsupported driver. This build supports only --driver rtlsdr_native")
         if args.driver == "rtlsdr_native" and not HAVE_RTLSDR:
-            p.error("pyrtlsdr not installed. Install with: pip3 install pyrtlsdr")
+            detail = f" ({RTLSDR_IMPORT_ERROR})" if RTLSDR_IMPORT_ERROR else ""
+            p.error(f"rtlsdr Python backend unavailable{detail}. Ensure pyrtlsdr and setuptools are installed.")
         if args.stop < args.start:
             p.error("--stop must be >= --start")
         if args.step <= 0:

@@ -168,6 +168,7 @@ REQS_FILE="$PROJECT_DIR/requirements.sdrwatch.txt"
 cat > "$REQS_FILE" <<'REQS'
 # Light Python deps; heavy numerics come from APT via system site packages
 flask>=3.0.0
+setuptools>=68
 pyrtlsdr
 rich>=13.0.0
 REQS

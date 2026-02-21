@@ -39,6 +39,7 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
+from sdrwatch.drivers.rtlsdr import RTLSDR_IMPORT_ERROR, enumerate_rtlsdr_devices
 from sdrwatch.util.logging import get_logger
 
 # ---------- Configuration ----------
@@ -285,93 +286,79 @@ def discover_rtlsdr() -> List[Device]:
     devices: List[Device] = []
     # Native first: enumerate via pyrtlsdr.
     try:
-        from rtlsdr import RtlSdr  # type: ignore
+        native = enumerate_rtlsdr_devices(max_devices=8)
         _record_discovery_event(
             component="rtl_discovery",
             backend="rtlsdr_native",
             status="ok",
-            detail="Imported pyrtlsdr backend",
+            detail="Enumerated via pyrtlsdr backend",
+            extra={"count": len(native)},
         )
+        for row in native:
+            idx_text = row.get("index") or "0"
+            idx = int(idx_text)
+            serial = row.get("serial")
+            devices.append(
+                Device(
+                    key=f"rtl:{idx}",
+                    kind="rtlsdr",
+                    label=f"RTL-SDR #{idx}" + (f" (SN {serial})" if serial else ""),
+                    extra={"index": idx, "serial": serial},
+                )
+            )
+        if devices:
+            return devices
     except Exception as exc:
-        logger.exception("RTL discovery could not import pyrtlsdr backend")
+        # Defensive fallback; enumerate_rtlsdr_devices already swallows probe errors.
+        logger.warning("RTL discovery: pyrtlsdr path failed, trying rtl_test fallback: %s", exc)
+
+    if RTLSDR_IMPORT_ERROR:
+        logger.warning("RTL discovery: pyrtlsdr unavailable, trying rtl_test fallback: %s", RTLSDR_IMPORT_ERROR)
         _record_discovery_event(
             component="rtl_discovery",
             backend="rtlsdr_native",
             status="error",
             detail="Failed to import pyrtlsdr backend; trying rtl_test fallback",
-            exc=exc,
+            extra={"error": RTLSDR_IMPORT_ERROR},
         )
-        try:
-            cp = subprocess.run(["rtl_test", "-t"], capture_output=True, text=True, timeout=6)
-            output = (cp.stdout or "") + "\n" + (cp.stderr or "")
-            pat = re.compile(r"^\s*(\d+):\s*([^,]+),\s*([^,]+),\s*SN:\s*(\S+)\s*$")
-            for line in output.splitlines():
-                m = pat.match(line)
-                if not m:
-                    continue
-                idx = int(m.group(1))
-                vendor = m.group(2).strip()
-                model = m.group(3).strip()
-                serial = m.group(4).strip()
-                label = f"{vendor} {model} (SN {serial})"
-                devices.append(
-                    Device(
-                        key=f"rtl:{idx}",
-                        kind="rtlsdr",
-                        label=label,
-                        extra={"index": idx, "serial": serial, "probe": "rtl_test"},
-                    )
+    try:
+        cp = subprocess.run(["rtl_test", "-t"], capture_output=True, text=True, timeout=6)
+        output = (cp.stdout or "") + "\n" + (cp.stderr or "")
+        pat = re.compile(r"^\s*(\d+):\s*([^,]+),\s*([^,]+),\s*SN:\s*(\S+)\s*$")
+        for line in output.splitlines():
+            m = pat.match(line)
+            if not m:
+                continue
+            idx = int(m.group(1))
+            vendor = m.group(2).strip()
+            model = m.group(3).strip()
+            serial = m.group(4).strip()
+            label = f"{vendor} {model} (SN {serial})"
+            devices.append(
+                Device(
+                    key=f"rtl:{idx}",
+                    kind="rtlsdr",
+                    label=label,
+                    extra={"index": idx, "serial": serial, "probe": "rtl_test"},
                 )
-            _record_discovery_event(
-                component="rtl_discovery",
-                backend="rtl_test",
-                status="ok" if devices else "empty",
-                detail="rtl_test fallback completed",
-                extra={"count": len(devices), "returncode": cp.returncode},
             )
-            return devices
-        except Exception as fallback_exc:
-            _record_discovery_event(
-                component="rtl_discovery",
-                backend="rtl_test",
-                status="error",
-                detail="rtl_test fallback failed",
-                exc=fallback_exc,
-            )
-            return devices
-
-    for i in range(8):
-        try:
-            sdr = RtlSdr(i)
-            serial = getattr(sdr, "serial_number", None)
-            devices.append(Device(key=f"rtl:{i}", kind="rtlsdr",
-                                  label=f"RTL-SDR #{i}" + (f" (SN {serial})" if serial else ""),
-                                  extra={"index": i, "serial": serial}))
-            sdr.close()
-            # Explicit cleanup to release USB handle
-            del sdr
-        except Exception as exc:
-            # Stop on first failing index as before, but preserve diagnostic context.
-            _record_discovery_event(
-                component="rtl_discovery",
-                backend="rtlsdr_native",
-                status="probe-stop",
-                detail=f"Stopped native index probe at {i}",
-                exc=exc,
-                extra={"index": i, "found_so_far": len(devices)},
-            )
-            break
-    # Force garbage collection to ensure USB handles are released
-    import gc
-    gc.collect()
-    _record_discovery_event(
-        component="rtl_discovery",
-        backend="rtlsdr_native",
-        status="ok",
-        detail="Native enumeration completed",
-        extra={"count": len(devices)},
-    )
-    return devices
+        _record_discovery_event(
+            component="rtl_discovery",
+            backend="rtl_test",
+            status="ok" if devices else "empty",
+            detail="rtl_test fallback completed",
+            extra={"count": len(devices), "returncode": cp.returncode},
+        )
+        return devices
+    except Exception as fallback_exc:
+        _record_discovery_event(
+            component="rtl_discovery",
+            backend="rtl_test",
+            status="error",
+            detail="rtl_test fallback failed",
+            exc=fallback_exc,
+        )
+        return devices
 
 
 def discover_hackrf() -> List[Device]:
