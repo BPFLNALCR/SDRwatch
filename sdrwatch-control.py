@@ -25,6 +25,7 @@ import argparse
 import importlib
 import json
 import os
+import re
 import shlex
 import signal
 import sqlite3
@@ -297,10 +298,47 @@ def discover_rtlsdr() -> List[Device]:
             component="rtl_discovery",
             backend="rtlsdr_native",
             status="error",
-            detail="Failed to import pyrtlsdr backend; RTL discovery unavailable",
+            detail="Failed to import pyrtlsdr backend; trying rtl_test fallback",
             exc=exc,
         )
-        return devices
+        try:
+            cp = subprocess.run(["rtl_test", "-t"], capture_output=True, text=True, timeout=6)
+            output = (cp.stdout or "") + "\n" + (cp.stderr or "")
+            pat = re.compile(r"^\s*(\d+):\s*([^,]+),\s*([^,]+),\s*SN:\s*(\S+)\s*$")
+            for line in output.splitlines():
+                m = pat.match(line)
+                if not m:
+                    continue
+                idx = int(m.group(1))
+                vendor = m.group(2).strip()
+                model = m.group(3).strip()
+                serial = m.group(4).strip()
+                label = f"{vendor} {model} (SN {serial})"
+                devices.append(
+                    Device(
+                        key=f"rtl:{idx}",
+                        kind="rtlsdr",
+                        label=label,
+                        extra={"index": idx, "serial": serial, "probe": "rtl_test"},
+                    )
+                )
+            _record_discovery_event(
+                component="rtl_discovery",
+                backend="rtl_test",
+                status="ok" if devices else "empty",
+                detail="rtl_test fallback completed",
+                extra={"count": len(devices), "returncode": cp.returncode},
+            )
+            return devices
+        except Exception as fallback_exc:
+            _record_discovery_event(
+                component="rtl_discovery",
+                backend="rtl_test",
+                status="error",
+                detail="rtl_test fallback failed",
+                exc=fallback_exc,
+            )
+            return devices
 
     for i in range(8):
         try:
