@@ -712,6 +712,8 @@ class JobManager:
             cmd += ["--duration", str(args["duration"])]
         if args.get("jsonl"):
             cmd += ["--jsonl", str(args["jsonl"])]
+        if args.get("diagnostic_jsonl"):
+            cmd += ["--diagnostic-jsonl", str(args["diagnostic_jsonl"])]
         if args.get("persistence_mode"):
             cmd += ["--persistence-mode", str(args["persistence_mode"])]
 

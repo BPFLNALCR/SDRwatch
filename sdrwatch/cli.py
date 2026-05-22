@@ -132,6 +132,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--db", type=str, help="SQLite DB path (default sdrwatch.db)")
     p.add_argument("--baseline-id", dest="baseline_id", type=str, help="Baseline id to attach scans to (or 'latest')")
     p.add_argument("--jsonl", type=str, help="Emit detections as line-delimited JSON to this path")
+    p.add_argument(
+        "--diagnostic-jsonl",
+        dest="diagnostic_jsonl",
+        type=str,
+        help="Emit per-window detection tuning diagnostics as JSONL to this path",
+    )
     p.add_argument("--notify", action="store_true", help="Desktop notifications for new signals")
     p.add_argument("--new-ema-occ", dest="new_ema_occ", type=float, help="EMA occupancy threshold to flag a bin as NEW (default 0.02)")
     p.add_argument("--latitude", type=float, help="Optional latitude in decimal degrees for this scan")
@@ -203,6 +209,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     _set_default(args, args._cli_overrides, "bandplan", None)
     _set_default(args, args._cli_overrides, "db", "sdrwatch.db")
     _set_default(args, args._cli_overrides, "jsonl", None)
+    _set_default(args, args._cli_overrides, "diagnostic_jsonl", None)
     _set_default(args, args._cli_overrides, "notify", False)
     _set_default(args, args._cli_overrides, "new_ema_occ", 0.02)
     _set_default(args, args._cli_overrides, "latitude", None)

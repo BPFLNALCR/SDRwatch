@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -11,6 +11,21 @@ from sdrwatch.detection.types import Segment
 from .cfar import cfar_os_mask
 from .clustering import expand_peak_bandwidth, estimate_bandwidth
 from .noise_estimation import robust_noise_floor_db
+
+
+def _segment_diagnostic_record(seg: Segment, rejection_reason: Optional[str] = None) -> Dict[str, Any]:
+    record: Dict[str, Any] = {
+        "f_low_hz": seg.f_low_hz,
+        "f_high_hz": seg.f_high_hz,
+        "f_center_hz": seg.f_center_hz,
+        "bandwidth_hz": seg.bandwidth_hz,
+        "peak_db": seg.peak_db,
+        "noise_db": seg.noise_db,
+        "snr_db": seg.snr_db,
+    }
+    if rejection_reason:
+        record["rejection_reason"] = rejection_reason
+    return record
 
 
 def split_segment_by_valleys(
@@ -135,23 +150,52 @@ def detect_segments(
     centroid_span_hz: float = 240_000.0,
     centroid_drop_db: float = 20.0,
     centroid_floor_margin_db: float = 2.0,
+    diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Segment], np.ndarray, np.ndarray]:
     """Detect contiguous energy segments from a PSD in dB."""
     psd_db = np.asarray(psd_db).astype(np.float64)
     freqs_hz = np.asarray(freqs_hz).astype(np.float64)
     N = psd_db.size
     if N == 0:
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "threshold_info": {},
+                    "bins_above_threshold": 0,
+                    "raw_candidate_segment_count": 0,
+                    "final_emitted_segment_count": 0,
+                    "segments": [],
+                }
+            )
         return [], np.zeros(0, dtype=bool), np.zeros(0, dtype=np.float64)
 
     if cfar_mode and cfar_mode.lower() != "off":
         alpha_db = float(cfar_alpha_db if cfar_alpha_db is not None else thresh_db)
         above, noise_local_db = cfar_os_mask(psd_db, cfar_train, cfar_guard, cfar_quantile, alpha_db)
         noise_for_snr_db = noise_local_db
+        threshold_info = {
+            "mode": str(cfar_mode).lower(),
+            "alpha_db": alpha_db,
+            "train_bins": int(cfar_train),
+            "guard_bins": int(cfar_guard),
+            "quantile": float(cfar_quantile),
+            "noise_floor_db": None,
+            "threshold_db": None,
+            "local_noise_median_db": float(np.median(noise_local_db)) if noise_local_db.size else None,
+            "local_noise_min_db": float(np.min(noise_local_db)) if noise_local_db.size else None,
+            "local_noise_max_db": float(np.max(noise_local_db)) if noise_local_db.size else None,
+        }
     else:
         nf = robust_noise_floor_db(psd_db)
         dynamic = nf + float(thresh_db)
         above = psd_db > dynamic
         noise_for_snr_db = np.full(N, nf, dtype=np.float64)
+        threshold_info = {
+            "mode": "off",
+            "noise_floor_db": float(nf),
+            "threshold_db": float(dynamic),
+            "threshold_offset_db": float(thresh_db),
+        }
 
     if N > 1:
         diffs = np.diff(freqs_hz)
@@ -210,6 +254,7 @@ def detect_segments(
 
 
     segs: List[Segment] = []
+    candidate_records: List[Dict[str, Any]] = []
     i = 0
     while i < N:
         if bool(above[i]):
@@ -307,23 +352,48 @@ def detect_segments(
                         f_center = float(freqs_hz[peak_idx])
                     else:  # midpoint
                         f_center = float((f_low + f_high) / 2.0)
-                    segs.append(
-                        Segment(
-                            f_low_hz=int(round(f_low)),
-                            f_high_hz=int(round(f_high)),
-                            f_center_hz=int(round(f_center)),
-                            peak_db=peak_db,
-                            noise_db=noise_db,
-                            snr_db=snr_db,
-                            bandwidth_hz=float(bandwidth_hz),
-                        )
+                    seg = Segment(
+                        f_low_hz=int(round(f_low)),
+                        f_high_hz=int(round(f_high)),
+                        f_center_hz=int(round(f_center)),
+                        peak_db=peak_db,
+                        noise_db=noise_db,
+                        snr_db=snr_db,
+                        bandwidth_hz=float(bandwidth_hz),
                     )
+                    segs.append(seg)
+                    if diagnostics is not None:
+                        candidate_records.append(_segment_diagnostic_record(seg))
             i = j
         else:
             i += 1
 
+    raw_candidate_count = len(segs)
     if abs_power_floor_db is not None:
         floor = float(abs_power_floor_db)
+        if diagnostics is not None:
+            candidate_records = [
+                (
+                    _segment_diagnostic_record(
+                        seg,
+                        rejection_reason=f"peak_db={seg.peak_db:.1f} < abs_power_floor_db={floor:.1f}",
+                    )
+                    if seg.peak_db < floor
+                    else _segment_diagnostic_record(seg)
+                )
+                for seg in segs
+            ]
         segs = [seg for seg in segs if seg.peak_db >= floor]
+
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "threshold_info": threshold_info,
+                "bins_above_threshold": int(np.count_nonzero(above)),
+                "raw_candidate_segment_count": int(raw_candidate_count),
+                "final_emitted_segment_count": int(len(segs)),
+                "segments": candidate_records,
+            }
+        )
 
     return segs, above, noise_for_snr_db

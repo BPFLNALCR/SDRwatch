@@ -24,6 +24,10 @@ from sdrwatch.dsp.noise_estimation import robust_noise_floor_db
 from sdrwatch.dsp.power_monitor import WindowPowerMonitor
 from sdrwatch.io.bandplan import Bandplan
 from sdrwatch.sweep.scheduler import WindowScheduler
+from sdrwatch.util.detection_diagnostics import (
+    DetectionDiagnosticWriter,
+    build_window_record,
+)
 from sdrwatch.util.scan_logger import ScanLogger
 
 
@@ -210,6 +214,8 @@ class Sweeper:
         self.bandplan = bandplan
         self.baseline_ctx = baseline_ctx
         self.logger = logger
+        diagnostic_path = getattr(args, "diagnostic_jsonl", None)
+        self.diagnostic_writer = DetectionDiagnosticWriter(diagnostic_path) if diagnostic_path else None
 
     def _sweep_params(self) -> Dict[str, Any]:
         args = self.args
@@ -326,6 +332,7 @@ class Sweeper:
                 baseband_f, psd_db = compute_psd_db(samples, args.samp_rate, args.fft, args.avg)
                 rf_freqs = baseband_f + center
 
+                detection_diagnostics: Dict[str, Any] = {}
                 segs, occ_mask_cfar, noise_per_bin_db = detect_segments(
                     rf_freqs,
                     psd_db,
@@ -338,6 +345,7 @@ class Sweeper:
                     cfar_quantile=args.cfar_quantile,
                     cfar_alpha_db=args.cfar_alpha_db,
                     abs_power_floor_db=getattr(args, "abs_power_floor_db", None),
+                    diagnostics=detection_diagnostics if self.diagnostic_writer else None,
                     **segment_shape_kwargs,
                 )
 
@@ -382,7 +390,30 @@ class Sweeper:
                     if spur_tracker is not None:
                         spur_tracker.observe(segs)
                     if detection_engine:
-                        accepted_hits, spur_ignored, promoted, new_signals = detection_engine.ingest(window_idx, segs)
+                        accepted_hits, spur_ignored, promoted, new_signals = detection_engine.ingest(
+                            window_idx,
+                            segs,
+                        )
+                if self.diagnostic_writer:
+                    self.diagnostic_writer.write(
+                        build_window_record(
+                            sweep_id=sweep_seq,
+                            window_idx=window_idx,
+                            center_hz=float(center),
+                            window_low_hz=float(window.start_hz),
+                            window_high_hz=float(window.stop_hz),
+                            profile=getattr(args, "profile", None),
+                            baseline_id=getattr(baseline_ctx, "id", None),
+                            tuning_params=self._sweep_params(),
+                            detection_diagnostics=detection_diagnostics,
+                            accepted_hits=accepted_hits,
+                            spur_ignored=spur_ignored,
+                            promoted=promoted,
+                            new_signals=new_signals,
+                            anomalous_power=bool(is_anom),
+                            emitted_segments=segs,
+                        )
+                    )
                 total_segments += len(segs)
                 total_hits += accepted_hits
                 total_promoted += promoted
