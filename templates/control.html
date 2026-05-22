@@ -339,6 +339,13 @@
                 <input id="jsonl" class="input" placeholder="detections.jsonl" />
               </div>
               <div class="field">
+                <label for="diagnostic_jsonl">Detection Diagnostics</label>
+                <div class="flex items-center gap-2">
+                  <input type="checkbox" id="enable_diagnostic_jsonl" />
+                  <input id="diagnostic_jsonl" class="input" placeholder="detection-diagnostics.jsonl" />
+                </div>
+              </div>
+              <div class="field">
                 <label class="flex items-center gap-2 mt-5">
                   <input type="checkbox" id="spur_calibration" />
                   <span>Spur Calibration Mode</span>
@@ -1049,6 +1056,10 @@ startBtn.addEventListener('click', async () => {
   
   const jsonl = getVal('jsonl', String);
   if (jsonl) params.jsonl = jsonl;
+
+  if (getCheck('enable_diagnostic_jsonl')) {
+    params.diagnostic_jsonl = getVal('diagnostic_jsonl', String) || 'detection-diagnostics.jsonl';
+  }
   
   if (getCheck('spur_calibration')) {
     params.spur_calibration = true;
