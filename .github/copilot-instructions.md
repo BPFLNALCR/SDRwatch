@@ -391,3 +391,8 @@ Baseline math should continue to flow through the context/persistence helpers ra
 * How should baseline definitions be versioned for long-term stability?
 * Should `baseline_detections` support geometric clustering updates?
 * Should the web tier expose comparison dashboards across multiple baselines?
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->
