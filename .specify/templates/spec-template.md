@@ -75,8 +75,10 @@
   Fill them out with the right edge cases.
 -->
 
-- What happens when [boundary condition]?
-- How does system handle [error scenario]?
+- What happens when the feature is used with no internet connectivity in a field deployment?
+- How does the system handle missing SDR hardware, stale device locks, or unsupported drivers?
+- What happens when existing CLI users, SQLite data, or saved workflows encounter the change?
+- How are auth failures, missing tokens, or permission errors surfaced on protected endpoints?
 
 ## Requirements *(mandatory)*
 
@@ -103,6 +105,21 @@
 - **[Entity 1]**: [What it represents, key attributes without implementation]
 - **[Entity 2]**: [What it represents, relationships to other entities]
 
+## Constitution Alignment *(mandatory)*
+
+- **Pi 5 / Field Reliability Impact**: [Explain how the change preserves Raspberry Pi 5
+  compatibility, bounded resource use, and clear operator workflow]
+- **Stack / Dependency Impact**: [List any new dependency or frontend technology and why
+  the Python + Flask + SQLite + server-rendered HTML default is insufficient]
+- **Layer Ownership**: [Identify which of scanner logic, persistence, controller API,
+  and web UI are affected and how the separation remains clean]
+- **Compatibility / Migration Impact**: [State CLI, API, schema, and deployment impacts,
+  including backward compatibility and migration expectations]
+- **Security / Offline Impact**: [State how `SDRWATCH_CONTROL_TOKEN` behavior and
+  offline field use are preserved or changed]
+- **Verification Plan**: [List automated tests and any reproducible manual or hardware
+  validation path required to prove the feature works]
+
 ## Success Criteria *(mandatory)*
 
 <!--
@@ -125,7 +142,11 @@
   chosen when the feature description did not specify certain details.
 -->
 
-- [Assumption about target users, e.g., "Users have stable internet connectivity"]
-- [Assumption about scope boundaries, e.g., "Mobile support is out of scope for v1"]
-- [Assumption about data/environment, e.g., "Existing authentication system will be reused"]
-- [Dependency on existing system/service, e.g., "Requires access to the existing user profile API"]
+- [Assumption about target operators, e.g., "Primary deployments run on Raspberry Pi 5 in
+  offline or intermittently connected environments"]
+- [Assumption about scope boundaries, e.g., "The feature preserves existing CLI scan
+  workflows unless an explicit compatibility transition is approved"]
+- [Assumption about data or schema, e.g., "Existing SQLite baselines remain readable and
+  migration-safe upgrade steps are available when schema changes are needed"]
+- [Assumption about security or dependencies, e.g., "Protected controller and web paths
+  continue to rely on SDRWATCH_CONTROL_TOKEN rather than a new auth system"]

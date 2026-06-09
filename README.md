@@ -8,7 +8,7 @@
 ![WebUI](https://img.shields.io/badge/WebUI-Flask-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-**Tactical spectrum situational awareness for SDR devices—wideband scanning, baseline tracking, signal classification, and a real-time web dashboard.**
+**Tactical spectrum situational awareness for SDR devices—wideband scanning, baseline tracking, evidence-backed signal classification support, and a real-time web dashboard.**
 
 SDR-Watch transforms a Raspberry Pi 5 and SDR dongle into a **persistent spectrum monitoring station**. It sweeps wide frequency ranges, detects and logs signals, builds long-term baselines of spectrum activity, and maps detections to official frequency allocations. The **tactical web dashboard** provides real-time monitoring, signal classification, and actionable situational awareness.
 
@@ -18,7 +18,7 @@ SDR-Watch transforms a Raspberry Pi 5 and SDR dongle into a **persistent spectru
 - **Spectrum Security**: Identify unauthorized users, validate coordination, and monitor long-term occupancy.
 - **Research & Development**: Study waveform usage, analyze antenna performance, and collect environmental RF data.
 - **Field Operations**: Enable live visualization of RF activity during exercises, events, or security operations.
-- **Signal Classification**: Mark detected signals as Friendly/Ambient/Hostile for rapid threat assessment.
+- **Signal Classification**: Support operator-applied Friendly/Ambient/Hostile labels for rapid triage without overstating certainty.
 
 **Current capabilities:**
 
@@ -40,7 +40,7 @@ SDR-Watch transforms a Raspberry Pi 5 and SDR dongle into a **persistent spectru
 
 ### Tactical Web Dashboard
 - **Signal Cards**: Visual grid of detected signals with frequency, bandwidth, SNR, and confidence.
-- **Signal Classification**: Mark signals as **Friendly** (green), **Ambient** (gray), or **Hostile** (red).
+- **Signal Classification**: Support operator-applied **Friendly** (green), **Ambient** (gray), or **Hostile** (red) labels.
 - **Signal Selection**: Star/highlight signals of interest for tracking across sessions.
 - **Human-Friendly IDs**: Each signal gets a unique identifier (e.g., `SIG-0042`) for easy reference.
 - **Signal Labels & Notes**: Add custom labels and freeform notes to any detection.

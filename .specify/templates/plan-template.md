@@ -18,29 +18,48 @@
   the iteration process.
 -->
 
-**Language/Version**: [e.g., Python 3.11, Swift 5.9, Rust 1.75 or NEEDS CLARIFICATION]
+**Language/Version**: Python 3.x on Raspberry Pi OS Trixie/Bookworm unless the feature
+requires a narrower version statement.
 
-**Primary Dependencies**: [e.g., FastAPI, UIKit, LLVM or NEEDS CLARIFICATION]
+**Primary Dependencies**: Python standard library, NumPy/SciPy for DSP, Flask for the
+web tier, SQLite for persistence, and optional SDR backends such as RTL-SDR or SoapySDR.
 
-**Storage**: [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
+**Storage**: SQLite (`sdrwatch.db` by default), local logs, and optional JSONL output.
 
-**Testing**: [e.g., pytest, XCTest, cargo test or NEEDS CLARIFICATION]
+**Testing**: `pytest` for automated coverage plus reproducible Raspberry Pi 5 and SDR
+manual validation when hardware behavior is affected.
 
-**Target Platform**: [e.g., Linux server, iOS 15+, WASM or NEEDS CLARIFICATION]
+**Target Platform**: Raspberry Pi 5 on Raspberry Pi OS, with Linux development hosts
+supporting local development and review.
 
-**Project Type**: [e.g., library/cli/web-service/mobile-app/compiler/desktop-app or NEEDS CLARIFICATION]
+**Project Type**: Python application with CLI scanner, controller service, and
+server-rendered Flask web UI.
 
-**Performance Goals**: [domain-specific, e.g., 1000 req/s, 10k lines/sec, 60 fps or NEEDS CLARIFICATION]
+**Performance Goals**: Preserve stable long-running monitoring on Raspberry Pi 5 without
+breaking scan cadence, exhausting local resources, or obscuring operator diagnostics.
 
-**Constraints**: [domain-specific, e.g., <200ms p95, <100MB memory, offline-capable or NEEDS CLARIFICATION]
+**Constraints**: Offline-capable operation, minimal dependency footprint, migration-safe
+SQLite changes, clean layer separation, and backward-compatible CLI behavior by default.
 
-**Scale/Scope**: [domain-specific, e.g., 10k users, 1M LOC, 50 screens or NEEDS CLARIFICATION]
+**Scale/Scope**: Single-station or small multi-device monitoring deployments managing
+local SDR hardware and persistent baseline history.
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+- Raspberry Pi 5 compatibility, field reliability, and offline operation are preserved
+  or the deviation is explicitly justified.
+- Any new dependency beyond the Python, Flask, SQLite, and server-rendered HTML stack
+  has a concrete operational need and a rejected simpler alternative.
+- Affected responsibilities stay in the correct layer: scanner/DSP, persistence,
+  controller API, and web UI remain cleanly separated.
+- CLI behavior changes are backward-compatible by default, or the plan documents a
+  transition strategy, upgrade notes, and validation commands.
+- Database, auth, and hardware impacts include migration, token, adapter, and RTL-SDR
+  regression considerations where applicable.
+- Verification covers automated tests where practical and includes reproducible manual
+  validation for hardware, deployment, or offline field workflows.
 
 ## Project Structure
 
@@ -57,51 +76,41 @@ specs/[###-feature]/
 ```
 
 ### Source Code (repository root)
-<!--
-  ACTION REQUIRED: Replace the placeholder tree below with the concrete layout
-  for this feature. Delete unused options and expand the chosen structure with
-  real paths (e.g., apps/admin, packages/something). The delivered plan must
-  not include Option labels.
--->
 
 ```text
-# [REMOVE IF UNUSED] Option 1: Single project (DEFAULT)
-src/
-├── models/
-├── services/
-├── cli/
-└── lib/
+sdrwatch/
+├── baseline/
+├── detection/
+├── drivers/
+├── dsp/
+├── io/
+├── sweep/
+└── util/
+
+sdrwatch_web/
+├── blueprints/
+└── [web support modules]
+
+templates/
+├── partials/
+└── [server-rendered HTML templates]
+
+static/
+└── js/
 
 tests/
-├── contract/
-├── integration/
-└── unit/
+└── [repo test modules]
 
-# [REMOVE IF UNUSED] Option 2: Web application (when "frontend" + "backend" detected)
-backend/
-├── src/
-│   ├── models/
-│   ├── services/
-│   └── api/
-└── tests/
-
-frontend/
-├── src/
-│   ├── components/
-│   ├── pages/
-│   └── services/
-└── tests/
-
-# [REMOVE IF UNUSED] Option 3: Mobile + API (when "iOS/Android" detected)
-api/
-└── [same as backend above]
-
-ios/ or android/
-└── [platform-specific structure: feature modules, UI flows, platform tests]
+sdrwatch-control.py
+sdrwatch-web.py
+sdrwatch.py
+install-sdrwatch.sh
 ```
 
-**Structure Decision**: [Document the selected structure and reference the real
-directories captured above]
+**Structure Decision**: Extend the existing monorepo layout. Keep scanner and DSP work
+inside `sdrwatch/`, web and API glue inside `sdrwatch_web/` plus the root entrypoints,
+server-rendered templates in `templates/`, static assets in `static/`, and validation
+artifacts in `tests/`.
 
 ## Complexity Tracking
 
