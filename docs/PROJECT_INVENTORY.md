@@ -8,11 +8,15 @@ This document records the current repository shape so contributors can understan
 the codebase without continuing feature development. It is descriptive, not a
 rewrite proposal.
 
+SDRwatch is operated through the web GUI. The scanner CLI is an internal backend
+entry point used by the controller/service layer and by narrow scanner smoke
+checks; it is not the normal human operator workflow.
+
 ## Repository Layout
 
 | Path | Purpose |
 | --- | --- |
-| `sdrwatch/` | Core scanner package: CLI, sweep orchestration, drivers, DSP, detection, baseline persistence, and utilities. |
+| `sdrwatch/` | Core scanner package: internal CLI, sweep orchestration, drivers, DSP, detection, baseline persistence, and utilities. |
 | `sdrwatch_web/` | Flask web package: app factory, controller client, SQLite helpers, startup migrations, blueprints, filters, and formatting. |
 | `templates/` | Server-rendered HTML templates for dashboard, control, changes, signals, debug, and partial views. |
 | `static/js/` | Browser-side behavior for dashboard and changes pages plus bundled helper scripts. |
@@ -31,9 +35,9 @@ rewrite proposal.
 
 | Component | Preferred invocation | Notes |
 | --- | --- | --- |
-| Scanner CLI | `python -m sdrwatch.cli` | Authoritative scanner command surface. |
-| Controller | `python sdrwatch-control.py serve --host 127.0.0.1 --port 8765 --token <token>` | Owns device discovery, lock files, job lifecycle, and controller REST endpoints. |
-| Web dashboard | `python sdrwatch-web.py --db sdrwatch.db --host 0.0.0.0 --port 8080` | Server-rendered Flask app that reads SQLite and proxies control-plane actions. |
+| Web dashboard | `python sdrwatch-web.py --db sdrwatch.db --host 0.0.0.0 --port 8080` | Primary operator surface; server-rendered Flask app that reads SQLite and proxies control-plane actions. |
+| Controller | `python sdrwatch-control.py serve --host 127.0.0.1 --port 8765 --token <token>` | Backend service that owns device discovery, lock files, job lifecycle, and controller REST endpoints. |
+| Scanner CLI | `python -m sdrwatch.cli` | Internal scanner command surface invoked by the controller; direct runs are backend smoke checks only. |
 | Legacy scanner wrapper | `python sdrwatch.py` | Compatibility shim only. |
 | Query helper | `python query-sdrwatch.py ...` | Inspection helper; some queries target older table names. |
 
@@ -42,25 +46,25 @@ rewrite proposal.
 ```text
 operator
   |
-  +--> sdrwatch-web.py / sdrwatch_web/
-  |       +--> reads SQLite for dashboard data
-  |       +--> proxies control actions to controller HTTP endpoints
-  |
-  +--> sdrwatch-control.py
-          +--> discovers SDR devices
-          +--> owns state.json, lock files, and job logs
-          +--> spawns scanner jobs
-                  +--> python -m sdrwatch.cli
-                          +--> sdrwatch.sweep.runner
-                                  +--> drivers + DSP + detection
-                                  +--> baseline SQLite writes
-                                  +--> optional JSONL diagnostics
+  +--> web GUI: sdrwatch-web.py / sdrwatch_web/
+          +--> reads SQLite for dashboard data
+          +--> proxies control actions to controller HTTP endpoints
+                  +--> sdrwatch-control.py
+                          +--> discovers SDR devices
+                          +--> owns state.json, lock files, and job logs
+                          +--> spawns scanner jobs
+                                  +--> python -m sdrwatch.cli
+                                          +--> sdrwatch.sweep.runner
+                                                  +--> drivers + DSP + detection
+                                                  +--> baseline SQLite writes
+                                                  +--> optional JSONL diagnostics
 ```
 
 Layer boundaries to preserve:
 
 - Scanner code owns SDR capture, DSP, detection, baseline updates, and scanner-side
   persistence.
+- Operator workflows enter through the web UI and controller job lifecycle.
 - Controller code is the only layer that should acquire device locks and spawn scan
   processes.
 - Web code should not touch SDR hardware or reimplement DSP logic.
@@ -121,17 +125,22 @@ python -m sdrwatch.cli --list-profiles
 python -c "from sdrwatch_web import create_app; app = create_app(); print(app.name)"
 ```
 
-Hardware-dependent confidence still requires Raspberry Pi and RTL-SDR validation for
-real scan execution, device locking, controller job lifecycle, and installer/service
-behavior.
+`python -m sdrwatch.cli --list-profiles` is an internal scanner backend smoke
+check. It is useful, but it is not user acceptance testing.
+
+User acceptance testing should be performed through the web UI and controller job
+lifecycle: create or select a baseline, start a scan from the browser, observe job
+status/logs, stop the job, and confirm dashboard/database updates. Hardware-dependent
+confidence still requires Raspberry Pi and RTL-SDR validation for real scan
+execution, device locking, controller job lifecycle, and installer/service behavior.
 
 ## Generated or Runtime Artifacts
 
 | Artifact | Typical location | Created by |
 | --- | --- | --- |
 | SQLite database | `sdrwatch.db` or installer-configured state path | Scanner/web/installer |
-| Detection JSONL | Operator-selected `--jsonl` path | Scanner CLI |
-| Diagnostic JSONL | Operator-selected `--diagnostic-jsonl` path | Scanner CLI |
+| Detection JSONL | Scanner/backend-selected `--jsonl` path | Scanner CLI |
+| Diagnostic JSONL | Scanner/backend-selected `--diagnostic-jsonl` path | Scanner CLI |
 | Controller state | `${SDRWATCH_CONTROL_BASE}/state.json` | Controller |
 | Controller lock files | `${SDRWATCH_CONTROL_BASE}/locks/*.lock` | Controller |
 | Controller job logs | `${SDRWATCH_CONTROL_BASE}/logs/*.log` | Controller |

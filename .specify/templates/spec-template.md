@@ -14,6 +14,9 @@
   IMPORTANT: User stories should be PRIORITIZED as user journeys ordered by importance.
   Each user story/journey must be INDEPENDENTLY TESTABLE - meaning if you implement just ONE of them,
   you should still have a viable MVP (Minimum Viable Product) that delivers value.
+  For SDRwatch operator-facing work, independent tests and acceptance scenarios MUST
+  exercise the web UI and controller job lifecycle. CLI-only scenarios are complete
+  only for explicitly internal scanner tooling.
 
   Assign priorities (P1, P2, P3, etc.) to each story, where P1 is the most critical.
   Think of each story as a standalone slice of functionality that can be:
@@ -29,7 +32,7 @@
 
 **Why this priority**: [Explain the value and why it has this priority level]
 
-**Independent Test**: [Describe how this can be tested independently - e.g., "Can be fully tested by [specific action] and delivers [specific value]"]
+**Independent Test**: [Describe how this can be tested independently through the web UI and controller job lifecycle - e.g., "Can be fully tested by [browser action] and delivers [specific value]"]
 
 **Acceptance Scenarios**:
 
@@ -44,7 +47,7 @@
 
 **Why this priority**: [Explain the value and why it has this priority level]
 
-**Independent Test**: [Describe how this can be tested independently]
+**Independent Test**: [Describe how this can be tested independently through the web UI/controller workflow]
 
 **Acceptance Scenarios**:
 
@@ -58,7 +61,7 @@
 
 **Why this priority**: [Explain the value and why it has this priority level]
 
-**Independent Test**: [Describe how this can be tested independently]
+**Independent Test**: [Describe how this can be tested independently through the web UI/controller workflow]
 
 **Acceptance Scenarios**:
 

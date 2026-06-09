@@ -1,21 +1,17 @@
 <!--
 Sync Impact Report
-Version change: template -> 1.0.0
+Version change: 1.0.0 -> 1.0.1
 Modified principles:
-- Replaced template principle 1 with I. Raspberry Pi First Reliability
-- Replaced template principle 2 with II. Minimal Local Stack
-- Replaced template principle 3 with III. Stable Interfaces and Clean Layering
-- Replaced template principle 4 with IV. Adapter-Based Hardware and Honest RF Claims
-- Replaced template principle 5 with V. Migration-Safe, Verifiable Change
+- Clarified III. Stable Interfaces and Clean Layering with GUI-first operator workflow
+- Clarified V. Migration-Safe, Verifiable Change with web UI/controller acceptance testing
 Added sections:
-- Operational Constraints
-- Quality Gates
+- None
 Removed sections:
 - None
 Templates requiring updates:
-- .specify/templates/plan-template.md already contains constitution checks
-- .specify/templates/spec-template.md already captures requirements and constraints
-- .specify/templates/tasks-template.md already supports validation tasks
+- .specify/templates/plan-template.md updated for GUI-first operator workflow
+- .specify/templates/spec-template.md updated for web UI acceptance tests
+- .specify/templates/tasks-template.md updated for controller/web validation tasks
 Follow-up TODOs:
 - None
 -->
@@ -43,7 +39,9 @@ field.
 Existing CLI scan behavior MUST remain backward-compatible unless a change includes
 an explicit compatibility transition, upgrade notes, and verification coverage.
 Scanner logic, persistence and schema ownership, controller API behavior, and web UI
-concerns MUST remain separated so each layer can evolve without hidden coupling.
+concerns MUST remain separated so each layer can evolve without hidden coupling. The
+web UI and controller job lifecycle are the operator workflow; the scanner CLI is
+an internal backend interface, not the primary user interface.
 Rationale: stable contracts and clean boundaries keep a hardware-facing system
 diagnosable and reduce regression scope.
 
@@ -60,6 +58,8 @@ Database changes MUST be migration-safe and backward-compatible when practical, 
 upgrade behavior documented before merge. Every meaningful change MUST include
 automated tests or a reproducible manual verification path, and security-sensitive
 endpoints MUST verify `SDRWATCH_CONTROL_TOKEN` behavior whenever auth is in scope.
+Operator-facing changes MUST be verified through the web UI and controller job
+lifecycle; direct CLI checks only cover internal scanner backend behavior.
 Rationale: stateful monitoring software stays trustworthy only when upgrades and
 security behavior are explicit and repeatable.
 
@@ -68,6 +68,9 @@ security behavior are explicit and repeatable.
 - Offline field use is a first-class requirement. Core scanning, SQLite persistence,
   controller operations, and the primary web workflow MUST continue without cloud
   services or internet connectivity.
+- SDRwatch is GUI-operated for normal use and user acceptance testing. Human
+  operators create/select baselines, start/stop scans, inspect logs/status, and
+  review results through the web UI backed by controller jobs.
 - The controller remains the only process that acquires device locks and spawns scan
   jobs. Web code MUST NOT touch SDR hardware directly, and controller/web layers MUST
   NOT reimplement scanner DSP logic.
@@ -84,14 +87,17 @@ security behavior are explicit and repeatable.
 ## Quality Gates
 
 - CLI behavior: existing scan flags, defaults, exit behavior, JSONL output, and
-  baseline selection semantics MUST remain stable or ship with a documented
-  transition and a reproducible compatibility check.
+  baseline selection semantics MUST remain stable for the internal scanner backend
+  or ship with a documented transition and a reproducible compatibility check.
 - Database migrations: schema changes MUST include migration or compatibility steps,
   validation against pre-existing SQLite data, and confirmation that critical reads
   and writes still succeed.
 - Web/API behavior: changed routes and templates MUST preserve documented contracts
   or version them explicitly, validate auth behavior, and keep the operator workflow
-  clear in server-rendered views.
+  clear and complete in server-rendered views.
+- Operator acceptance: user-facing features MUST be validated through the web UI
+  and controller job lifecycle. CLI-only validation is sufficient only for
+  explicitly internal scanner tooling.
 - Service deployment: installer, environment, and service changes MUST document
   start, stop, lock cleanup, and logging behavior on the Raspberry Pi deployment
   path.
@@ -117,9 +123,11 @@ meaning.
 
 Compliance review happens at planning time and again before merge or deployment.
 Feature work is not complete until the documented tests or manual verification path
-has been executed or explicitly handed off with reproducible steps.
+has been executed or explicitly handed off with reproducible steps. Operator-facing
+features MUST include web UI/controller lifecycle verification, not only scanner CLI
+commands.
 
 The operational guidance in `.github/copilot-instructions.md`, `AGENTS.md`, and the
 Spec Kit templates MUST remain subordinate to and consistent with this constitution.
 
-**Version**: 1.0.0 | **Ratified**: 2026-06-09 | **Last Amended**: 2026-06-09
+**Version**: 1.0.1 | **Ratified**: 2026-06-09 | **Last Amended**: 2026-06-09

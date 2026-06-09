@@ -4,6 +4,22 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
 
 ---
 
+## Operator workflow correction
+
+SDRwatch is GUI-operated. During normal use and user acceptance testing, the human
+operator uses the web UI and its controller-backed job lifecycle: create/select a
+baseline, start/stop jobs, inspect status/logs, and review dashboard results
+through the browser. The scanner CLI is an internal backend command surface
+invoked by the controller/service layer. Direct CLI runs are acceptable only as
+scanner backend smoke tests or internal tooling checks; they do not satisfy an
+operator workflow by themselves.
+
+Future operator-facing features MUST expose their complete workflow through the
+web UI and controller REST lifecycle. CLI-only workflows are complete only when
+the feature is explicitly internal-only tooling.
+
+---
+
 ## 0) UNIX Programming Principles (Design Constraints)
 
 This codebase follows the principles of UNIX programming. When making design or implementation decisions, prefer clarity, modularity, composability, and diagnosability over cleverness or premature optimization. Deviations are acceptable only when justified by measured requirements.
@@ -75,6 +91,9 @@ Treat the scanner’s baseline-oriented DB schema + CLI behavior as authoritativ
 ## 1) Big picture (runtime topology)
 
 **Updated runtime stack (match the refactored package layout in `sdrwatch/`):**
+
+The web dashboard is the human-facing entrypoint. The scanner CLI is authoritative
+only as the backend scanner contract that the controller invokes.
 
 * **`python -m sdrwatch.cli` ("scanner CLI")** — Authoritative entrypoint that parses flags, applies scan profiles from `sdrwatch.io.profiles`, and hands execution to `sdrwatch.sweep.runner`. The legacy root-level `sdrwatch.py` now shims into this module and should be treated as deprecated.
 
@@ -231,13 +250,15 @@ Baseline math should continue to flow through the context/persistence helpers ra
 
 ## 8) Testing guidance (hardware-first)
 
-* Primary testing is done directly with external SDR hardware on hand.
+* Primary user acceptance testing is done in the web UI with external SDR hardware on hand.
+* Validate operator flows through controller-backed jobs: create/select a baseline, start a scan from the browser, observe job state/logs, stop the job, and confirm dashboard/database results update.
 * No simulated SDR layer or fake capture system is required; the development cycle includes physically operating and observing the hardware.
 * Use repeatable test bands (e.g., FM, ADS-B, known carriers) for verifying changes.
 * Capture small reference sweeps for later regression comparisons (optional but useful).
 * Validate baseline workflows: create/select baselines when swapping antennas/locations and ensure scanner refuses jobs without `baseline_id`.
 * Observe that persistent carriers accumulate `total_windows`/`total_hits` while NEW events transition as expected once occupancy rises.
 * Ensure each code change preserves expected hardware behavior (lock creation, DB writes, detection counts, runtime stability).
+* Direct scanner CLI runs are allowed only as internal backend smoke tests, such as `--list-profiles`, argument parsing, or a narrow scanner-only diagnostic. They are not the required operator workflow.
 * Optional lightweight tests can verify math correctness (CFAR thresholds, PSD outputs) if desired but are not mandatory for normal iteration.
 * Maintainer runs validation on real hardware; Copilot should skip automated tests locally and instead call out any specific on-device checks the maintainer should perform.
 
@@ -259,10 +280,14 @@ Baseline math should continue to flow through the context/persistence helpers ra
 
 ---
 
-## 10) CLI patterns (examples)
+## 10) Internal CLI patterns (backend smoke examples)
 
-* Use `--revisit-span-limit-hz` whenever a job needs to widen/narrow the confirmation span beyond the profile default (FM profile ships with 420 kHz).
-* One-shot FM scan (optionally with a profile) tied to an active baseline (create/select the baseline via controller or web first):
+These examples document the scanner backend contract used by the controller. Do
+not treat them as the normal human workflow; operator acceptance runs through the
+web UI and controller job lifecycle.
+
+* Use `--revisit-span-limit-hz` whenever a controller job needs to widen/narrow the confirmation span beyond the profile default (FM profile ships with 420 kHz).
+* One-shot FM scanner backend smoke check tied to an active baseline (create/select the baseline via controller or web first):
 
   ```bash
   python3 -m sdrwatch.cli \
@@ -360,7 +385,7 @@ Baseline math should continue to flow through the context/persistence helpers ra
 
 1. Open a **small scope**: file + function(s) + failing test/log.
 2. Request a **unified diff** only; forbid wide rewrites.
-3. Ensure new/changed behavior is covered by manual or hardware test validation.
+3. Ensure new/changed operator behavior is covered by web UI + controller job lifecycle validation, with CLI checks limited to scanner backend smoke coverage.
 4. Run `ruff + mypy + pytest` locally; then `ship`.
 5. If DB/HTTP/API changed: add/adjust docs + migration + Web UI glue.
 

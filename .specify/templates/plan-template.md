@@ -30,6 +30,10 @@
 
 **Project Type**: [e.g., library/cli/web-service/mobile-app/compiler/desktop-app or NEEDS CLARIFICATION]
 
+**Operator Workflow Surface**: SDRwatch operator-facing features MUST use the web
+UI and controller job lifecycle. Treat scanner CLI work as internal backend tooling
+unless the feature is explicitly scanner-only.
+
 **Performance Goals**: [domain-specific, e.g., 1000 req/s, 10k lines/sec, 60 fps or NEEDS CLARIFICATION]
 
 **Constraints**: [domain-specific, e.g., <200ms p95, <100MB memory, offline-capable or NEEDS CLARIFICATION]
@@ -40,7 +44,9 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+[Gates determined based on constitution file. For SDRwatch operator features,
+confirm acceptance testing is through the web UI and controller job lifecycle; CLI
+checks may only validate internal scanner backend behavior.]
 
 ## Project Structure
 

@@ -9,9 +9,9 @@ description: "Task list template for feature implementation"
 
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
+**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification. For SDRwatch operator-facing work, validation tasks MUST exercise the web UI and controller job lifecycle; scanner CLI tasks are internal backend smoke checks only.
 
-**Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
+**Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story. User-facing stories should include browser/controller acceptance validation, not CLI-only completion criteria.
 
 ## Format: `[ID] [P?] [Story] Description`
 
