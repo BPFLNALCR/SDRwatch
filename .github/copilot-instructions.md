@@ -4,6 +4,19 @@ Keep guidance short and operational. Prefer **small diffs** over whole-file rewr
 
 ---
 
+## Spec Kit workflow state
+
+The active development baseline is `devControl`. This repository was initialized
+with Codex Spec Kit as the default integration, and Copilot Spec Kit prompt/agent
+files are also present and usable. Treat numbered Spec Kit branches as proposal
+branches until their diffs are reviewed against `devControl`; do not merge generated
+feature branches wholesale.
+
+For the current consolidation status, read `docs/MERGE_REVIEW.md` and
+`docs/PROJECT_INVENTORY.md`.
+
+---
+
 ## 0) UNIX Programming Principles (Design Constraints)
 
 This codebase follows the principles of UNIX programming. When making design or implementation decisions, prefer clarity, modularity, composability, and diagnosability over cleverness or premature optimization. Deviations are acceptable only when justified by measured requirements.
