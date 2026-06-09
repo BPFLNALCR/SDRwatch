@@ -105,3 +105,31 @@ BAND_SUMMARY_OCC_THRESHOLD: float = _float_env("SDRWATCH_BAND_SUMMARY_OCC_THRESH
 # ---------------------------------------------------------------------------
 CHART_HEIGHT_PX: int = 160
 """Default height in pixels for chart elements."""
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic bundle export
+# ---------------------------------------------------------------------------
+DIAGNOSTIC_BUNDLE_LOG_TAIL_LINES: int = _int_env("SDRWATCH_DIAGNOSTIC_LOG_TAIL_LINES", 2000)
+"""Default scanner log tail included in diagnostic bundles."""
+
+DIAGNOSTIC_BUNDLE_JSONL_TAIL_LINES: int = _int_env("SDRWATCH_DIAGNOSTIC_JSONL_TAIL_LINES", 5000)
+"""Default diagnostic JSONL tail included in diagnostic bundles."""
+
+DIAGNOSTIC_BUNDLE_ROW_LIMIT: int = _int_env("SDRWATCH_DIAGNOSTIC_ROW_LIMIT", 500)
+"""Default recent SQLite row limit included per diagnostic evidence table."""
+
+DIAGNOSTIC_BUNDLE_MAX_LOG_TAIL_LINES: int = _int_env("SDRWATCH_DIAGNOSTIC_MAX_LOG_TAIL_LINES", 20000)
+"""Upper bound for requested scanner log lines in a diagnostic bundle."""
+
+DIAGNOSTIC_BUNDLE_MAX_JSONL_TAIL_LINES: int = _int_env("SDRWATCH_DIAGNOSTIC_MAX_JSONL_TAIL_LINES", 50000)
+"""Upper bound for requested diagnostic JSONL lines in a diagnostic bundle."""
+
+DIAGNOSTIC_BUNDLE_MAX_ROW_LIMIT: int = _int_env("SDRWATCH_DIAGNOSTIC_MAX_ROW_LIMIT", 5000)
+"""Upper bound for requested SQLite evidence rows in a diagnostic bundle."""
+
+DIAGNOSTIC_BUNDLE_FILENAME_PREFIX: str = os.getenv(
+    "SDRWATCH_DIAGNOSTIC_BUNDLE_PREFIX",
+    "sdrwatch-diagnostics",
+)
+"""Filename prefix for downloaded diagnostic bundle archives."""

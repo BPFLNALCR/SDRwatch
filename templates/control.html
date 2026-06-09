@@ -68,11 +68,18 @@
 
     <!-- Scan controls -->
     <div class="flex flex-wrap gap-3 mt-6 pt-4 border-t border-slate-700/50">
+      <label class="flex items-center gap-2 text-sm text-slate-300">
+        <input type="checkbox" id="diagnostics_mode" />
+        <span>Diagnostics mode</span>
+      </label>
       <button class="btn btn-primary text-base px-6" type="button" id="startBtn" disabled>
         ▶ Start Monitoring
       </button>
       <button class="btn btn-danger text-base px-6" type="button" id="stopBtn">
         ■ Stop
+      </button>
+      <button class="btn text-base px-4" type="button" id="exportDiagnosticsBtn" disabled>
+        Export diagnostic bundle
       </button>
       <div class="flex items-center gap-2 ml-auto">
         <label class="text-sm text-slate-400">Mode:</label>
@@ -83,6 +90,7 @@
         </select>
         <input type="text" id="duration_value" class="input w-20 text-sm hidden" placeholder="e.g. 30m" />
       </div>
+      <div id="diagnosticExportStatus" class="basis-full text-xs text-slate-400"></div>
     </div>
 
     <!-- Live logs -->
@@ -339,13 +347,6 @@
                 <input id="jsonl" class="input" placeholder="detections.jsonl" />
               </div>
               <div class="field">
-                <label for="diagnostic_jsonl">Detection Diagnostics</label>
-                <div class="flex items-center gap-2">
-                  <input type="checkbox" id="enable_diagnostic_jsonl" />
-                  <input id="diagnostic_jsonl" class="input" placeholder="detection-diagnostics.jsonl" />
-                </div>
-              </div>
-              <div class="field">
                 <label class="flex items-center gap-2 mt-5">
                   <input type="checkbox" id="spur_calibration" />
                   <span>Spur Calibration Mode</span>
@@ -519,6 +520,9 @@ const zonesContainer = document.getElementById('zonesContainer');
 const friendlyContainer = document.getElementById('friendlyContainer');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
+const diagnosticsMode = document.getElementById('diagnostics_mode');
+const exportDiagnosticsBtn = document.getElementById('exportDiagnosticsBtn');
+const diagnosticExportStatus = document.getElementById('diagnosticExportStatus');
 const runModeSelect = document.getElementById('run_mode');
 const durationInput = document.getElementById('duration_value');
 const log = document.getElementById('log');
@@ -527,6 +531,12 @@ const log = document.getElementById('log');
 function setState(s){ 
   pill.textContent = s; 
   pill.className = 'pill ' + (s==='running'?'run':'idle'); 
+  updateExportButton();
+}
+
+function updateExportButton() {
+  if (!exportDiagnosticsBtn) return;
+  exportDiagnosticsBtn.disabled = !(activeJob?.id || lastJobId);
 }
 
 function formatFreq(hz) {
@@ -1057,9 +1067,7 @@ startBtn.addEventListener('click', async () => {
   const jsonl = getVal('jsonl', String);
   if (jsonl) params.jsonl = jsonl;
 
-  if (getCheck('enable_diagnostic_jsonl')) {
-    params.diagnostic_jsonl = getVal('diagnostic_jsonl', String) || 'detection-diagnostics.jsonl';
-  }
+  if (getCheck('diagnostics_mode')) params.diagnostics_mode = true;
   
   if (getCheck('spur_calibration')) {
     params.spur_calibration = true;
@@ -1122,6 +1130,44 @@ stopBtn.addEventListener('click', async () => {
     setState('idle');
   } catch (err) {
     console.error(err);
+  }
+});
+
+exportDiagnosticsBtn?.addEventListener('click', async () => {
+  let jobId = activeJob?.id || lastJobId;
+  if (!jobId) {
+    await refreshActiveState();
+    jobId = activeJob?.id || lastJobId;
+  }
+  if (!jobId) {
+    alert('No scan job is available to export.');
+    return;
+  }
+  try {
+    diagnosticExportStatus.textContent = 'Preparing diagnostic bundle...';
+    const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/diagnostic-bundle`, {
+      headers: authHeaders(false)
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(detail || `HTTP ${r.status}`);
+    }
+    const blob = await r.blob();
+    const disposition = r.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match ? match[1] : `sdrwatch-diagnostics-${jobId}.zip`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    diagnosticExportStatus.textContent = `Downloaded ${filename}`;
+  } catch (err) {
+    diagnosticExportStatus.textContent = '';
+    alert('Failed to export diagnostic bundle: ' + err.message);
   }
 });
 

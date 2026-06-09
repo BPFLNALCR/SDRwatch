@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from flask import Blueprint, Response, abort, jsonify, request
+from flask import Blueprint, Response, abort, current_app, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from sdrwatch_web.auth import require_auth
 from sdrwatch_web.controller import controller_active_job, get_controller
+from sdrwatch_web.diagnostics import DiagnosticBundleBounds, build_diagnostic_bundle
 
 bp = Blueprint("api_jobs", __name__)
 
@@ -256,6 +257,43 @@ def api_job_logs(job_id: str):
     require_auth()
     tail = request.args.get("tail", type=int)
     return job_logs_response(job_id, tail)
+
+
+@bp.get("/api/jobs/<job_id>/diagnostic-bundle")
+def api_job_diagnostic_bundle(job_id: str):
+    """Export a bounded local diagnostic bundle for a job."""
+    require_auth()
+    bounds = DiagnosticBundleBounds.from_values(
+        log_tail_lines=request.args.get("log_tail_lines"),
+        diagnostic_tail_lines=request.args.get("diagnostic_tail_lines"),
+        row_limit=request.args.get("row_limit"),
+    )
+    ctl = get_controller()
+    try:
+        job = ctl.job_detail(job_id)
+    except Exception as exc:
+        detail = str(exc)
+        if "404" in detail or "not found" in detail.lower():
+            abort(404, description=detail)
+        abort(502, description=detail)
+
+    scanner_log_text = None
+    try:
+        scanner_log_text = ctl.job_logs(job_id, tail=bounds.log_tail_lines + 1)
+    except Exception:
+        scanner_log_text = None
+
+    bundle = build_diagnostic_bundle(
+        job=job,
+        db_path=current_app.config.get("DB_PATH") or current_app.config.get("SDRWATCH_DB_PATH") or "",
+        scanner_log_text=scanner_log_text,
+        bounds=bounds,
+    )
+    headers = {
+        "Content-Disposition": f'attachment; filename="{bundle.filename}"',
+        "Cache-Control": "no-store",
+    }
+    return Response(bundle.content, headers=headers, mimetype="application/zip")
 
 
 # ---------------------------------------------------------------------------

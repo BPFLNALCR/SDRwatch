@@ -12,6 +12,7 @@ from time import perf_counter
 from typing import Any, Dict, List, Optional, Set
 
 from flask import Flask, g, request
+from werkzeug.exceptions import HTTPException
 
 from sdrwatch_web.config import CONTROL_TOKEN, CONTROL_URL
 from sdrwatch_web.controller import ControllerClient
@@ -76,6 +77,8 @@ def create_app(db_path: str) -> Flask:
 
     @app.errorhandler(Exception)
     def capture_error_to_ring(exc):
+        if isinstance(exc, HTTPException):
+            return exc
         entry = {
             "ts": datetime.now(timezone.utc)
             .isoformat(timespec="milliseconds")

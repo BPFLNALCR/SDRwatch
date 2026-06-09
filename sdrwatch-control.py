@@ -47,6 +47,7 @@ BASE_DIR = Path(os.environ.get("SDRWATCH_CONTROL_BASE", "/tmp/sdrwatch-control")
 STATE_PATH = BASE_DIR / "state.json"
 LOGS_DIR = BASE_DIR / "logs"
 LOCKS_DIR = BASE_DIR / "locks"
+DIAGNOSTICS_DIR = BASE_DIR / "diagnostics"
 SCANNER_MODULE = "sdrwatch.cli"
 
 # If your project locates scripts elsewhere, tweak these defaults:
@@ -193,9 +194,10 @@ def _default_db_path() -> Path:
 # ---------- Utilities ----------
 
 def ensure_dirs() -> None:
+    BASE_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     LOCKS_DIR.mkdir(parents=True, exist_ok=True)
-    BASE_DIR.mkdir(parents=True, exist_ok=True)
+    DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def short_uuid() -> str:
@@ -204,6 +206,36 @@ def short_uuid() -> str:
 
 def now_ts() -> float:
     return time.time()
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _safe_artifact_token(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip(".-")
+    return safe or short_uuid()
+
+
+def generated_diagnostic_jsonl_path(job_id: str) -> str:
+    """Return the controller-owned diagnostic JSONL path for a job."""
+    return str(DIAGNOSTICS_DIR / f"{_safe_artifact_token(job_id)}.diagnostic.jsonl")
+
+
+def normalize_diagnostic_params(job_id: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy scan params and add a generated diagnostic path when requested."""
+    params = dict(args or {})
+    if _truthy(params.get("diagnostics_mode")) and not params.get("diagnostic_jsonl"):
+        params["diagnostic_jsonl"] = generated_diagnostic_jsonl_path(job_id)
+    return params
 
 
 def _record_discovery_event(
@@ -559,6 +591,7 @@ class JobManager:
             _time.sleep(0.3)
 
             jid = short_uuid()
+            sdrwatch_args = normalize_diagnostic_params(jid, sdrwatch_args)
             log_path = str(LOGS_DIR / f"{jid}.log")
             cmd = self._build_cmd(
                 script_path=script_path,
