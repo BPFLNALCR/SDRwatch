@@ -11,7 +11,6 @@ build/
 .ruff_cache/
 
 .build-rtl-sdr/
-requirements.sdrwatch.txt
 sdrwatch.db
 *.db
 *.jsonl

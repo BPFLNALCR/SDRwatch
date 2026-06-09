@@ -93,6 +93,112 @@ Non-interactive mode:
 SDRWATCH_AUTO_YES=1 ./install-sdrwatch.sh
 ```
 
+## Local Development Setup
+
+The installer remains the preferred Raspberry Pi deployment path. For contributor work,
+SDRwatch now supports editable installs directly from a repository checkout.
+
+### Supported Platforms
+
+| Platform | No-Hardware Development | Hardware Validation |
+| --- | --- | --- |
+| Raspberry Pi OS / Linux | Supported | Supported |
+| Windows | Supported | Not supported |
+
+### Fresh Venv Install
+
+Linux or Raspberry Pi OS, runtime-only install:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e .
+```
+
+Linux or Raspberry Pi OS, contributor install with tests and tooling:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e ".[dev]"
+```
+
+Windows, contributor install with tests and tooling:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python -m pip install -U pip
+.\.venv\Scripts\python -m pip install -e ".[dev]"
+```
+
+### Linux and Raspberry Pi Hardware Prerequisites
+
+Hardware validation stays outside pip. Install SDR and numeric prerequisites with the OS package manager first, then add the optional RTL Python extra.
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv python3-numpy python3-scipy librtlsdr0 librtlsdr-dev rtl-sdr libusb-1.0-0 libusb-1.0-0-dev
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e ".[dev,rtl]"
+```
+
+Optional SoapySDR support remains OS-managed as well, for example via `soapysdr-module-rtlsdr` on Debian or Raspberry Pi OS.
+
+Windows support is limited to no-hardware development. Do not expect RTL-SDR, SoapySDR, `rtl_test`, or live scan validation to work on Windows as part of this workflow.
+
+### No-Hardware Smoke Tests
+
+CLI import smoke test:
+
+```bash
+python -c "import sdrwatch.cli; print('cli import ok')"
+```
+
+Web app import smoke test:
+
+```bash
+python -c "from sdrwatch_web import create_app; create_app('does-not-exist.db'); print('web import ok')"
+```
+
+Entry-point help smoke tests:
+
+```bash
+python -m sdrwatch.cli --help
+python sdrwatch-control.py --help
+python sdrwatch-web.py --help
+```
+
+Standard no-hardware test command:
+
+```bash
+python -m pytest -q tests
+```
+
+Simulation-mode smoke test:
+
+```bash
+python -m sdrwatch.cli --driver sim --profile fm_broadcast --baseline-id latest --start 88e6 --stop 108e6 --db sim-sdrwatch.db --repeat 2
+python -m pytest -q tests/test_sim_mode.py
+```
+
+The `latest` baseline alias will reuse the newest baseline in the target DB or create one on first run, so this smoke path works on a fresh checkout with no SDR attached. To inspect the generated data in the dashboard, point the web app at `sim-sdrwatch.db`.
+For the full baseline creation, dashboard inspection, and CI-equivalent workflow, see [specs/003-add-sim-mode/quickstart.md](specs/003-add-sim-mode/quickstart.md).
+
+### Hardware-Specific Checks (Linux / Raspberry Pi Only)
+
+Run these separately from the no-hardware smoke tests after OS packages, permissions,
+and device access are in place:
+
+```bash
+rtl_test -t
+python -m sdrwatch.cli --list-profiles
+python -m sdrwatch.cli --baseline-id 1 --start 88e6 --stop 108e6 --step 1.8e6 --duration 10
+```
+
 ---
 
 ## 🚀 Usage
@@ -101,19 +207,34 @@ SDRWATCH_AUTO_YES=1 ./install-sdrwatch.sh
 
 All sweeps must be associated with a baseline (`--baseline-id <id>` or `--baseline-id latest`).
 
+Use `--driver rtlsdr_native` for real RTL-SDR scans and `--driver sim` for deterministic no-hardware development and CI validation.
+
 Sweep the FM band once:
 
 ```bash
 python3 -m sdrwatch.cli --baseline-id 3 --start 88e6 --stop 108e6 --step 1.8e6 \
-  --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr --gain auto
+  --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr_native --gain auto
 ```
 
 Continuous monitoring across 30 MHz – 1.7 GHz:
 
 ```bash
 python3 -m sdrwatch.cli --baseline-id 3 --start 30e6 --stop 1700e6 --step 2.4e6 \
-  --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr \
+  --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr_native \
   --gain auto --loop --notify --db sdrwatch.db --jsonl events.jsonl
+```
+
+Deterministic simulated FM-band scan without hardware:
+
+```bash
+python3 -m sdrwatch.cli --driver sim --profile fm_broadcast --baseline-id latest \
+  --start 88e6 --stop 108e6 --db sim-sdrwatch.db --repeat 3
+```
+
+Inspect the resulting database in the web UI:
+
+```bash
+python3 sdrwatch-web.py --db sim-sdrwatch.db --host 0.0.0.0 --port 8080
 ```
 
 Two-pass verification for refined bandwidth detection:
@@ -131,7 +252,8 @@ Use `--profile <name>` for preset configurations:
 | Profile | Description |
 | --- | --- |
 | `fm_broadcast` | FM band (88-108 MHz), optimized for broadcast detection |
-| `full_sweep` | Wide coverage with balanced settings |
+| `vhf_uhf_general` | 400-470 MHz wideband sweep with balanced VHF/UHF defaults |
+| `ism_902` | 902-928 MHz ISM band scan tuned for narrowband emitters |
 
 #### Persistence Modes
 

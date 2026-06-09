@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sdrwatch"
+version = "0.1.0"
+description = "Baseline-centric SDR spectrum monitoring tools"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "flask>=3.0.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.10",
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+]
+rtl = [
+    "pyrtlsdr>=0.3.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sdrwatch*", "sdrwatch_web*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

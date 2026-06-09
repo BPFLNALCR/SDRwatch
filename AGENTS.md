@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at specs/001-document-repo-inventory/plan.md
+at specs/003-add-sim-mode/plan.md
 <!-- SPECKIT END -->

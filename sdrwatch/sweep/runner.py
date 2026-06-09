@@ -10,6 +10,7 @@ from typing import Dict, Optional
 from sdrwatch.baseline.context import resolve_baseline_context
 from sdrwatch.baseline.store import Store
 from sdrwatch.drivers.rtlsdr import RTLSDRSource
+from sdrwatch.drivers.simulate import SimulatedSource
 from sdrwatch.io.bandplan import Bandplan
 from sdrwatch.sweep.sweeper import Sweeper
 from sdrwatch.util.duration import parse_duration_to_seconds
@@ -79,11 +80,15 @@ class ScannerRunner:
 
     def _select_source(self):
         args = self.args
-        if args.driver != "rtlsdr_native":
-            raise RuntimeError("unsupported driver. Use --driver rtlsdr_native")
-        src = RTLSDRSource(samp_rate=args.samp_rate, gain=args.gain)
-        setattr(src, "device", "RTL-SDR (native)")
-        return src
+        if args.driver == "rtlsdr_native":
+            src = RTLSDRSource(samp_rate=args.samp_rate, gain=args.gain)
+            setattr(src, "device", "RTL-SDR (native)")
+            return src
+        if args.driver == "sim":
+            src = SimulatedSource(samp_rate=args.samp_rate, gain=args.gain)
+            setattr(src, "device", "Simulated SDR")
+            return src
+        raise RuntimeError("unsupported driver. Use --driver rtlsdr_native or --driver sim")
 
     def _termination_policy(self):
         duration_s = parse_duration_to_seconds(self.args.duration)

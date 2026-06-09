@@ -6,7 +6,7 @@
 # What this does
 #  1) Installs system deps for RTL‑SDR, NumPy/SciPy, Flask, etc.
 #  2) Creates a Python venv that can see APT packages via --system-site-packages
-#  3) Pip‑installs lightweight Python deps (Flask, pyrtlsdr, rich)
+#  3) Pip-installs SDRwatch from committed project metadata, with RTL Python support added via extras
 #  4) Verifies rtl_test / hackrf_info; applies udev rules + kernel blacklist for RTL2832U
 #  5) Uses /var/lib,/var/cache,/run for state to play nice with ProtectHome/ProtectSystem
 #  6) (Optional) Installs systemd services hardened with StateDirectory/RuntimeDirectory
@@ -163,18 +163,12 @@ source "$VENV_DIR/bin/activate"
 log "Upgrading pip tooling…"
 $PIP_BIN install -U pip setuptools wheel
 
-# Keep pip light; heavy numerics come from APT
-REQS_FILE="$PROJECT_DIR/requirements.sdrwatch.txt"
-cat > "$REQS_FILE" <<'REQS'
-# Light Python deps; heavy numerics come from APT via system site packages
-flask>=3.0.0
-setuptools>=68
-pyrtlsdr
-rich>=13.0.0
-REQS
+if [ ! -f "$PROJECT_DIR/pyproject.toml" ]; then
+  die "Missing pyproject.toml in $PROJECT_DIR"
+fi
 
-log "Installing Python packages from $REQS_FILE"
-$PIP_BIN install -r "$REQS_FILE"
+log "Installing SDRwatch from project metadata with RTL support"
+$PIP_BIN install -e "${PROJECT_DIR}[rtl]"
 
 # -----------------------------
 # Filename compatibility (legacy names → new entry point)
@@ -270,8 +264,7 @@ if [ "$(prompt_yn 'Install and start SDRwatch services now? (Recommended)' y)" =
   # Install Python deps inside deployed venv
   log "Installing Python packages into service venv"
   sudo "$DEPLOY_PIP" install -U pip setuptools wheel
-  # Reuse same lightweight requirements
-  sudo "$DEPLOY_PIP" install -r "$DEPLOY_DIR/requirements.sdrwatch.txt"
+  sudo "$DEPLOY_PIP" install -e "${DEPLOY_DIR}[rtl]"
 
   log "Writing env file to $ENV_FILE"
   sudo install -m 0640 -o root -g "$SRV_GROUP" /dev/null "$ENV_FILE"

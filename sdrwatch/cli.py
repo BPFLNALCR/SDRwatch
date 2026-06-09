@@ -58,7 +58,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         argv = sys.argv[1:]
 
     p = argparse.ArgumentParser(
-        description="Wideband scanner & baseline builder (native RTL-SDR by default)",
+        description="Wideband scanner & baseline builder (hardware or deterministic simulation)",
         argument_default=argparse.SUPPRESS,
     )
     p.add_argument("--start", type=float, help="Start frequency in Hz (e.g., 88e6)")
@@ -69,7 +69,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--fft", type=int, help="FFT size (per Welch segment) (default 4096)")
     p.add_argument("--avg", type=int, help="Averaging factor (segments per PSD) (default 8)")
 
-    p.add_argument("--driver", type=str, help="Driver key (default rtlsdr_native).")
+    p.add_argument("--driver", type=str, help="Driver key (default rtlsdr_native; supported: rtlsdr_native, sim).")
     p.add_argument("--gain", type=str, help='Gain in dB or "auto" (default auto)')
 
     p.add_argument("--threshold-db", dest="threshold_db", type=float, help="Detection threshold above noise floor [dB] (default 8.0)")
@@ -258,11 +258,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         delattr(args, "_cli_overrides")
 
     if not args.list_profiles:
-        if args.driver != "rtlsdr_native":
-            p.error("unsupported driver. This build supports only --driver rtlsdr_native")
+        supported_drivers = {"rtlsdr_native", "sim"}
+        if args.driver not in supported_drivers:
+            p.error("unsupported driver. This build supports --driver rtlsdr_native or --driver sim")
         if args.driver == "rtlsdr_native" and not HAVE_RTLSDR:
             detail = f" ({RTLSDR_IMPORT_ERROR})" if RTLSDR_IMPORT_ERROR else ""
-            p.error(f"rtlsdr Python backend unavailable{detail}. Ensure pyrtlsdr and setuptools are installed.")
+            p.error(f"rtlsdr Python backend unavailable{detail}. Install the optional RTL dependency set (for example `pip install -e .[rtl]`) and ensure OS RTL-SDR prerequisites are present.")
         if args.stop < args.start:
             p.error("--stop must be >= --start")
         if args.step <= 0:
