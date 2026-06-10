@@ -1,7 +1,7 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current Spec Kit plan
-at specs/001-gui-diagnostics-capture/plan.md.
+at specs/002-improve-scan-control/plan.md.
 
 Use docs/MERGE_REVIEW.md and docs/PROJECT_INVENTORY.md as consolidation and
 repository workflow context. The active development baseline is devControl.
