@@ -178,6 +178,75 @@ def _tag(html: str, element_id: str) -> str:
     return match.group(0)
 
 
+EXPECTED_PRESETS: Dict[str, Dict[str, str]] = {
+    "rtl_v4_discovery": {
+        "samp_rate": "2.4e6",
+        "step": "2400000",
+        "gain_mode": "manual",
+        "gain": "30",
+        "fft": "8192",
+        "avg": "8",
+        "persistence_min_hits": "1",
+        "persistence_min_windows": "1",
+    },
+    "stable_baseline": {
+        "samp_rate": "2.4e6",
+        "step": "1200000",
+        "gain_mode": "manual",
+        "gain": "30",
+        "fft": "8192",
+        "avg": "16",
+        "persistence_min_hits": "2",
+        "persistence_min_windows": "2",
+    },
+    "fast_wide_survey": {
+        "samp_rate": "2.4e6",
+        "step": "2400000",
+        "gain_mode": "manual",
+        "gain": "30",
+        "fft": "4096",
+        "avg": "8",
+        "persistence_min_hits": "1",
+        "persistence_min_windows": "1",
+    },
+}
+
+
+def _const_block(html: str, const_name: str) -> str:
+    start = html.index(f"const {const_name} = ")
+    boundaries = []
+    for terminator in ("\n};", "\n];"):
+        index = html.find(terminator, start)
+        if index != -1:
+            boundaries.append(index + len(terminator))
+    assert boundaries, f"Missing terminator for {const_name}"
+    end = min(boundaries)
+    return html[start:end]
+
+
+def _function_block(html: str, function_name: str) -> str:
+    start = html.index(f"function {function_name}(")
+    next_function = html.find("\nfunction ", start + 1)
+    end = next_function if next_function != -1 else html.index("</script>", start)
+    return html[start:end]
+
+
+def _preset_block(html: str, preset_id: str) -> str:
+    start = html.index(f"  {preset_id}: {{")
+    boundaries = [
+        html.find(f"\n  {other_id}: {{", start + 1)
+        for other_id in EXPECTED_PRESETS
+        if other_id != preset_id
+    ]
+    boundaries.append(html.index("\n};", start))
+    end = min(index for index in boundaries if index != -1)
+    return html[start:end]
+
+
+def _assert_js_string_value(block: str, key: str, value: str) -> None:
+    assert f"{key}: '{value}'" in block
+
+
 def test_basic_controls_render_as_primary_scan_workflow(tmp_path: Path) -> None:
     html = _control_html(tmp_path)
 
@@ -240,6 +309,7 @@ def test_tuning_controls_are_bounded_and_described(tmp_path: Path) -> None:
     html = _control_html(tmp_path)
 
     assert "Tuning controls" in html
+    assert 'id="scan_preset"' in html
     for element_id in ("threshold_db", "guard_bins", "min_width_bins", "cfar_alpha_db", "cfar_quantile"):
         tag = _tag(html, element_id)
         assert 'type="range"' in tag
@@ -252,9 +322,81 @@ def test_tuning_controls_are_bounded_and_described(tmp_path: Path) -> None:
         "Detection threshold above the learned noise floor.",
         "Below-threshold bins allowed inside one detection.",
         "Minimum contiguous bins before a detection is reported.",
-        "Automatic gain is safest for normal scans.",
+        "Lower FFT scans faster; higher FFT improves frequency resolution",
+        "More averaging smooths noise and steadies peaks",
+        "Fixed gain improves baseline repeatability",
+        "reduce it if strong signals overload",
     ):
         assert help_text in html
+
+
+def test_gui_tuning_presets_render_with_visible_descriptions(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+
+    assert "GUI Tuning Preset" in html
+    assert 'id="scan_preset_description"' in html
+    for value, label in (
+        ("rtl_v4_discovery", "RTL-SDR v4 Discovery"),
+        ("stable_baseline", "Stable Baseline"),
+        ("fast_wide_survey", "Fast Wide Survey"),
+        ("custom", "Custom"),
+    ):
+        assert f'<option value="{value}"' in html
+        assert label in html
+
+    for description in (
+        "relaxed 1/1 promotion so initial cards can appear",
+        "overlapping 1.2 MS/s step",
+        "lower FFT favors speed over precise characterization",
+    ):
+        assert description in html
+
+
+def test_rtl_sdr_v4_discovery_preset_applies_first_light_values(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+    block = _preset_block(html, "rtl_v4_discovery")
+
+    for key, value in EXPECTED_PRESETS["rtl_v4_discovery"].items():
+        _assert_js_string_value(block, key, value)
+
+
+def test_stable_baseline_preset_applies_overlapping_values(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+    block = _preset_block(html, "stable_baseline")
+
+    for key, value in EXPECTED_PRESETS["stable_baseline"].items():
+        _assert_js_string_value(block, key, value)
+
+
+def test_fast_wide_survey_preset_applies_fast_values(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+    block = _preset_block(html, "fast_wide_survey")
+
+    for key, value in EXPECTED_PRESETS["fast_wide_survey"].items():
+        _assert_js_string_value(block, key, value)
+
+
+def test_preset_application_does_not_submit_backend_preset_identifier(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+    builder = _function_block(html, "buildScanJobPayload")
+
+    assert "scan_preset" not in builder
+    assert "preset" not in builder
+    assert "params.step" in builder
+    assert "params.persistence_min_hits" in builder
+    assert "params.persistence_min_windows" in builder
+
+
+def test_manual_edits_after_preset_use_existing_payload_fields(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+    builder = _function_block(html, "buildScanJobPayload")
+
+    assert "function markCustomScanPreset()" in html
+    assert "scanPresetSelect.value = 'custom'" in html
+    for element_id in ("gain", "step", "fft", "avg", "persistence_min_hits", "persistence_min_windows"):
+        assert f"'{element_id}'" in _const_block(html, "PRESET_CONTROL_IDS")
+    for param_name in ("gain", "step", "fft", "avg", "persistence_min_hits", "persistence_min_windows"):
+        assert f"params.{param_name}" in builder
 
 
 def test_scan_form_and_numeric_controls_disable_autocomplete(tmp_path: Path) -> None:
@@ -303,6 +445,9 @@ def test_generated_settings_builder_keeps_existing_param_names(tmp_path: Path) -
         "avg",
         "samp_rate",
         "gain",
+        "step",
+        "persistence_min_hits",
+        "persistence_min_windows",
     ):
         assert f"params.{param_name}" in html
 
@@ -346,6 +491,41 @@ def test_reset_and_copy_controls_render(tmp_path: Path) -> None:
     assert "const SAFE_SCAN_DEFAULTS" in html
     assert "function resetScanDefaults()" in html
     assert "function copyCurrentScanSettings()" in html
+
+
+def test_reset_to_safe_defaults_restores_discovery_preset(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+    defaults = _const_block(html, "SAFE_SCAN_DEFAULTS")
+
+    _assert_js_string_value(defaults, "scan_preset", "rtl_v4_discovery")
+    for key, value in EXPECTED_PRESETS["rtl_v4_discovery"].items():
+        _assert_js_string_value(defaults, key, value)
+
+    assert '<option value="rtl_v4_discovery" selected>RTL-SDR v4 Discovery</option>' in html
+    assert '<option value="manual" selected>Manual</option>' in html
+    assert 'value="30"' in _tag(html, "gain")
+    assert 'value="2400000"' in _tag(html, "step")
+    assert 'value="1"' in _tag(html, "persistence_min_hits")
+    assert 'value="1"' in _tag(html, "persistence_min_windows")
+
+
+def test_copy_current_scan_settings_uses_payload_builder_and_omits_blank_overrides(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+    copy_function = _function_block(html, "copyCurrentScanSettings")
+    builder = _function_block(html, "buildScanJobPayload")
+
+    assert "const payload = buildScanJobPayload();" in copy_function
+    assert "JSON.stringify(payload, null, 2)" in copy_function
+    for param_name in ("gain", "step", "fft", "avg", "persistence_min_hits", "persistence_min_windows"):
+        assert f"params.{param_name}" in builder
+
+    for optional_check in (
+        "if (profile) params.profile = profile;",
+        "if (bandplan) params.bandplan = bandplan;",
+        "if (jsonl) params.jsonl = jsonl;",
+        "if (diagnosticJsonl) params.diagnostic_jsonl = diagnosticJsonl;",
+    ):
+        assert optional_check in builder
 
 
 def test_internal_debug_command_copy_is_labeled_and_uses_job_metadata(tmp_path: Path) -> None:

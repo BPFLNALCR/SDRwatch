@@ -7,7 +7,7 @@ This contract defines the expected operator-facing behavior of the scan/control 
 - Route: existing scan/control page.
 - Primary user: SDRwatch operator using the browser.
 - Primary workflow: select baseline/location, select device, select or enable monitoring zones, choose run mode, optionally enable Diagnostics mode, start/stop scan, view live logs.
-- Out of scope: new dashboard pages, scanner DSP behavior, database schema changes, simulation mode, or CLI-first operator instructions.
+- Out of scope: new dashboard pages, scanner DSP algorithm rewrites, database schema changes, simulation mode, blind CFAR/detection rewrites, or CLI-first operator instructions.
 
 ## Required Sections
 
@@ -26,6 +26,24 @@ Basic controls must contain the normal operator workflow:
 
 Basic controls must not expose tuning and expert-only raw numeric fields as part of the normal workflow.
 
+### GUI Tuning Presets
+
+The page must expose operator-facing presets that apply existing scan parameters through the GUI:
+
+| Preset | Purpose | Expected Parameter Direction |
+| --- | --- | --- |
+| RTL-SDR v4 Discovery | First-light real-hardware cards | Fixed manual gain near `30 dB`, fast `2.4e6` step, relaxed `persistence_min_hits=1` and `persistence_min_windows=1`, FFT `4096` or `8192`, avg `8` |
+| Stable Baseline | Slower cleaner baseline scans | Fixed manual gain around `25-30 dB`, overlapping `1.2e6` step, FFT `8192`, avg `16`, stricter `2/2` persistence |
+| Fast Wide Survey | Broad scan speed | Fixed manual gain near `30 dB`, `2.4e6` step, FFT `4096`, avg `8`, relaxed promotion gates |
+
+Preset rules:
+
+- Applying a preset updates visible controls and the generated `/api/jobs` parameters.
+- The preset must not submit a new backend-only preset identifier unless separately implemented and documented.
+- Copy current scan settings must show the applied preset values using existing parameter names.
+- Preset text must explain that FFT controls scan speed and characterization quality, while the diagnosed zero-card failure is promotion/persistence.
+- Preset text must keep fixed-gain overload risk visible and configurable.
+
 ### Tuning Controls
 
 Tuning controls must contain common RF adjustment controls:
@@ -41,7 +59,7 @@ Tuning controls must contain common RF adjustment controls:
 | `fft` | Select | Selected option | Explains FFT size tradeoff |
 | `avg` | Select or segmented control | Selected option | Explains averaging speed/noise tradeoff |
 | `samp_rate` | Select | Selected option | Explains sample rate effect |
-| `gain` | Auto/manual control | Selected mode and manual value when relevant | Explains automatic versus manual gain |
+| `gain` | Auto/manual control | Selected mode and manual value when relevant | Explains automatic versus manual gain, repeatability, and overload risk |
 
 ### Expert Controls
 
@@ -79,7 +97,7 @@ When activated:
 
 - All Basic, Tuning, and Expert controls return to documented safe defaults.
 - Slider visible values update immediately.
-- Gain returns to auto unless the documented safe default differs.
+- Gain returns to the documented first-light/default preset behavior. For RTL-SDR v4 detection presets this should be fixed manual gain unless implementation chooses another documented default.
 - Optional expert values return to the page's default blank/auto/none semantics.
 - The operator can still review settings before starting a scan.
 
@@ -109,6 +127,7 @@ Rules:
 - Values shown above are examples only.
 - The JSON must use the same parameter names the GUI submits to `/api/jobs`.
 - Enabled monitoring zones determine `params.start` and `params.stop`.
+- Selected presets determine values such as `gain`, `step`, `fft`, `avg`, and persistence gates until the operator overrides them.
 - Diagnostics mode adds the existing diagnostics parameter used by the current web/controller workflow.
 - Copy failure must be visible to the operator if browser clipboard access is blocked.
 
@@ -129,6 +148,7 @@ Rules:
 - Stop uses the existing job stop workflow.
 - Live logs continue to poll the existing logs endpoint for the active or recent job.
 - Diagnostics export behavior, if present from prior work, must continue to work.
+- Real-hardware validation for the RTL-SDR v4 Discovery preset must confirm signal cards appear through the web UI.
 
 ## Error and Empty-State Contract
 

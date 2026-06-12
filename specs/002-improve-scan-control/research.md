@@ -27,14 +27,61 @@
 - Build copy JSON separately from the submit payload: rejected because duplicate mapping is likely to drift.
 - Copy raw form fields without normalizing to job params: rejected because reviewers need the job-parameter names actually submitted to `/api/jobs`.
 
-## Decision: Restore safe defaults from existing SDRwatch defaults
+## Decision: Update GUI defaults and presets using diagnostic evidence
 
-**Rationale**: The feature must not tune DSP behavior. Safe defaults should therefore reflect the defaults already present in the page and scanner/controller path: common examples include `samp_rate` 2.4e6, `gain` auto, `fft` 4096, `avg` 8, `threshold_db` 8, `guard_bins` 1, `min_width_bins` 2, CFAR quantile 0.75, persistence hit ratio 0.6, persistence minimum seconds 10, minimum hits 2, minimum windows 2, `max_detection_width_ratio` 3.0, and `new_ema_occ` 0.02.
+**Rationale**: `docs/DETECTION_TUNING_REPORT.md` shows that real RTL-SDR Blog v4 scans already produce raw candidates, emitted detector segments, and accepted hits. The failure is promotion into `baseline_detections`, not an absence of RF energy and not a GUI card-rendering problem. Existing GUI defaults therefore are not safe enough for first-light hardware use because they can run indefinitely with accepted hits and zero cards. Safe defaults/presets should still preserve `/api/jobs` names and scanner layering, but they may intentionally change submitted parameter values to produce signal cards.
 
 **Alternatives considered**:
 
-- Invent new RF defaults: rejected because that would be DSP/product tuning outside the feature scope.
+- Keep existing defaults unchanged: rejected because the diagnostic bundle shows current defaults can produce no signal cards despite accepted hits.
+- Rewrite CFAR/detection algorithms first: rejected because candidates and accepted hits already exist; the immediate failure is promotion/persistence.
+- Treat FFT as the root cause: rejected for this failure because the analyzed run used `fft=8192`, `avg=8`, and still promoted zero detections.
 - Reset only visible Basic controls: rejected because acceptance requires every Basic, Tuning, and Expert setting to reset.
+
+## Decision: Resolve the promotion/persistence mismatch through GUI presets first
+
+**Rationale**: The current sweep uses `step=2.4e6` with `samp_rate=2.4e6`, creating effectively non-overlapping windows. The detection engine clusters candidates within a single sweep, while the default promotion gate requires `persistence_min_hits=2` and `persistence_min_windows=2`. Narrow stable signals recur across repeated sweeps in the same window, not across two windows in one sweep, so they can be accepted repeatedly without promotion.
+
+**Alternatives considered**:
+
+- Persist candidate clusters across sweeps immediately: deferred as a deeper detection-engine change after GUI defaults prove the desired operator behavior.
+- Require operators to run custom scanner CLI flags: rejected because SDRwatch is GUI-operated.
+- Change only FFT/averaging: rejected because the diagnostic data shows detector emission and hit acceptance already work.
+
+## Decision: Provide three GUI tuning presets
+
+**Rationale**: Operators need clear first-light and baseline choices without learning raw scanner flags. Presets can remain web-only configuration helpers that populate existing `/api/jobs` parameters.
+
+**Preset directions**:
+
+- **RTL-SDR v4 Discovery**: fast non-overlapping `step=2.4e6`, fixed manual gain around `30 dB`, `fft=4096` or `8192`, `avg=8`, and relaxed promotion gates such as `persistence_min_hits=1` and `persistence_min_windows=1` so initial cards appear.
+- **Stable Baseline**: overlapping `step=1.2e6`, fixed manual gain around `25-30 dB`, `fft=8192`, `avg=16`, and stricter promotion gates such as `persistence_min_hits=2` and `persistence_min_windows=2`, accepting the scan-speed penalty.
+- **Fast Wide Survey**: `fft=4096`, `avg=8`, `step=2.4e6`, fixed manual gain around `30 dB`, and relaxed promotion gates for broad survey speed.
+
+**Alternatives considered**:
+
+- One universal default: rejected because wide fast survey, first-light discovery, and stable baseline scans have different speed/noise/persistence tradeoffs.
+- Hide presets behind CLI examples: rejected because operator workflows must stay in the web GUI.
+- Make the slow stable baseline preset the only default: rejected because first-light hardware onboarding should produce visible cards quickly.
+
+## Decision: Prefer fixed manual RTL-SDR gain for baseline/detection presets
+
+**Rationale**: Auto gain can move the apparent noise floor and makes baseline comparison harder to reason about. The diagnostic bundle did not prove severe auto-gain instability because actual tuner gain telemetry was not recorded, but fixed gain is still the better baseline/detection default. A manual RTL-SDR gain around `30 dB` is a reasonable starting candidate for RTL-SDR Blog v4, subject to supported gain values and overload behavior.
+
+**Alternatives considered**:
+
+- Keep auto gain as the primary safe default: rejected for baseline/detection presets because repeatability matters more than convenience.
+- Force a single non-configurable gain: rejected because strong-signal environments can overload and operators need an easy way to reduce gain.
+
+## Decision: Treat FFT as a preset speed/resolution knob
+
+**Rationale**: Lower FFT sizes scan faster but provide wider bins, less precise peak centering, and less reliable bandwidth characterization. Higher FFT sizes improve frequency resolution and signal characterization, but slow wide sweeps on Raspberry Pi 5. The diagnostic run used `fft=8192`, so FFT is not the primary fix for zero cards; it should be presented as a scan-quality/speed tradeoff once promotion works.
+
+**Alternatives considered**:
+
+- Set maximum FFT everywhere: rejected because wide sweeps on Raspberry Pi 5 need usable scan cadence.
+- Set minimum FFT everywhere: rejected because characterization quality suffers.
+- Claim FFT fixes no-card behavior: rejected because the evidence points to promotion/persistence.
 
 ## Decision: Move common RF parameters to bounded Tuning controls
 

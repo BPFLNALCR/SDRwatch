@@ -116,9 +116,30 @@
     <details class="mt-4" id="tuningControls" data-section="tuning-controls" open>
       <summary class="text-sm text-slate-400 cursor-pointer hover:text-slate-300">Tuning controls</summary>
       <div class="mt-3 p-4 bg-slate-900/30 rounded-lg border border-slate-700/30 space-y-4">
-        <p class="text-xs text-slate-500 mb-3">Common RF settings. Defaults work well for most RTL-SDR setups.</p>
+        <p class="text-xs text-slate-500 mb-3">Common RF settings. The default preset favors first-light RTL-SDR v4 signal cards through the web workflow.</p>
 
         <div id="advancedForm" class="space-y-4">
+          <!-- GUI Tuning Presets -->
+          <fieldset class="border border-slate-700/50 rounded-lg p-3">
+            <legend class="text-sm font-medium text-cyan-400 px-2">GUI Tuning Preset</legend>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+              <div class="field md:col-span-1">
+                <label for="scan_preset">Preset</label>
+                <select id="scan_preset" class="input" autocomplete="off">
+                  <option value="rtl_v4_discovery" selected>RTL-SDR v4 Discovery</option>
+                  <option value="stable_baseline">Stable Baseline</option>
+                  <option value="fast_wide_survey">Fast Wide Survey</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div class="field md:col-span-3">
+                <p id="scan_preset_description" class="text-xs text-slate-500 mt-6">
+                  First-light RTL-SDR v4: fixed 30 dB gain, fast non-overlapping 2.4 MS/s step, FFT 8192/avg 8, and relaxed 1/1 promotion so initial cards can appear.
+                </p>
+              </div>
+            </div>
+          </fieldset>
+
           <!-- SDR Settings -->
           <fieldset class="border border-slate-700/50 rounded-lg p-3">
             <legend class="text-sm font-medium text-cyan-400 px-2">SDR Configuration</legend>
@@ -135,11 +156,11 @@
               <div class="field">
                 <label for="gain_mode">Gain</label>
                 <select id="gain_mode" class="input" autocomplete="off">
-                  <option value="auto" selected>Auto</option>
-                  <option value="manual">Manual</option>
+                  <option value="auto">Auto</option>
+                  <option value="manual" selected>Manual</option>
                 </select>
-                <input id="gain" class="input mt-2" type="number" step="0.1" value="" placeholder="Manual dB" autocomplete="off" disabled />
-                <p class="text-xs text-slate-500 mt-1">Automatic gain is safest for normal scans.</p>
+                <input id="gain" class="input mt-2" type="number" step="0.1" value="30" placeholder="Manual dB" autocomplete="off" />
+                <p class="text-xs text-slate-500 mt-1">Fixed gain improves baseline repeatability; start near 30 dB for RTL-SDR v4 and reduce it if strong signals overload.</p>
               </div>
             </div>
           </fieldset>
@@ -153,11 +174,11 @@
                 <select id="fft" class="input" autocomplete="off">
                   <option value="1024">1024</option>
                   <option value="2048">2048</option>
-                  <option value="4096" selected>4096</option>
-                  <option value="8192">8192</option>
+                  <option value="4096">4096</option>
+                  <option value="8192" selected>8192</option>
                   <option value="16384">16384</option>
                 </select>
-                <p class="text-xs text-slate-500 mt-1">Larger FFTs improve frequency detail but take longer.</p>
+                <p class="text-xs text-slate-500 mt-1">Lower FFT scans faster; higher FFT improves frequency resolution and signal characterization but slows wide sweeps.</p>
               </div>
               <div class="field">
                 <label for="avg">Averaging</label>
@@ -168,7 +189,7 @@
                   <option value="16">16</option>
                   <option value="32">32 (slow, clean)</option>
                 </select>
-                <p class="text-xs text-slate-500 mt-1">More averaging smooths noise and slows updates.</p>
+                <p class="text-xs text-slate-500 mt-1">More averaging smooths noise and steadies peaks, but each sweep updates more slowly.</p>
               </div>
             </div>
           </fieldset>
@@ -287,7 +308,7 @@
               </div>
               <div class="field">
                 <label for="step">Step Size (Hz)</label>
-                <input id="step" class="input" value="" placeholder="auto (=samp_rate)" autocomplete="off" title="Blank defaults to the selected sample rate" />
+                <input id="step" class="input" value="2400000" placeholder="auto (=samp_rate)" autocomplete="off" title="Blank defaults to the selected sample rate" />
               </div>
               <div class="field">
                 <label for="sleep_between_sweeps">Sleep Between Sweeps (s)</label>
@@ -327,11 +348,11 @@
               </div>
               <div class="field">
                 <label for="persistence_min_hits">Min Hits</label>
-                <input id="persistence_min_hits" class="input" type="number" value="2" min="1" autocomplete="off" title="Min hits before persistence eval" />
+                <input id="persistence_min_hits" class="input" type="number" value="1" min="1" autocomplete="off" title="Min hits before persistence eval" />
               </div>
               <div class="field">
                 <label for="persistence_min_windows">Min Windows</label>
-                <input id="persistence_min_windows" class="input" type="number" value="2" min="1" autocomplete="off" title="Min windows before persistence eval" />
+                <input id="persistence_min_windows" class="input" type="number" value="1" min="1" autocomplete="off" title="Min windows before persistence eval" />
               </div>
             </div>
           </fieldset>
@@ -606,19 +627,22 @@ const scanSettingsStatus = document.getElementById('scanSettingsStatus');
 const scannerCommandStatus = document.getElementById('scannerCommandStatus');
 const runModeSelect = document.getElementById('run_mode');
 const durationInput = document.getElementById('duration_value');
+const scanPresetSelect = document.getElementById('scan_preset');
+const scanPresetDescription = document.getElementById('scan_preset_description');
 const log = document.getElementById('log');
 
 const SAFE_SCAN_DEFAULTS = {
+  scan_preset: 'rtl_v4_discovery',
   diagnostics_mode: false,
   run_mode: 'loop',
   duration_value: '',
   driver: 'rtlsdr_native',
   samp_rate: '2.4e6',
-  gain_mode: 'auto',
-  gain: '',
-  fft: '4096',
+  gain_mode: 'manual',
+  gain: '30',
+  fft: '8192',
   avg: '8',
-  step: '',
+  step: '2400000',
   sleep_between_sweeps: '0',
   threshold_db: '8',
   guard_bins: '1',
@@ -636,8 +660,8 @@ const SAFE_SCAN_DEFAULTS = {
   persistence_mode: '',
   persistence_hit_ratio: '0.6',
   persistence_min_seconds: '10',
-  persistence_min_hits: '2',
-  persistence_min_windows: '2',
+  persistence_min_hits: '1',
+  persistence_min_windows: '1',
   two_pass: false,
   revisit_fft: '',
   revisit_avg: '',
@@ -654,6 +678,116 @@ const SAFE_SCAN_DEFAULTS = {
   diagnostic_jsonl: '',
   spur_calibration: false
 };
+
+const SCAN_PRESETS = {
+  rtl_v4_discovery: {
+    label: 'RTL-SDR v4 Discovery',
+    description: 'First-light RTL-SDR v4: fixed 30 dB gain, fast non-overlapping 2.4 MS/s step, FFT 8192/avg 8, and relaxed 1/1 promotion so initial cards can appear.',
+    values: {
+      samp_rate: '2.4e6',
+      step: '2400000',
+      gain_mode: 'manual',
+      gain: '30',
+      fft: '8192',
+      avg: '8',
+      threshold_db: '8',
+      guard_bins: '1',
+      min_width_bins: '2',
+      cfar: 'os',
+      cfar_train: '24',
+      cfar_guard: '4',
+      cfar_quantile: '0.75',
+      cfar_alpha_enabled: false,
+      cfar_alpha_db: '8',
+      persistence_mode: '',
+      persistence_hit_ratio: '0.6',
+      persistence_min_seconds: '10',
+      persistence_min_hits: '1',
+      persistence_min_windows: '1',
+      two_pass: false
+    }
+  },
+  stable_baseline: {
+    label: 'Stable Baseline',
+    description: 'Slower baseline work: fixed 30 dB gain, overlapping 1.2 MS/s step, FFT 8192/avg 16, and stricter 2/2 persistence for cleaner promoted detections.',
+    values: {
+      samp_rate: '2.4e6',
+      step: '1200000',
+      gain_mode: 'manual',
+      gain: '30',
+      fft: '8192',
+      avg: '16',
+      threshold_db: '10',
+      guard_bins: '1',
+      min_width_bins: '2',
+      cfar: 'os',
+      cfar_train: '24',
+      cfar_guard: '4',
+      cfar_quantile: '0.75',
+      cfar_alpha_enabled: false,
+      cfar_alpha_db: '8',
+      persistence_mode: '',
+      persistence_hit_ratio: '0.6',
+      persistence_min_seconds: '10',
+      persistence_min_hits: '2',
+      persistence_min_windows: '2',
+      two_pass: false
+    }
+  },
+  fast_wide_survey: {
+    label: 'Fast Wide Survey',
+    description: 'Fast broad survey: fixed 30 dB gain, 2.4 MS/s step, FFT 4096/avg 8, and relaxed 1/1 promotion; lower FFT favors speed over precise characterization.',
+    values: {
+      samp_rate: '2.4e6',
+      step: '2400000',
+      gain_mode: 'manual',
+      gain: '30',
+      fft: '4096',
+      avg: '8',
+      threshold_db: '10',
+      guard_bins: '1',
+      min_width_bins: '2',
+      cfar: 'os',
+      cfar_train: '24',
+      cfar_guard: '4',
+      cfar_quantile: '0.75',
+      cfar_alpha_enabled: false,
+      cfar_alpha_db: '8',
+      persistence_mode: '',
+      persistence_hit_ratio: '0.6',
+      persistence_min_seconds: '10',
+      persistence_min_hits: '1',
+      persistence_min_windows: '1',
+      two_pass: false
+    }
+  }
+};
+
+const PRESET_CONTROL_IDS = [
+  'samp_rate',
+  'step',
+  'gain_mode',
+  'gain',
+  'fft',
+  'avg',
+  'threshold_db',
+  'guard_bins',
+  'min_width_bins',
+  'cfar',
+  'cfar_train',
+  'cfar_guard',
+  'cfar_quantile',
+  'cfar_alpha_enabled',
+  'cfar_alpha_db',
+  'persistence_mode',
+  'persistence_hit_ratio',
+  'persistence_min_seconds',
+  'persistence_min_hits',
+  'persistence_min_windows',
+  'two_pass'
+];
+
+let applyingScanPreset = false;
 
 // Utility functions
 function setState(s){ 
@@ -704,6 +838,44 @@ function setControlValue(id, value) {
   } else {
     el.value = value ?? '';
   }
+}
+
+function setScanPresetDescription(presetId) {
+  if (!scanPresetDescription) return;
+  const preset = SCAN_PRESETS[presetId];
+  scanPresetDescription.textContent = preset
+    ? preset.description
+    : 'Custom settings: manual edits are active and will be copied/submitted through the same job parameters.';
+}
+
+function applyScanPreset(presetId, options = {}) {
+  const preset = SCAN_PRESETS[presetId];
+  if (!preset) {
+    setScanPresetDescription('custom');
+    return;
+  }
+
+  applyingScanPreset = true;
+  try {
+    setControlValue('scan_preset', presetId);
+    Object.entries(preset.values).forEach(([id, value]) => setControlValue(id, value));
+    updateGainMode();
+    updateCfarAlphaMode();
+    syncSliderValueDisplays();
+    setScanPresetDescription(presetId);
+  } finally {
+    applyingScanPreset = false;
+  }
+
+  if (options.announce) {
+    setStatus(scanSettingsStatus, `${preset.label} preset applied.`);
+  }
+}
+
+function markCustomScanPreset() {
+  if (applyingScanPreset || !scanPresetSelect || scanPresetSelect.value === 'custom') return;
+  scanPresetSelect.value = 'custom';
+  setScanPresetDescription('custom');
 }
 
 function syncSliderValue(id) {
@@ -993,6 +1165,21 @@ runModeSelect.addEventListener('change', () => {
   getControl(id)?.addEventListener('input', () => syncSliderValue(id));
 });
 
+scanPresetSelect?.addEventListener('change', () => {
+  if (scanPresetSelect.value === 'custom') {
+    setScanPresetDescription('custom');
+    return;
+  }
+  applyScanPreset(scanPresetSelect.value, { announce: true });
+});
+
+PRESET_CONTROL_IDS.forEach(id => {
+  const el = getControl(id);
+  if (!el) return;
+  const eventName = el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input';
+  el.addEventListener(eventName, markCustomScanPreset);
+});
+
 getControl('gain_mode')?.addEventListener('change', updateGainMode);
 getControl('cfar_alpha_enabled')?.addEventListener('change', updateCfarAlphaMode);
 resetDefaultsBtn?.addEventListener('click', resetScanDefaults);
@@ -1280,11 +1467,17 @@ function buildScanJobPayload() {
 }
 
 function resetScanDefaults() {
-  Object.entries(SAFE_SCAN_DEFAULTS).forEach(([id, value]) => setControlValue(id, value));
+  applyingScanPreset = true;
+  try {
+    Object.entries(SAFE_SCAN_DEFAULTS).forEach(([id, value]) => setControlValue(id, value));
+  } finally {
+    applyingScanPreset = false;
+  }
   durationInput.classList.toggle('hidden', runModeSelect.value !== 'duration');
   updateGainMode();
   updateCfarAlphaMode();
   syncSliderValueDisplays();
+  setScanPresetDescription(SAFE_SCAN_DEFAULTS.scan_preset);
   setStatus(scanSettingsStatus, 'Safe defaults restored.');
 }
 
@@ -1516,6 +1709,7 @@ pollLogs();
 syncSliderValueDisplays();
 updateGainMode();
 updateCfarAlphaMode();
+setScanPresetDescription(scanPresetSelect?.value || SAFE_SCAN_DEFAULTS.scan_preset);
 updateScannerCommandButton();
 const savedBaseline = localStorage.getItem(BASELINE_STORAGE_KEY);
 if (savedBaseline) {

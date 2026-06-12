@@ -1,6 +1,6 @@
 # Contract: Existing `/api/jobs` Payload Compatibility
 
-This feature preserves the existing web-to-controller job contract. It may reorganize controls and improve input safety, but it must not change the request shape used to start scans.
+This feature preserves the existing web-to-controller job contract. It may reorganize controls, improve input safety, and apply GUI presets/defaults, but it must not change the request shape used to start scans.
 
 ## Start Job
 
@@ -39,10 +39,21 @@ Existing optional `params` names that must remain compatible:
 
 Compatibility rules:
 
-- Unchanged GUI defaults must continue to submit the same names and compatible values as the current page.
+- GUI presets/defaults may intentionally submit different values from older page defaults to resolve the promotion/persistence mismatch documented in `docs/DETECTION_TUNING_REPORT.md`.
+- Changed defaults must continue to submit the same parameter names and compatible value types as the current page.
 - Optional blank values must keep current omission/default behavior.
 - `diagnostics_mode` must enable diagnostics without requiring `diagnostic_jsonl` from the operator.
 - `diagnostic_jsonl`, if retained, is an expert compatibility override only.
+- Preset selection should normally be resolved client-side into existing `params` values such as `gain`, `step`, `fft`, `avg`, `persistence_min_hits`, and `persistence_min_windows`.
+- The request body must not require operators or tests to provide scanner CLI commands.
+
+Preset payload expectations:
+
+| Preset | Required payload characteristics |
+| --- | --- |
+| RTL-SDR v4 Discovery | Includes fixed manual `gain`, fast `step` near `samp_rate`, `fft` `4096` or `8192`, `avg=8`, and relaxed `persistence_min_hits=1` / `persistence_min_windows=1` |
+| Stable Baseline | Includes fixed manual `gain`, overlapping `step` such as `1.2e6` with `samp_rate=2.4e6`, `fft=8192`, `avg=16`, and stricter `persistence_min_hits=2` / `persistence_min_windows=2` |
+| Fast Wide Survey | Includes fixed manual `gain`, `step=2.4e6`, `fft=4096`, `avg=8`, and relaxed promotion gates |
 
 ## Start Job Response
 

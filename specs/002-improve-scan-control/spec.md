@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "Clean up and improve the SDRwatch scan/control page so the web GUI is the clear primary operator interface for configuring and running scans, with safer controls, organized settings, copyable generated settings, and GUI-based verification."
+**Input**: User description: "Clean up and improve the SDRwatch scan/control page so the web GUI is the clear primary operator interface for configuring and running scans, with safer controls, organized settings, copyable generated settings, GUI-based verification, and real-hardware defaults/presets that produce initial signal cards on RTL-SDR Blog v4 hardware."
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -44,7 +44,24 @@ As an SDRwatch operator adjusting common RF behavior, I can use a Tuning control
 
 ---
 
-### User Story 3 - Review Expert Settings and Share Current Configuration (Priority: P3)
+### User Story 3 - Choose a Real-Hardware Tuning Preset (Priority: P2)
+
+As an SDRwatch operator using an RTL-SDR Blog v4, I can choose a GUI tuning preset that explains the scan-speed, FFT-resolution, gain, and persistence tradeoffs so my first scan can produce signal cards without using scanner CLI commands.
+
+**Why this priority**: The diagnostic report shows SDRwatch detects and accepts RF candidates but can promote zero detections under current defaults. Operators need web presets that produce first-light cards while still allowing slower, cleaner baseline scans.
+
+**Independent Test**: Can be tested through the browser by selecting each preset, copying the current scan settings, and confirming the generated `/api/jobs` parameters match the documented preset values. Real hardware acceptance requires starting from the web GUI and confirming signal cards appear.
+
+**Acceptance Scenarios**:
+
+1. **Given** the operator selects an RTL-SDR v4 Discovery preset, **When** they copy or start the scan, **Then** the generated job parameters use fixed manual gain, fast wide-sweep settings, and promotion gates that can produce initial signal cards.
+2. **Given** the operator selects a Stable Baseline preset, **When** they copy or start the scan, **Then** the generated job parameters use overlapping sweep windows and stricter persistence gates with an explicit slower-scan tradeoff.
+3. **Given** the operator reviews FFT choices, **When** they compare presets, **Then** the UI explains that lower FFT scans faster but characterizes peaks less accurately, while higher FFT improves frequency resolution and slows wide sweeps.
+4. **Given** the operator is using fixed manual gain, **When** they review the gain control or preset text, **Then** overload risk remains visible and the manual gain remains configurable.
+
+---
+
+### User Story 4 - Review Expert Settings and Share Current Configuration (Priority: P3)
 
 As an advanced operator or maintainer, I can find less common or dangerous settings in an Expert controls section, reset the page to known safe defaults, and copy the current GUI-generated scan settings as JSON for sharing with Codex or another reviewer.
 
@@ -69,6 +86,12 @@ As an advanced operator or maintainer, I can find less common or dangerous setti
 - The browser attempts to autofill number-like fields with unrelated saved values.
 - A slider reaches its minimum or maximum allowed value.
 - The operator changes gain between auto and manual modes.
+- The operator changes between presets after modifying individual tuning values.
+- A preset uses a fixed manual gain that may overload in a strong-signal environment.
+- A low FFT preset scans faster but gives coarser frequency and bandwidth characterization.
+- A high FFT preset gives better frequency resolution but slows a wide Raspberry Pi scan.
+- A fast non-overlapping preset uses relaxed persistence gates to produce first-light cards.
+- A stable baseline preset uses overlapping windows and therefore scans more slowly.
 - The operator resets defaults after changing both Basic and Expert controls.
 - The operator copies settings before starting a scan.
 - Clipboard access is blocked by the browser.
@@ -110,11 +133,18 @@ As an advanced operator or maintainer, I can find less common or dangerous setti
 - **FR-028**: The page MAY include a Copy generated scanner command action only when the controller already exposes that command safely.
 - **FR-029**: If Copy generated scanner command is present, it MUST be labeled as internal/debug information and MUST NOT be presented as the primary workflow for operators.
 - **FR-030**: If the generated scanner command is unavailable or unsafe to expose, the page MUST omit the copy action or show it as unavailable without blocking the scan workflow.
-- **FR-031**: The feature MUST NOT change scanner, controller, database, detection, DSP, baseline, or classification behavior except as needed to preserve existing GUI parameter submission.
+- **FR-031**: The feature MUST NOT rewrite scanner, controller, database, detection, DSP, baseline, or classification internals; it MAY intentionally change GUI-submitted default/preset parameter values while preserving existing `/api/jobs` names and controller lifecycle.
 - **FR-032**: The feature MUST NOT add simulation mode or new SDR capabilities.
 - **FR-033**: The feature MUST NOT redesign dashboard areas outside the scan/control page.
 - **FR-034**: The page MUST continue to operate as a local, server-rendered web GUI and MUST NOT introduce a separate frontend application framework.
 - **FR-035**: Manual verification instructions for this feature MUST be GUI-based and MUST treat scanner CLI checks only as optional internal backend smoke tests.
+- **FR-036**: The page MUST provide GUI-accessible tuning presets for at least RTL-SDR v4 Discovery, Stable Baseline, and Fast Wide Survey workflows.
+- **FR-037**: Presets MUST be applied by the web GUI as `/api/jobs` parameters and MUST NOT instruct operators to run scanner CLI commands.
+- **FR-038**: The RTL-SDR v4 Discovery preset MUST favor producing initial signal cards on real hardware by resolving the promotion/persistence mismatch identified in `docs/DETECTION_TUNING_REPORT.md`.
+- **FR-039**: The Stable Baseline preset MUST document and encode the slower overlapping-window tradeoff needed for stricter multi-window persistence.
+- **FR-040**: Preset help text MUST explain FFT as a speed/resolution and characterization tradeoff, not as the primary fix for zero signal cards.
+- **FR-041**: Preset help text MUST explain that fixed manual RTL-SDR gain is preferred for baseline/detection consistency while preserving operator control for overload conditions.
+- **FR-042**: The feature MUST NOT rewrite CFAR or detection algorithms as part of preset/default work unless a later implementation finds an obvious one-line bug fix.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -123,6 +153,7 @@ As an advanced operator or maintainer, I can find less common or dangerous setti
 - **Tuning Control Section**: Common RF-related controls that operators may adjust using bounded UI controls with visible values and explanations.
 - **Expert Control Section**: Less common or higher-risk controls that remain available for compatibility and troubleshooting while staying outside the normal workflow.
 - **Safe Defaults**: The documented default values restored by the reset action for every scan setting on the page.
+- **GUI Tuning Preset**: A named set of GUI-applied scan parameters such as RTL-SDR v4 Discovery, Stable Baseline, or Fast Wide Survey.
 - **Generated Job Parameters**: The JSON-compatible parameters produced by the GUI for the current scan configuration and submitted to the existing job-start workflow.
 - **Diagnostics Mode Setting**: The operator-visible toggle that enables diagnostic capture for a scan without requiring manual path entry.
 - **Generated Scanner Command**: Optional internal/debug information produced by the controller when safely available; not an operator workflow requirement.
@@ -140,12 +171,17 @@ As an advanced operator or maintainer, I can find less common or dangerous setti
 - **SC-006**: Starting a scan from the GUI continues to submit the existing `/api/jobs` parameter names for unchanged settings.
 - **SC-007**: Diagnostics can be enabled from Basic controls without the operator manually typing a diagnostic path.
 - **SC-008**: Browser autofill does not silently replace any scan parameter during initial page display, operator editing, or scan submission.
-- **SC-009**: Existing detection, baseline, database, controller job lifecycle, and scanner backend behavior remain unchanged except for preserving GUI parameter submission.
+- **SC-009**: Existing detection, baseline, database schema, controller job lifecycle, and scanner backend interfaces remain unchanged, while GUI-submitted default/preset parameter values are intentionally updated through the existing job payload.
 - **SC-010**: Manual verification steps guide the tester through the browser and controller job lifecycle, with any scanner CLI check clearly marked as internal backend smoke testing only.
+- **SC-011**: Copy current scan settings after selecting each tuning preset shows the documented preset values using existing `/api/jobs` parameter names.
+- **SC-012**: On Raspberry Pi 5 with RTL-SDR Blog v4 and an active RF environment, the RTL-SDR v4 Discovery preset produces at least one promoted signal card through the web GUI during manual hardware validation.
+- **SC-013**: Preset documentation clearly states that FFT affects scan speed and characterization quality, while the zero-card diagnostic failure is primarily a promotion/persistence mismatch.
 
 ## Assumptions
 
 - "Safe defaults" means the current safe scan defaults already used by the GUI or controller unless planning identifies a more appropriate existing SDRwatch default.
+- The diagnostic report in `docs/DETECTION_TUNING_REPORT.md` supersedes earlier assumptions that existing safe defaults are sufficient for real RTL-SDR v4 first-light scans.
+- A fixed RTL-SDR gain around 30 dB is a reasonable initial GUI preset candidate, but the operator must be able to adjust it if overload appears.
 - Expert controls may be visually collapsed or otherwise de-emphasized, as long as they remain discoverable and usable from the scan/control page.
 - Existing authentication, permissions, controller token behavior, and device-discovery behavior remain unchanged.
 - Clipboard actions can provide a visible failure message when browser permissions block copying.

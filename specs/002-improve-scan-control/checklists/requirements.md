@@ -34,3 +34,4 @@
 - Validation completed with no remaining clarification markers.
 - The spec includes stakeholder-required compatibility names such as existing job parameter names and `/api/jobs` because they define externally visible behavior to preserve, not a new implementation design.
 - Planning should continue to enforce the GUI-first workflow and keep scanner CLI usage limited to internal backend smoke tests.
+- Revalidated after adding real-hardware preset/default requirements on 2026-06-12; no clarification markers were introduced.

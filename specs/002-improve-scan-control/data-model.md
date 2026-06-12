@@ -71,6 +71,35 @@ This feature does not introduce persistent database entities. The model below de
 - Visible numeric values update when sliders change.
 - Manual gain value is submitted only when manual gain is explicitly selected.
 - Control descriptions or tooltips are visible or discoverable.
+- FFT help text describes scan speed versus frequency-resolution and characterization tradeoffs.
+- Gain help text explains baseline/detection repeatability and overload risk.
+
+## GUI Tuning Preset
+
+**Purpose**: Named operator-facing configuration that applies a coherent set of scan parameters through the web GUI while preserving existing `/api/jobs` names.
+
+**Fields**:
+
+- `preset_id`: stable identifier such as `rtl_v4_discovery`, `stable_baseline`, or `fast_wide_survey`.
+- `label`: operator-visible preset name.
+- `description`: short explanation of when to use the preset.
+- `tradeoff_summary`: concise speed, FFT, gain, and persistence notes.
+- `params`: parameter values to apply to the scan configuration.
+- `hardware_hint`: optional text such as RTL-SDR Blog v4.
+
+**Recommended Presets**:
+
+- `rtl_v4_discovery`: first-light RTL-SDR v4 preset using fixed manual gain around `30 dB`, fast wide-sweep settings, and relaxed promotion gates so initial signal cards can appear.
+- `stable_baseline`: slower preset using overlapping windows, higher FFT/averaging, fixed manual gain, and stricter multi-window persistence for cleaner baseline work.
+- `fast_wide_survey`: fast broad-scan preset using lower FFT/averaging and relaxed promotion gates for broad RF visibility.
+
+**Validation Rules**:
+
+- Applying a preset updates the same controls and generated job parameters used by manual edits.
+- Preset values are visible through Copy current scan settings before the operator starts a scan.
+- Presets do not introduce new `/api/jobs` parameter names unless a separate contract update is planned.
+- Presets do not instruct the operator to run scanner CLI commands.
+- The UI does not claim FFT alone fixes zero-card behavior.
 
 ## Expert Controls
 
@@ -104,6 +133,7 @@ This feature does not introduce persistent database entities. The model below de
 **Fields**:
 
 - Default value for every Basic, Tuning, and Expert setting.
+- Default selected preset or explicit "custom/default" state.
 - Current database path default provided by the rendered page.
 - Empty/default markers for optional expert values that currently mean "auto", "none", or "use scanner default".
 
@@ -112,6 +142,7 @@ This feature does not introduce persistent database entities. The model below de
 - Reset restores all scan settings, not only visible controls.
 - Reset does not erase required context that is intentionally selected by the operator unless the documented page default is empty.
 - Reset leaves the page in a state where the operator can inspect and adjust before starting a scan.
+- Reset restores the documented first-light/default preset behavior chosen for this feature, not the older auto-gain/non-promoting defaults.
 
 ## Generated Job Parameters
 
@@ -164,6 +195,7 @@ Settings-related transitions:
 
 ```text
 Safe defaults
+  -> operator selects a GUI tuning preset
   -> operator changes Basic/Tuning/Expert controls
   -> copied settings JSON can be generated
   -> reset returns all controls to safe defaults
