@@ -97,9 +97,24 @@ SDRWATCH_AUTO_YES=1 ./install-sdrwatch.sh
 
 ## 🚀 Usage
 
+### Web Dashboard Diagnostic Capture
+
+For detection-quality problems, use the GUI workflow:
+
+1. Open the Control page.
+2. Enable **Diagnostics mode** before starting a scan.
+3. Start monitoring from the web page.
+4. Observe the false positive, false negative, bandwidth, center-frequency, merge/split, or baseline stability problem.
+5. Use **Export diagnostic bundle** for the active or most recent job.
+6. Fill in the included `NOTES.md` file before sharing the bundle for analysis.
+
+Diagnostic bundles are local zip files and do not require cloud services. They include bounded scanner logs, diagnostic JSONL evidence, job metadata, baseline context, selected monitoring zones, known signals, and a manifest noting any missing or truncated evidence.
+
 ### Command Line
 
-All sweeps must be associated with a baseline (`--baseline-id <id>` or `--baseline-id latest`).
+The scanner command line remains available for backend smoke checks and advanced internal use. Normal operator workflows, including diagnostic capture, should use the web dashboard and controller job lifecycle.
+
+All direct sweeps must be associated with a baseline (`--baseline-id <id>` or `--baseline-id latest`).
 
 Sweep the FM band once:
 

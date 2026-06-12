@@ -16,13 +16,20 @@
       </div>
     </div>
 
+    <form id="scanForm" class="space-y-4" autocomplete="off">
+    <section id="basicControls" data-section="basic-controls" class="space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="font-semibold text-base">Basic controls</h3>
+        <span class="text-xs text-slate-400">Operator scan workflow</span>
+      </div>
+
     <!-- Baseline selection -->
     <div class="mb-4 p-4 bg-slate-900/50 rounded-lg border border-slate-700/50">
       <div class="flex items-center justify-between mb-2">
         <label class="font-medium" for="baseline_select">Monitoring Location</label>
         <button type="button" class="text-xs text-cyan-400 hover:text-cyan-300" onclick="showBaselineModal()">+ New location</button>
       </div>
-      <select id="baseline_select" class="input w-full" {% if not has_baselines %}disabled{% endif %}>
+      <select id="baseline_select" class="input w-full" autocomplete="off" {% if not has_baselines %}disabled{% endif %}>
         <option value="">{% if has_baselines %}Select a location...{% else %}No locations configured{% endif %}</option>
         {% for b in baseline_list %}
         <option value="{{ b.id }}">#{{ b.id }} · {{ b.name }}{% if b.antenna %} ({{ b.antenna }}){% endif %}</option>
@@ -41,7 +48,7 @@
     <div class="mb-4 p-4 bg-slate-900/50 rounded-lg border border-slate-700/50">
       <label class="font-medium block mb-2">SDR Device</label>
       <div class="flex gap-2">
-        <select id="device_key" class="input flex-1"></select>
+        <select id="device_key" class="input flex-1" autocomplete="off"></select>
         <button type="button" class="btn text-sm" id="refreshDevicesBtn" title="Refresh devices">🔄</button>
       </div>
       <div class="text-xs text-slate-400 mt-2">Detected RTL-SDR and other compatible devices.</div>
@@ -68,49 +75,78 @@
 
     <!-- Scan controls -->
     <div class="flex flex-wrap gap-3 mt-6 pt-4 border-t border-slate-700/50">
+      <label class="flex items-center gap-2 text-sm text-slate-300">
+        <input type="checkbox" id="diagnostics_mode" autocomplete="off" />
+        <span>Diagnostics mode</span>
+      </label>
       <button class="btn btn-primary text-base px-6" type="button" id="startBtn" disabled>
         ▶ Start Monitoring
       </button>
       <button class="btn btn-danger text-base px-6" type="button" id="stopBtn">
         ■ Stop
       </button>
+      <button class="btn text-base px-4" type="button" id="exportDiagnosticsBtn" disabled>
+        Export diagnostic bundle
+      </button>
+      <button class="btn text-base px-4" type="button" id="resetDefaultsBtn">Reset to safe defaults</button>
+      <button class="btn text-base px-4" type="button" id="copySettingsBtn">Copy current scan settings</button>
+      <button class="btn text-base px-4" type="button" id="copyScannerCommandBtn" disabled>Copy generated scanner command (internal/debug)</button>
       <div class="flex items-center gap-2 ml-auto">
         <label class="text-sm text-slate-400">Mode:</label>
-        <select id="run_mode" class="input text-sm">
+        <select id="run_mode" class="input text-sm" autocomplete="off">
           <option value="loop">Continuous</option>
           <option value="single">Single sweep</option>
           <option value="duration">Timed run</option>
         </select>
-        <input type="text" id="duration_value" class="input w-20 text-sm hidden" placeholder="e.g. 30m" />
+        <input type="text" id="duration_value" class="input w-20 text-sm hidden" placeholder="e.g. 30m" autocomplete="off" />
       </div>
+      <div id="diagnosticExportStatus" class="basis-full text-xs text-slate-400"></div>
+      <div id="scanSettingsStatus" class="basis-full text-xs text-slate-400"></div>
+      <div id="scannerCommandStatus" class="basis-full text-xs text-slate-400"></div>
     </div>
 
     <!-- Live logs -->
     <details class="mt-4">
-      <summary class="text-sm text-slate-400 cursor-pointer hover:text-slate-300">Show live logs</summary>
+      <summary class="text-sm text-slate-400 cursor-pointer hover:text-slate-300">Live logs</summary>
       <pre id="log" class="mt-2" style="height:200px;overflow:auto;background:#0b1220;color:#c7f9ff;padding:8px;border-radius:.75rem;font-size:12px"></pre>
     </details>
+    </section>
 
-    <!-- Advanced settings (hidden by default) -->
-    <details class="mt-4" id="advancedDetails">
-      <summary class="text-sm text-slate-400 cursor-pointer hover:text-slate-300">⚙️ Advanced settings</summary>
+    <!-- Tuning settings -->
+    <details class="mt-4" id="tuningControls" data-section="tuning-controls" open>
+      <summary class="text-sm text-slate-400 cursor-pointer hover:text-slate-300">Tuning controls</summary>
       <div class="mt-3 p-4 bg-slate-900/30 rounded-lg border border-slate-700/30 space-y-4">
-        <p class="text-xs text-slate-500 mb-3">Fine-tune sweep and detection parameters for optimal results. Defaults work well for most RTL-SDR setups.</p>
-        
-        <form id="advancedForm" class="space-y-4">
+        <p class="text-xs text-slate-500 mb-3">Common RF settings. The default preset favors first-light RTL-SDR v4 signal cards through the web workflow.</p>
+
+        <div id="advancedForm" class="space-y-4">
+          <!-- GUI Tuning Presets -->
+          <fieldset class="border border-slate-700/50 rounded-lg p-3">
+            <legend class="text-sm font-medium text-cyan-400 px-2">GUI Tuning Preset</legend>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+              <div class="field md:col-span-1">
+                <label for="scan_preset">Preset</label>
+                <select id="scan_preset" class="input" autocomplete="off">
+                  <option value="rtl_v4_discovery" selected>RTL-SDR v4 Discovery</option>
+                  <option value="stable_baseline">Stable Baseline</option>
+                  <option value="fast_wide_survey">Fast Wide Survey</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div class="field md:col-span-3">
+                <p id="scan_preset_description" class="text-xs text-slate-500 mt-6">
+                  First-light RTL-SDR v4: fixed 30 dB gain, fast non-overlapping 2.4 MS/s step, FFT 8192/avg 8, and relaxed 1/1 promotion so initial cards can appear.
+                </p>
+              </div>
+            </div>
+          </fieldset>
+
           <!-- SDR Settings -->
           <fieldset class="border border-slate-700/50 rounded-lg p-3">
             <legend class="text-sm font-medium text-cyan-400 px-2">SDR Configuration</legend>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
               <div class="field">
-                <label for="driver">Driver</label>
-                <select id="driver" class="input">
-                  <option value="rtlsdr_native" selected>RTL-SDR (Native)</option>
-                </select>
-              </div>
-              <div class="field">
                 <label for="samp_rate">Sample Rate (Hz)</label>
-                <select id="samp_rate" class="input">
+                <select id="samp_rate" class="input" autocomplete="off">
                   <option value="2.4e6" selected>2.4 MS/s</option>
                   <option value="2.048e6">2.048 MS/s</option>
                   <option value="1.8e6">1.8 MS/s</option>
@@ -118,8 +154,13 @@
                 </select>
               </div>
               <div class="field">
-                <label for="gain">Gain</label>
-                <input id="gain" class="input" value="auto" placeholder="auto or dB value" />
+                <label for="gain_mode">Gain</label>
+                <select id="gain_mode" class="input" autocomplete="off">
+                  <option value="auto">Auto</option>
+                  <option value="manual" selected>Manual</option>
+                </select>
+                <input id="gain" class="input mt-2" type="number" step="0.1" value="30" placeholder="Manual dB" autocomplete="off" />
+                <p class="text-xs text-slate-500 mt-1">Fixed gain improves baseline repeatability; start near 30 dB for RTL-SDR v4 and reduce it if strong signals overload.</p>
               </div>
             </div>
           </fieldset>
@@ -130,31 +171,25 @@
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
               <div class="field">
                 <label for="fft">FFT Size</label>
-                <select id="fft" class="input">
+                <select id="fft" class="input" autocomplete="off">
                   <option value="1024">1024</option>
                   <option value="2048">2048</option>
-                  <option value="4096" selected>4096</option>
-                  <option value="8192">8192</option>
+                  <option value="4096">4096</option>
+                  <option value="8192" selected>8192</option>
                   <option value="16384">16384</option>
                 </select>
+                <p class="text-xs text-slate-500 mt-1">Lower FFT scans faster; higher FFT improves frequency resolution and signal characterization but slows wide sweeps.</p>
               </div>
               <div class="field">
                 <label for="avg">Averaging</label>
-                <select id="avg" class="input">
+                <select id="avg" class="input" autocomplete="off">
                   <option value="1">1 (fast, noisy)</option>
                   <option value="4">4</option>
                   <option value="8" selected>8</option>
                   <option value="16">16</option>
                   <option value="32">32 (slow, clean)</option>
                 </select>
-              </div>
-              <div class="field">
-                <label for="step">Step Size (Hz)</label>
-                <input id="step" class="input" value="" placeholder="auto (=samp_rate)" />
-              </div>
-              <div class="field">
-                <label for="sleep_between_sweeps">Sleep Between Sweeps (s)</label>
-                <input id="sleep_between_sweeps" class="input" type="number" step="0.1" value="0" min="0" />
+                <p class="text-xs text-slate-500 mt-1">More averaging smooths noise and steadies peaks, but each sweep updates more slowly.</p>
               </div>
             </div>
           </fieldset>
@@ -164,32 +199,28 @@
             <legend class="text-sm font-medium text-cyan-400 px-2">Detection Thresholds</legend>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
               <div class="field">
-                <label for="threshold_db">Threshold (dB above noise)</label>
-                <input id="threshold_db" class="input" type="number" step="0.5" value="8" />
+                <div class="flex justify-between gap-2">
+                  <label for="threshold_db">Threshold (dB)</label>
+                  <output id="threshold_db_value" for="threshold_db">8</output>
+                </div>
+                <input id="threshold_db" class="input" type="range" min="0" max="30" step="0.5" value="8" autocomplete="off" />
+                <p class="text-xs text-slate-500 mt-1">Detection threshold above the learned noise floor.</p>
               </div>
               <div class="field">
-                <label for="guard_bins">Guard Bins</label>
-                <input id="guard_bins" class="input" type="number" value="1" min="0" title="Allow this many below-threshold bins inside a detection" />
+                <div class="flex justify-between gap-2">
+                  <label for="guard_bins">Guard Bins</label>
+                  <output id="guard_bins_value" for="guard_bins">1</output>
+                </div>
+                <input id="guard_bins" class="input" type="range" min="0" max="10" step="1" value="1" autocomplete="off" title="Allow this many below-threshold bins inside a detection" />
+                <p class="text-xs text-slate-500 mt-1">Below-threshold bins allowed inside one detection.</p>
               </div>
               <div class="field">
-                <label for="min_width_bins">Min Width Bins</label>
-                <input id="min_width_bins" class="input" type="number" value="2" min="1" title="Minimum contiguous bins for a detection" />
-              </div>
-              <div class="field">
-                <label for="cluster_merge_hz">Cluster Merge (Hz)</label>
-                <input id="cluster_merge_hz" class="input" type="number" value="" placeholder="auto" title="Hz span when merging segments into clusters" />
-              </div>
-              <div class="field">
-                <label for="max_detection_width_hz">Max Detection Width (Hz)</label>
-                <input id="max_detection_width_hz" class="input" type="number" value="" placeholder="unlimited" title="Clamp persistent detection widths" />
-              </div>
-              <div class="field">
-                <label for="max_detection_width_ratio">Max Width Ratio</label>
-                <input id="max_detection_width_ratio" class="input" type="number" step="0.1" value="3.0" title="Reject clusters exceeding this ratio of persisted width" />
-              </div>
-              <div class="field">
-                <label for="new_ema_occ">New EMA Threshold</label>
-                <input id="new_ema_occ" class="input" type="number" step="0.01" value="0.02" title="EMA occupancy threshold to flag bin as NEW" />
+                <div class="flex justify-between gap-2">
+                  <label for="min_width_bins">Min Width Bins</label>
+                  <output id="min_width_bins_value" for="min_width_bins">2</output>
+                </div>
+                <input id="min_width_bins" class="input" type="range" min="1" max="20" step="1" value="2" autocomplete="off" title="Minimum contiguous bins for a detection" />
+                <p class="text-xs text-slate-500 mt-1">Minimum contiguous bins before a detection is reported.</p>
               </div>
             </div>
           </fieldset>
@@ -200,28 +231,96 @@
             <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
               <div class="field">
                 <label for="cfar">CFAR Mode</label>
-                <select id="cfar" class="input">
+                <select id="cfar" class="input" autocomplete="off">
                   <option value="">Default (OS)</option>
                   <option value="os">OS-CFAR</option>
                   <option value="ca">CA-CFAR</option>
                   <option value="off">Off</option>
                 </select>
+                <p class="text-xs text-slate-500 mt-1">Controls how local noise is estimated around each bin.</p>
               </div>
               <div class="field">
-                <label for="cfar_train">Training Cells</label>
-                <input id="cfar_train" class="input" type="number" value="24" min="1" title="Training cells per side" />
+                <div class="flex justify-between gap-2">
+                  <label for="cfar_quantile">Quantile (OS)</label>
+                  <output id="cfar_quantile_value" for="cfar_quantile">0.75</output>
+                </div>
+                <input id="cfar_quantile" class="input" type="range" min="0.1" max="0.95" step="0.05" value="0.75" autocomplete="off" title="Quantile for OS-CFAR" />
+                <p class="text-xs text-slate-500 mt-1">Order-statistic percentile used by OS-CFAR.</p>
               </div>
               <div class="field">
-                <label for="cfar_guard">Guard Cells</label>
-                <input id="cfar_guard" class="input" type="number" value="4" min="0" title="Guard cells excluded around CUT" />
+                <label class="flex items-center gap-2 mb-1">
+                  <input type="checkbox" id="cfar_alpha_enabled" autocomplete="off" />
+                  <span>Custom alpha</span>
+                </label>
+                <div class="flex justify-between gap-2">
+                  <label for="cfar_alpha_db">Alpha (dB)</label>
+                  <output id="cfar_alpha_db_value" for="cfar_alpha_db">8</output>
+                </div>
+                <input id="cfar_alpha_db" class="input" type="range" min="0" max="30" step="0.5" value="8" autocomplete="off" title="Override threshold scaling" disabled />
+                <p class="text-xs text-slate-500 mt-1">Optional CFAR threshold scaling override.</p>
+              </div>
+            </div>
+          </fieldset>
+
+        </div>
+      </div>
+    </details>
+
+    <!-- Expert settings -->
+    <details class="mt-4" id="expertControls" data-section="expert-controls">
+      <summary class="text-sm text-slate-400 cursor-pointer hover:text-slate-300">Expert controls</summary>
+      <div class="mt-3 p-4 bg-slate-900/30 rounded-lg border border-slate-700/30 space-y-4">
+        <p class="text-xs text-slate-500 mb-3">Less common settings for compatibility, persistence, revisit behavior, and file paths.</p>
+
+        <div id="expertForm" class="space-y-4">
+          <!-- Detection Limits -->
+          <fieldset class="border border-slate-700/50 rounded-lg p-3">
+            <legend class="text-sm font-medium text-cyan-400 px-2">Detection Limits</legend>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+              <div class="field">
+                <label for="cluster_merge_hz">Cluster Merge (Hz)</label>
+                <input id="cluster_merge_hz" class="input" type="number" value="" placeholder="auto" min="0" autocomplete="off" title="Merge detections closer than this spacing" />
               </div>
               <div class="field">
-                <label for="cfar_quantile">Quantile (OS)</label>
-                <input id="cfar_quantile" class="input" type="number" step="0.05" value="0.75" min="0" max="1" title="Quantile for OS-CFAR" />
+                <label for="max_detection_width_hz">Max Width (Hz)</label>
+                <input id="max_detection_width_hz" class="input" type="number" value="" placeholder="none" min="0" autocomplete="off" title="Discard detections wider than this Hz value" />
               </div>
               <div class="field">
-                <label for="cfar_alpha_db">Alpha (dB)</label>
-                <input id="cfar_alpha_db" class="input" type="number" step="0.5" value="" placeholder="=threshold" title="Override threshold scaling" />
+                <label for="max_detection_width_ratio">Max Width Ratio</label>
+                <input id="max_detection_width_ratio" class="input" type="number" step="0.1" value="3.0" min="0" autocomplete="off" title="Discard detections wider than this fraction of a sweep" />
+              </div>
+              <div class="field">
+                <label for="new_ema_occ">New Signal EMA Occ</label>
+                <input id="new_ema_occ" class="input" type="number" step="0.01" value="0.02" min="0" max="1" autocomplete="off" title="Initial occupancy estimate for new signals" />
+              </div>
+            </div>
+          </fieldset>
+
+          <!-- Compatibility Settings -->
+          <fieldset class="border border-slate-700/50 rounded-lg p-3">
+            <legend class="text-sm font-medium text-cyan-400 px-2">Compatibility Settings</legend>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+              <div class="field">
+                <label for="driver">Driver</label>
+                <select id="driver" class="input" autocomplete="off">
+                  <option value="rtlsdr_native" selected>RTL-SDR (Native)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="step">Step Size (Hz)</label>
+                <input id="step" class="input" value="2400000" placeholder="auto (=samp_rate)" autocomplete="off" title="Blank defaults to the selected sample rate" />
+              </div>
+              <div class="field">
+                <label for="sleep_between_sweeps">Sleep Between Sweeps (s)</label>
+                <input id="sleep_between_sweeps" class="input" type="number" step="0.1" value="0" min="0" autocomplete="off" title="Delay between full sweep passes" />
+              </div>
+              <div class="field">
+                <label for="cfar_train">CFAR Training Cells</label>
+                <input id="cfar_train" class="input" type="number" value="24" min="1" autocomplete="off" title="Training cells per side" />
+              </div>
+              <div class="field">
+                <label for="cfar_guard">CFAR Guard Cells</label>
+                <input id="cfar_guard" class="input" type="number" value="4" min="0" autocomplete="off" title="Guard cells excluded around CUT" />
               </div>
             </div>
           </fieldset>
@@ -232,7 +331,7 @@
             <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
               <div class="field">
                 <label for="persistence_mode">Mode</label>
-                <select id="persistence_mode" class="input">
+                <select id="persistence_mode" class="input" autocomplete="off">
                   <option value="">Default (hits)</option>
                   <option value="hits">Hits</option>
                   <option value="duration">Duration</option>
@@ -241,19 +340,19 @@
               </div>
               <div class="field">
                 <label for="persistence_hit_ratio">Hit Ratio</label>
-                <input id="persistence_hit_ratio" class="input" type="number" step="0.05" value="0.6" min="0" max="1" title="Min window ratio for persistence" />
+                <input id="persistence_hit_ratio" class="input" type="number" step="0.05" value="0.6" min="0" max="1" autocomplete="off" title="Min window ratio for persistence" />
               </div>
               <div class="field">
                 <label for="persistence_min_seconds">Min Seconds</label>
-                <input id="persistence_min_seconds" class="input" type="number" step="1" value="10" min="0" title="Min duration for duration-based persistence" />
+                <input id="persistence_min_seconds" class="input" type="number" step="1" value="10" min="0" autocomplete="off" title="Min duration for duration-based persistence" />
               </div>
               <div class="field">
                 <label for="persistence_min_hits">Min Hits</label>
-                <input id="persistence_min_hits" class="input" type="number" value="2" min="1" title="Min hits before persistence eval" />
+                <input id="persistence_min_hits" class="input" type="number" value="1" min="1" autocomplete="off" title="Min hits before persistence eval" />
               </div>
               <div class="field">
                 <label for="persistence_min_windows">Min Windows</label>
-                <input id="persistence_min_windows" class="input" type="number" value="2" min="1" title="Min windows before persistence eval" />
+                <input id="persistence_min_windows" class="input" type="number" value="1" min="1" autocomplete="off" title="Min windows before persistence eval" />
               </div>
             </div>
           </fieldset>
@@ -264,33 +363,33 @@
             <div class="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
               <div class="field col-span-2 md:col-span-1">
                 <label class="flex items-center gap-2 mt-5">
-                  <input type="checkbox" id="two_pass" />
+                  <input type="checkbox" id="two_pass" autocomplete="off" />
                   <span>Enable</span>
                 </label>
               </div>
               <div class="field">
                 <label for="revisit_fft">Revisit FFT</label>
-                <input id="revisit_fft" class="input" type="number" value="" placeholder="2x main" title="FFT size for revisit windows" />
+                <input id="revisit_fft" class="input" type="number" value="" placeholder="2x main" autocomplete="off" title="FFT size for revisit windows" />
               </div>
               <div class="field">
                 <label for="revisit_avg">Revisit Avg</label>
-                <input id="revisit_avg" class="input" type="number" value="" placeholder="auto" title="Averaging for revisit windows" />
+                <input id="revisit_avg" class="input" type="number" value="" placeholder="auto" autocomplete="off" title="Averaging for revisit windows" />
               </div>
               <div class="field">
                 <label for="revisit_margin_hz">Margin (Hz)</label>
-                <input id="revisit_margin_hz" class="input" type="number" value="" placeholder="auto" title="Additional Hz margin around revisit center" />
+                <input id="revisit_margin_hz" class="input" type="number" value="" placeholder="auto" autocomplete="off" title="Additional Hz margin around revisit center" />
               </div>
               <div class="field">
                 <label for="revisit_span_limit_hz">Span Limit (Hz)</label>
-                <input id="revisit_span_limit_hz" class="input" type="number" value="" placeholder="none" title="Max Hz span for revisit confirmation" />
+                <input id="revisit_span_limit_hz" class="input" type="number" value="" placeholder="none" autocomplete="off" title="Max Hz span for revisit confirmation" />
               </div>
               <div class="field">
                 <label for="revisit_max_bands">Max Bands</label>
-                <input id="revisit_max_bands" class="input" type="number" value="" placeholder="unlimited" title="Max revisit targets per sweep" />
+                <input id="revisit_max_bands" class="input" type="number" value="" placeholder="unlimited" autocomplete="off" title="Max revisit targets per sweep" />
               </div>
               <div class="field">
                 <label for="revisit_floor_threshold_db">Floor Threshold (dB)</label>
-                <input id="revisit_floor_threshold_db" class="input" type="number" step="0.5" value="" placeholder="=threshold" title="Detection threshold for revisit windows" />
+                <input id="revisit_floor_threshold_db" class="input" type="number" step="0.5" value="" placeholder="=threshold" autocomplete="off" title="Detection threshold for revisit windows" />
               </div>
             </div>
           </fieldset>
@@ -301,7 +400,7 @@
             <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
               <div class="field">
                 <label for="profile">Scan Profile</label>
-                <select id="profile" class="input">
+                <select id="profile" class="input" autocomplete="off">
                   <option value="">(none - use zone settings)</option>
                   {% for prof in profile_list %}
                   <option value="{{ prof.name }}">{{ prof.name }}</option>
@@ -310,14 +409,14 @@
               </div>
               <div class="field">
                 <label for="bandplan">Bandplan</label>
-                <select id="bandplan" class="input">
+                <select id="bandplan" class="input" autocomplete="off">
                   <option value="">None</option>
                   <!-- Populated dynamically -->
                 </select>
               </div>
               <div class="field">
                 <label for="db">Database Path</label>
-                <input id="db" class="input" value="{{ db_path }}" />
+                <input id="db" class="input" value="{{ db_path }}" autocomplete="off" />
               </div>
             </div>
           </fieldset>
@@ -328,34 +427,32 @@
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
               <div class="field">
                 <label for="latitude">Latitude</label>
-                <input id="latitude" class="input" type="number" step="0.0001" placeholder="41.8781" />
+                <input id="latitude" class="input" type="number" step="0.0001" placeholder="41.8781" autocomplete="off" />
               </div>
               <div class="field">
                 <label for="longitude">Longitude</label>
-                <input id="longitude" class="input" type="number" step="0.0001" placeholder="-87.6298" />
+                <input id="longitude" class="input" type="number" step="0.0001" placeholder="-87.6298" autocomplete="off" />
               </div>
               <div class="field">
                 <label for="jsonl">JSONL Output</label>
-                <input id="jsonl" class="input" placeholder="detections.jsonl" />
+                <input id="jsonl" class="input" placeholder="detections.jsonl" autocomplete="off" />
               </div>
               <div class="field">
-                <label for="diagnostic_jsonl">Detection Diagnostics</label>
-                <div class="flex items-center gap-2">
-                  <input type="checkbox" id="enable_diagnostic_jsonl" />
-                  <input id="diagnostic_jsonl" class="input" placeholder="detection-diagnostics.jsonl" />
-                </div>
+                <label for="diagnostic_jsonl">Raw Diagnostic Path Override</label>
+                <input id="diagnostic_jsonl" class="input" placeholder="controller normally generates this" autocomplete="off" />
               </div>
               <div class="field">
                 <label class="flex items-center gap-2 mt-5">
-                  <input type="checkbox" id="spur_calibration" />
+                  <input type="checkbox" id="spur_calibration" autocomplete="off" />
                   <span>Spur Calibration Mode</span>
                 </label>
               </div>
             </div>
           </fieldset>
-        </form>
+        </div>
       </div>
     </details>
+    </form>
   </div>
 
   <!-- Sidebar -->
@@ -494,6 +591,7 @@ let zones = [];
 let friendlySignals = [];
 let activeJob = null;
 let lastJobId = null;
+let commandLookupJobId = null;
 const BASELINE_STORAGE_KEY = 'SDRWATCH_ACTIVE_BASELINE_ID';
 
 // Category display info
@@ -519,14 +617,296 @@ const zonesContainer = document.getElementById('zonesContainer');
 const friendlyContainer = document.getElementById('friendlyContainer');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
+const diagnosticsMode = document.getElementById('diagnostics_mode');
+const exportDiagnosticsBtn = document.getElementById('exportDiagnosticsBtn');
+const diagnosticExportStatus = document.getElementById('diagnosticExportStatus');
+const resetDefaultsBtn = document.getElementById('resetDefaultsBtn');
+const copySettingsBtn = document.getElementById('copySettingsBtn');
+const copyScannerCommandBtn = document.getElementById('copyScannerCommandBtn');
+const scanSettingsStatus = document.getElementById('scanSettingsStatus');
+const scannerCommandStatus = document.getElementById('scannerCommandStatus');
 const runModeSelect = document.getElementById('run_mode');
 const durationInput = document.getElementById('duration_value');
+const scanPresetSelect = document.getElementById('scan_preset');
+const scanPresetDescription = document.getElementById('scan_preset_description');
 const log = document.getElementById('log');
+
+const SAFE_SCAN_DEFAULTS = {
+  scan_preset: 'rtl_v4_discovery',
+  diagnostics_mode: false,
+  run_mode: 'loop',
+  duration_value: '',
+  driver: 'rtlsdr_native',
+  samp_rate: '2.4e6',
+  gain_mode: 'manual',
+  gain: '30',
+  fft: '8192',
+  avg: '8',
+  step: '2400000',
+  sleep_between_sweeps: '0',
+  threshold_db: '8',
+  guard_bins: '1',
+  min_width_bins: '2',
+  cfar: '',
+  cfar_train: '24',
+  cfar_guard: '4',
+  cfar_quantile: '0.75',
+  cfar_alpha_enabled: false,
+  cfar_alpha_db: '8',
+  cluster_merge_hz: '',
+  max_detection_width_hz: '',
+  max_detection_width_ratio: '3.0',
+  new_ema_occ: '0.02',
+  persistence_mode: '',
+  persistence_hit_ratio: '0.6',
+  persistence_min_seconds: '10',
+  persistence_min_hits: '1',
+  persistence_min_windows: '1',
+  two_pass: false,
+  revisit_fft: '',
+  revisit_avg: '',
+  revisit_margin_hz: '',
+  revisit_span_limit_hz: '',
+  revisit_max_bands: '',
+  revisit_floor_threshold_db: '',
+  profile: '',
+  bandplan: '',
+  db: {{ db_path|tojson }},
+  latitude: '',
+  longitude: '',
+  jsonl: '',
+  diagnostic_jsonl: '',
+  spur_calibration: false
+};
+
+const SCAN_PRESETS = {
+  rtl_v4_discovery: {
+    label: 'RTL-SDR v4 Discovery',
+    description: 'First-light RTL-SDR v4: fixed 30 dB gain, fast non-overlapping 2.4 MS/s step, FFT 8192/avg 8, and relaxed 1/1 promotion so initial cards can appear.',
+    values: {
+      samp_rate: '2.4e6',
+      step: '2400000',
+      gain_mode: 'manual',
+      gain: '30',
+      fft: '8192',
+      avg: '8',
+      threshold_db: '8',
+      guard_bins: '1',
+      min_width_bins: '2',
+      cfar: 'os',
+      cfar_train: '24',
+      cfar_guard: '4',
+      cfar_quantile: '0.75',
+      cfar_alpha_enabled: false,
+      cfar_alpha_db: '8',
+      persistence_mode: '',
+      persistence_hit_ratio: '0.6',
+      persistence_min_seconds: '10',
+      persistence_min_hits: '1',
+      persistence_min_windows: '1',
+      two_pass: false
+    }
+  },
+  stable_baseline: {
+    label: 'Stable Baseline',
+    description: 'Slower baseline work: fixed 30 dB gain, overlapping 1.2 MS/s step, FFT 8192/avg 16, and stricter 2/2 persistence for cleaner promoted detections.',
+    values: {
+      samp_rate: '2.4e6',
+      step: '1200000',
+      gain_mode: 'manual',
+      gain: '30',
+      fft: '8192',
+      avg: '16',
+      threshold_db: '10',
+      guard_bins: '1',
+      min_width_bins: '2',
+      cfar: 'os',
+      cfar_train: '24',
+      cfar_guard: '4',
+      cfar_quantile: '0.75',
+      cfar_alpha_enabled: false,
+      cfar_alpha_db: '8',
+      persistence_mode: '',
+      persistence_hit_ratio: '0.6',
+      persistence_min_seconds: '10',
+      persistence_min_hits: '2',
+      persistence_min_windows: '2',
+      two_pass: false
+    }
+  },
+  fast_wide_survey: {
+    label: 'Fast Wide Survey',
+    description: 'Fast broad survey: fixed 30 dB gain, 2.4 MS/s step, FFT 4096/avg 8, and relaxed 1/1 promotion; lower FFT favors speed over precise characterization.',
+    values: {
+      samp_rate: '2.4e6',
+      step: '2400000',
+      gain_mode: 'manual',
+      gain: '30',
+      fft: '4096',
+      avg: '8',
+      threshold_db: '10',
+      guard_bins: '1',
+      min_width_bins: '2',
+      cfar: 'os',
+      cfar_train: '24',
+      cfar_guard: '4',
+      cfar_quantile: '0.75',
+      cfar_alpha_enabled: false,
+      cfar_alpha_db: '8',
+      persistence_mode: '',
+      persistence_hit_ratio: '0.6',
+      persistence_min_seconds: '10',
+      persistence_min_hits: '1',
+      persistence_min_windows: '1',
+      two_pass: false
+    }
+  }
+};
+
+const PRESET_CONTROL_IDS = [
+  'samp_rate',
+  'step',
+  'gain_mode',
+  'gain',
+  'fft',
+  'avg',
+  'threshold_db',
+  'guard_bins',
+  'min_width_bins',
+  'cfar',
+  'cfar_train',
+  'cfar_guard',
+  'cfar_quantile',
+  'cfar_alpha_enabled',
+  'cfar_alpha_db',
+  'persistence_mode',
+  'persistence_hit_ratio',
+  'persistence_min_seconds',
+  'persistence_min_hits',
+  'persistence_min_windows',
+  'two_pass'
+];
+
+let applyingScanPreset = false;
 
 // Utility functions
 function setState(s){ 
   pill.textContent = s; 
   pill.className = 'pill ' + (s==='running'?'run':'idle'); 
+  updateExportButton();
+  updateScannerCommandButton();
+}
+
+function updateExportButton() {
+  if (!exportDiagnosticsBtn) return;
+  exportDiagnosticsBtn.disabled = !(activeJob?.id || lastJobId);
+}
+
+function updateScannerCommandButton() {
+  if (!copyScannerCommandBtn) return;
+  copyScannerCommandBtn.disabled = !getGeneratedScannerCommandText();
+}
+
+function getControl(id) {
+  return document.getElementById(id);
+}
+
+function getVal(id, parser = parseFloat) {
+  const el = getControl(id);
+  if (!el) return undefined;
+  const v = el.value?.trim();
+  if (v === '' || v === null || v === undefined) return undefined;
+  if (parser === String) return v;
+  const parsed = parser(v);
+  return isNaN(parsed) ? undefined : parsed;
+}
+
+function getCheck(id) {
+  return getControl(id)?.checked || false;
+}
+
+function getSelect(id) {
+  const value = getControl(id)?.value?.trim();
+  return value || undefined;
+}
+
+function setControlValue(id, value) {
+  const el = getControl(id);
+  if (!el) return;
+  if (el.type === 'checkbox') {
+    el.checked = Boolean(value);
+  } else {
+    el.value = value ?? '';
+  }
+}
+
+function setScanPresetDescription(presetId) {
+  if (!scanPresetDescription) return;
+  const preset = SCAN_PRESETS[presetId];
+  scanPresetDescription.textContent = preset
+    ? preset.description
+    : 'Custom settings: manual edits are active and will be copied/submitted through the same job parameters.';
+}
+
+function applyScanPreset(presetId, options = {}) {
+  const preset = SCAN_PRESETS[presetId];
+  if (!preset) {
+    setScanPresetDescription('custom');
+    return;
+  }
+
+  applyingScanPreset = true;
+  try {
+    setControlValue('scan_preset', presetId);
+    Object.entries(preset.values).forEach(([id, value]) => setControlValue(id, value));
+    updateGainMode();
+    updateCfarAlphaMode();
+    syncSliderValueDisplays();
+    setScanPresetDescription(presetId);
+  } finally {
+    applyingScanPreset = false;
+  }
+
+  if (options.announce) {
+    setStatus(scanSettingsStatus, `${preset.label} preset applied.`);
+  }
+}
+
+function markCustomScanPreset() {
+  if (applyingScanPreset || !scanPresetSelect || scanPresetSelect.value === 'custom') return;
+  scanPresetSelect.value = 'custom';
+  setScanPresetDescription('custom');
+}
+
+function syncSliderValue(id) {
+  const el = getControl(id);
+  const output = getControl(`${id}_value`);
+  if (el && output) output.textContent = el.value;
+}
+
+function syncSliderValueDisplays() {
+  ['threshold_db', 'guard_bins', 'min_width_bins', 'cfar_alpha_db', 'cfar_quantile'].forEach(syncSliderValue);
+}
+
+function setStatus(el, message, isError=false) {
+  if (!el) return;
+  el.textContent = message || '';
+  el.classList.toggle('text-red-400', Boolean(isError));
+  el.classList.toggle('text-slate-400', !isError);
+}
+
+function updateGainMode() {
+  const gain = getControl('gain');
+  if (!gain) return;
+  gain.disabled = getControl('gain_mode')?.value !== 'manual';
+  if (gain.disabled) gain.value = '';
+}
+
+function updateCfarAlphaMode() {
+  const alpha = getControl('cfar_alpha_db');
+  if (!alpha) return;
+  alpha.disabled = !getCheck('cfar_alpha_enabled');
+  syncSliderValue('cfar_alpha_db');
 }
 
 function formatFreq(hz) {
@@ -630,11 +1010,14 @@ function renderFriendly() {
 
 function updateStartButton() {
   const enabledZones = zones.filter(z => z.enabled);
-  startBtn.disabled = !activeBaselineId || enabledZones.length === 0;
+  const deviceKey = getControl('device_key')?.value?.trim();
+  startBtn.disabled = !activeBaselineId || enabledZones.length === 0 || !deviceKey;
   if (!activeBaselineId) {
     startBtn.title = 'Select a location first';
   } else if (enabledZones.length === 0) {
     startBtn.title = 'Enable at least one monitoring zone';
+  } else if (!deviceKey) {
+    startBtn.title = 'Select an SDR device';
   } else {
     startBtn.title = `Monitor ${enabledZones.length} zone(s)`;
   }
@@ -778,6 +1161,31 @@ runModeSelect.addEventListener('change', () => {
   durationInput.classList.toggle('hidden', runModeSelect.value !== 'duration');
 });
 
+['threshold_db', 'guard_bins', 'min_width_bins', 'cfar_alpha_db', 'cfar_quantile'].forEach(id => {
+  getControl(id)?.addEventListener('input', () => syncSliderValue(id));
+});
+
+scanPresetSelect?.addEventListener('change', () => {
+  if (scanPresetSelect.value === 'custom') {
+    setScanPresetDescription('custom');
+    return;
+  }
+  applyScanPreset(scanPresetSelect.value, { announce: true });
+});
+
+PRESET_CONTROL_IDS.forEach(id => {
+  const el = getControl(id);
+  if (!el) return;
+  const eventName = el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input';
+  el.addEventListener(eventName, markCustomScanPreset);
+});
+
+getControl('gain_mode')?.addEventListener('change', updateGainMode);
+getControl('cfar_alpha_enabled')?.addEventListener('change', updateCfarAlphaMode);
+resetDefaultsBtn?.addEventListener('click', resetScanDefaults);
+copySettingsBtn?.addEventListener('click', copyCurrentScanSettings);
+copyScannerCommandBtn?.addEventListener('click', copyGeneratedScannerCommand);
+
 // Forms
 document.getElementById('baselineForm')?.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -864,6 +1272,7 @@ async function loadDevices(){
       opt.value = '';
       opt.textContent = `(${data?.error || 'controller error'})`;
       sel.appendChild(opt);
+      updateStartButton();
       return;
     }
     if (data.length === 0){
@@ -879,10 +1288,12 @@ async function loadDevices(){
         sel.appendChild(opt);
       }
     }
+    updateStartButton();
   }catch(e){ console.error(e); }
 }
 loadDevices();
 document.getElementById('refreshDevicesBtn')?.addEventListener('click', loadDevices);
+document.getElementById('device_key')?.addEventListener('change', updateStartButton);
 
 // Bandplan enumeration
 async function loadBandplans(){
@@ -904,140 +1315,121 @@ async function loadBandplans(){
 }
 loadBandplans();
 
-// Start/Stop scan
-startBtn.addEventListener('click', async () => {
-  if (!activeBaselineId) { alert('Select a location first'); return; }
-  
-  const enabledZones = zones.filter(z => z.enabled);
-  if (enabledZones.length === 0) { alert('Enable at least one monitoring zone'); return; }
+function buildScanJobPayload() {
+  if (!activeBaselineId) throw new Error('Select a location first');
 
-  // Calculate combined frequency range from enabled zones
+  const enabledZones = zones.filter(z => z.enabled);
+  if (enabledZones.length === 0) throw new Error('Enable at least one monitoring zone');
+
+  const device_key = getControl('device_key')?.value?.trim();
+  if (!device_key) throw new Error('Select an SDR device');
+
   const startHz = Math.min(...enabledZones.map(z => z.f_start_hz));
   const stopHz = Math.max(...enabledZones.map(z => z.f_stop_hz));
-
-  // Helper to get input value or undefined
-  const getVal = (id, parser = parseFloat) => {
-    const el = document.getElementById(id);
-    if (!el) return undefined;
-    const v = el.value?.trim();
-    if (v === '' || v === null || v === undefined) return undefined;
-    if (parser === String) return v;
-    const parsed = parser(v);
-    return isNaN(parsed) ? undefined : parsed;
-  };
-  const getCheck = (id) => document.getElementById(id)?.checked || false;
-  const getSelect = (id) => {
-    const el = document.getElementById(id);
-    return el?.value?.trim() || undefined;
-  };
-
-  // Build params object with all advanced settings
   const params = {
     start: startHz,
     stop: stopHz,
   };
 
-  // SDR Configuration
   const driver = getSelect('driver');
   if (driver) params.driver = driver;
-  
+
   const sampRate = getVal('samp_rate');
-  if (sampRate) {
+  if (sampRate !== undefined) {
     params.samp_rate = sampRate;
-    params.step = getVal('step') || sampRate; // step defaults to samp_rate
+    const step = getVal('step');
+    params.step = step !== undefined ? step : sampRate;
   }
-  
-  const gain = getSelect('gain') || getVal('gain', String);
-  if (gain) params.gain = gain;
-  
-  // FFT & Averaging
+
+  if (getControl('gain_mode')?.value === 'manual') {
+    const gain = getVal('gain');
+    if (gain !== undefined) params.gain = gain;
+  }
+
   const fft = getVal('fft', parseInt);
-  if (fft) params.fft = fft;
-  
+  if (fft !== undefined) params.fft = fft;
+
   const avg = getVal('avg', parseInt);
-  if (avg) params.avg = avg;
-  
+  if (avg !== undefined) params.avg = avg;
+
   const sleepBetweenSweeps = getVal('sleep_between_sweeps');
   if (sleepBetweenSweeps !== undefined) params.sleep_between_sweeps = sleepBetweenSweeps;
 
-  // Detection Thresholds
   const thresholdDb = getVal('threshold_db');
   if (thresholdDb !== undefined) params.threshold_db = thresholdDb;
-  
+
   const guardBins = getVal('guard_bins', parseInt);
   if (guardBins !== undefined) params.guard_bins = guardBins;
-  
+
   const minWidthBins = getVal('min_width_bins', parseInt);
   if (minWidthBins !== undefined) params.min_width_bins = minWidthBins;
-  
-  const clusterMergeHz = getVal('cluster_merge_hz');
-  if (clusterMergeHz) params.cluster_merge_hz = clusterMergeHz;
-  
-  const maxDetectionWidthHz = getVal('max_detection_width_hz');
-  if (maxDetectionWidthHz) params.max_detection_width_hz = maxDetectionWidthHz;
-  
-  const maxDetectionWidthRatio = getVal('max_detection_width_ratio');
-  if (maxDetectionWidthRatio) params.max_detection_width_ratio = maxDetectionWidthRatio;
-  
-  const newEmaOcc = getVal('new_ema_occ');
-  if (newEmaOcc) params.new_ema_occ = newEmaOcc;
 
-  // CFAR Settings
+  const clusterMergeHz = getVal('cluster_merge_hz');
+  if (clusterMergeHz !== undefined) params.cluster_merge_hz = clusterMergeHz;
+
+  const maxDetectionWidthHz = getVal('max_detection_width_hz');
+  if (maxDetectionWidthHz !== undefined) params.max_detection_width_hz = maxDetectionWidthHz;
+
+  const maxDetectionWidthRatio = getVal('max_detection_width_ratio');
+  if (maxDetectionWidthRatio !== undefined) params.max_detection_width_ratio = maxDetectionWidthRatio;
+
+  const newEmaOcc = getVal('new_ema_occ');
+  if (newEmaOcc !== undefined) params.new_ema_occ = newEmaOcc;
+
   const cfar = getSelect('cfar');
   if (cfar) params.cfar = cfar;
-  
+
   const cfarTrain = getVal('cfar_train', parseInt);
   if (cfarTrain !== undefined) params.cfar_train = cfarTrain;
-  
+
   const cfarGuard = getVal('cfar_guard', parseInt);
   if (cfarGuard !== undefined) params.cfar_guard = cfarGuard;
-  
+
   const cfarQuantile = getVal('cfar_quantile');
   if (cfarQuantile !== undefined) params.cfar_quantile = cfarQuantile;
-  
-  const cfarAlphaDb = getVal('cfar_alpha_db');
-  if (cfarAlphaDb !== undefined) params.cfar_alpha_db = cfarAlphaDb;
 
-  // Persistence Settings
+  if (getCheck('cfar_alpha_enabled')) {
+    const cfarAlphaDb = getVal('cfar_alpha_db');
+    if (cfarAlphaDb !== undefined) params.cfar_alpha_db = cfarAlphaDb;
+  }
+
   const persistenceMode = getSelect('persistence_mode');
   if (persistenceMode) params.persistence_mode = persistenceMode;
-  
+
   const persistenceHitRatio = getVal('persistence_hit_ratio');
   if (persistenceHitRatio !== undefined) params.persistence_hit_ratio = persistenceHitRatio;
-  
+
   const persistenceMinSeconds = getVal('persistence_min_seconds');
   if (persistenceMinSeconds !== undefined) params.persistence_min_seconds = persistenceMinSeconds;
-  
+
   const persistenceMinHits = getVal('persistence_min_hits', parseInt);
   if (persistenceMinHits !== undefined) params.persistence_min_hits = persistenceMinHits;
-  
+
   const persistenceMinWindows = getVal('persistence_min_windows', parseInt);
   if (persistenceMinWindows !== undefined) params.persistence_min_windows = persistenceMinWindows;
 
-  // Two-Pass / Revisit Settings
   if (getCheck('two_pass')) {
     params.two_pass = true;
-    
+
     const revisitFft = getVal('revisit_fft', parseInt);
-    if (revisitFft) params.revisit_fft = revisitFft;
-    
+    if (revisitFft !== undefined) params.revisit_fft = revisitFft;
+
     const revisitAvg = getVal('revisit_avg', parseInt);
-    if (revisitAvg) params.revisit_avg = revisitAvg;
-    
+    if (revisitAvg !== undefined) params.revisit_avg = revisitAvg;
+
     const revisitMarginHz = getVal('revisit_margin_hz');
-    if (revisitMarginHz) params.revisit_margin_hz = revisitMarginHz;
-    
+    if (revisitMarginHz !== undefined) params.revisit_margin_hz = revisitMarginHz;
+
     const revisitSpanLimitHz = getVal('revisit_span_limit_hz');
-    if (revisitSpanLimitHz) params.revisit_span_limit_hz = revisitSpanLimitHz;
-    
+    if (revisitSpanLimitHz !== undefined) params.revisit_span_limit_hz = revisitSpanLimitHz;
+
     const revisitMaxBands = getVal('revisit_max_bands', parseInt);
-    if (revisitMaxBands) params.revisit_max_bands = revisitMaxBands;
-    
+    if (revisitMaxBands !== undefined) params.revisit_max_bands = revisitMaxBands;
+
     const revisitFloorThresholdDb = getVal('revisit_floor_threshold_db');
-    if (revisitFloorThresholdDb) params.revisit_floor_threshold_db = revisitFloorThresholdDb;
+    if (revisitFloorThresholdDb !== undefined) params.revisit_floor_threshold_db = revisitFloorThresholdDb;
   }
 
-  // Profile & Bandplan
   const profile = getSelect('profile');
   if (profile) params.profile = profile;
 
@@ -1047,36 +1439,134 @@ startBtn.addEventListener('click', async () => {
   const db = getVal('db', String);
   if (db) params.db = db;
 
-  // Other Options
   const latitude = getVal('latitude');
   if (latitude !== undefined) params.latitude = latitude;
-  
+
   const longitude = getVal('longitude');
   if (longitude !== undefined) params.longitude = longitude;
-  
+
   const jsonl = getVal('jsonl', String);
   if (jsonl) params.jsonl = jsonl;
 
-  if (getCheck('enable_diagnostic_jsonl')) {
-    params.diagnostic_jsonl = getVal('diagnostic_jsonl', String) || 'detection-diagnostics.jsonl';
-  }
-  
-  if (getCheck('spur_calibration')) {
-    params.spur_calibration = true;
-  }
+  const diagnosticJsonl = getVal('diagnostic_jsonl', String);
+  if (diagnosticJsonl) params.diagnostic_jsonl = diagnosticJsonl;
 
-  // Run mode
+  if (getCheck('diagnostics_mode')) params.diagnostics_mode = true;
+  if (getCheck('spur_calibration')) params.spur_calibration = true;
+
   const mode = runModeSelect.value;
   if (mode === 'loop') params.loop = true;
   if (mode === 'duration') params.duration = durationInput.value || '30m';
 
-  const device_key = document.getElementById('device_key').value;
-  const payload = {
+  return {
     device_key,
     label: 'web',
     baseline_id: activeBaselineId,
-    params
+    params,
   };
+}
+
+function resetScanDefaults() {
+  applyingScanPreset = true;
+  try {
+    Object.entries(SAFE_SCAN_DEFAULTS).forEach(([id, value]) => setControlValue(id, value));
+  } finally {
+    applyingScanPreset = false;
+  }
+  durationInput.classList.toggle('hidden', runModeSelect.value !== 'duration');
+  updateGainMode();
+  updateCfarAlphaMode();
+  syncSliderValueDisplays();
+  setScanPresetDescription(SAFE_SCAN_DEFAULTS.scan_preset);
+  setStatus(scanSettingsStatus, 'Safe defaults restored.');
+}
+
+async function writeClipboardText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.left = '-9999px';
+  document.body.appendChild(area);
+  area.select();
+  const copied = document.execCommand('copy');
+  area.remove();
+  if (!copied) throw new Error('Clipboard copy is not available in this browser');
+}
+
+async function copyCurrentScanSettings() {
+  try {
+    const payload = buildScanJobPayload();
+    await writeClipboardText(JSON.stringify(payload, null, 2));
+    setStatus(scanSettingsStatus, 'Copied current scan settings as JSON.');
+  } catch (err) {
+    setStatus(scanSettingsStatus, err.message, true);
+  }
+}
+
+function getGeneratedScannerCommandText() {
+  const cmd = activeJob?.cmd || activeJob?.scanner_command || activeJob?.command;
+  if (Array.isArray(cmd)) return cmd.join(' ');
+  return typeof cmd === 'string' ? cmd : '';
+}
+
+async function refreshGeneratedScannerCommandFromDetail() {
+  if (getGeneratedScannerCommandText()) {
+    updateScannerCommandButton();
+    return;
+  }
+  const jobId = activeJob?.id || lastJobId;
+  if (!jobId || commandLookupJobId === jobId) {
+    updateScannerCommandButton();
+    return;
+  }
+  commandLookupJobId = jobId;
+  try {
+    const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { headers: authHeaders(false) });
+    if (!r.ok) {
+      updateScannerCommandButton();
+      return;
+    }
+    const detail = await r.json();
+    activeJob = detail?.job || detail;
+    updateScannerCommandButton();
+  } catch (err) {
+    console.error(err);
+    updateScannerCommandButton();
+  }
+}
+
+async function copyGeneratedScannerCommand() {
+  await refreshGeneratedScannerCommandFromDetail();
+  const text = getGeneratedScannerCommandText();
+  if (!text) {
+    setStatus(scannerCommandStatus, 'No controller-generated scanner command is available for this job.', true);
+    updateScannerCommandButton();
+    return;
+  }
+
+  try {
+    await writeClipboardText(text);
+    setStatus(scannerCommandStatus, 'Copied generated scanner command for internal/debug review.');
+  } catch (err) {
+    setStatus(scannerCommandStatus, err.message, true);
+  }
+}
+
+// Start/Stop scan
+startBtn.addEventListener('click', async () => {
+  let payload;
+  try {
+    payload = buildScanJobPayload();
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
 
   try {
     const r = await fetch('/api/jobs', {
@@ -1100,6 +1590,8 @@ startBtn.addEventListener('click', async () => {
       lastJobId = data.job.id;
     }
     setState('running');
+    updateScannerCommandButton();
+    refreshGeneratedScannerCommandFromDetail();
   } catch (err) {
     alert('Failed to start: ' + err.message);
   }
@@ -1125,6 +1617,44 @@ stopBtn.addEventListener('click', async () => {
   }
 });
 
+exportDiagnosticsBtn?.addEventListener('click', async () => {
+  let jobId = activeJob?.id || lastJobId;
+  if (!jobId) {
+    await refreshActiveState();
+    jobId = activeJob?.id || lastJobId;
+  }
+  if (!jobId) {
+    alert('No scan job is available to export.');
+    return;
+  }
+  try {
+    diagnosticExportStatus.textContent = 'Preparing diagnostic bundle...';
+    const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/diagnostic-bundle`, {
+      headers: authHeaders(false)
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(detail || `HTTP ${r.status}`);
+    }
+    const blob = await r.blob();
+    const disposition = r.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match ? match[1] : `sdrwatch-diagnostics-${jobId}.zip`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    diagnosticExportStatus.textContent = `Downloaded ${filename}`;
+  } catch (err) {
+    diagnosticExportStatus.textContent = '';
+    alert('Failed to export diagnostic bundle: ' + err.message);
+  }
+});
+
 // Polling
 async function refreshActiveState(){
   try{
@@ -1135,9 +1665,11 @@ async function refreshActiveState(){
       activeJob = data.job;
       if(activeJob?.id) lastJobId = activeJob.id;
       setState(data.state || 'running');
+      refreshGeneratedScannerCommandFromDetail();
     } else {
       activeJob = null;
       setState(data?.state || 'idle');
+      refreshGeneratedScannerCommandFromDetail();
     }
   }catch(err){ console.error(err); }
 }
@@ -1174,6 +1706,11 @@ async function pollLogs(){
 pollLogs();
 
 // Initialize
+syncSliderValueDisplays();
+updateGainMode();
+updateCfarAlphaMode();
+setScanPresetDescription(scanPresetSelect?.value || SAFE_SCAN_DEFAULTS.scan_preset);
+updateScannerCommandButton();
 const savedBaseline = localStorage.getItem(BASELINE_STORAGE_KEY);
 if (savedBaseline) {
   baselineSelect.value = savedBaseline;

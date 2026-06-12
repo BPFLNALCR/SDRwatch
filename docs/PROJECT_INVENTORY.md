@@ -140,7 +140,8 @@ execution, device locking, controller job lifecycle, and installer/service behav
 | --- | --- | --- |
 | SQLite database | `sdrwatch.db` or installer-configured state path | Scanner/web/installer |
 | Detection JSONL | Scanner/backend-selected `--jsonl` path | Scanner CLI |
-| Diagnostic JSONL | Scanner/backend-selected `--diagnostic-jsonl` path | Scanner CLI |
+| Diagnostic JSONL | `${SDRWATCH_CONTROL_BASE}/diagnostics/*.diagnostic.jsonl` for GUI diagnostics, or scanner/backend-selected `--diagnostic-jsonl` path | Controller / Scanner CLI |
+| Diagnostic bundle zip | Browser download named `sdrwatch-diagnostics-<job-id>.zip` | Web UI / Flask API |
 | Controller state | `${SDRWATCH_CONTROL_BASE}/state.json` | Controller |
 | Controller lock files | `${SDRWATCH_CONTROL_BASE}/locks/*.lock` | Controller |
 | Controller job logs | `${SDRWATCH_CONTROL_BASE}/logs/*.log` | Controller |
