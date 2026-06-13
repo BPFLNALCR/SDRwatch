@@ -68,6 +68,24 @@ This focused run currently covers:
 - bounded diagnostic bundle export plus center-within-span regression scanning
 - existing FM stability and persistence diagnostics regressions
 
+US1 implementation notes:
+
+- T012 is satisfied by the focused FM stability and characterization tests: FM-like wide/spiky signals still produce bounded station-scale persisted rows while characterization records keep measured bandwidth separate from display bandwidth.
+- T013 is satisfied through the existing scanner logging route: `ScannerRunner` mirrors `ScanLogger` output to `diagnostic_jsonl`, `DetectionEngine` emits `characterization_record` events on coarse-pass persistence, and the diagnostic bundle writes a bounded `diagnostics/characterization-summary.json`.
+- `build_window_record()` remains unchanged in this pass because per-window detector diagnostics and persistent characterization evidence have different lifetimes; combining them would risk making one FFT window look like the final measured signal.
+
+Invariant fix validation on June 13, 2026:
+
+```powershell
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest tests/test_extent_hysteresis.py tests/test_fm_persistence_stability.py tests/test_fm_persistence_diagnostics.py tests/test_fm_characterization.py tests/test_fm_characterization_persistence.py tests/test_fm_characterization_diagnostics.py tests/test_non_fm_width_scope.py tests/test_web_diagnostics_bundle.py tests/test_control_fm_validation.py tests/test_control_page_scan_settings.py -q --basetemp .pytest-tmp-invariant-broader
+```
+
+Observed result:
+
+```text
+56 passed in 1.85s
+```
+
 ## GUI And Controller Acceptance Path
 
 1. Open the SDRwatch web UI.

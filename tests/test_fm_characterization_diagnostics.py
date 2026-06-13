@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sdrwatch.util.detection_diagnostics import (
     build_characterization_record,
     summarize_characterization_records,
 )
+from sdrwatch.util.scan_logger import ScanLogger
 
 from tests.helpers_fm_characterization import make_characterization_evidence
-from tests.helpers_fm_detection import fm_args, make_engine
+from tests.helpers_fm_detection import fm_args, load_jsonl_records, make_engine, make_segment
 
 
 def test_characterization_summary_keeps_context_and_measured_fields_separate() -> None:
@@ -40,3 +43,18 @@ def test_make_engine_can_seed_isolated_characterization_jsonl_paths(tmp_path) ->
 
     assert engine.args.jsonl.endswith("signals.jsonl")
     assert engine.args.diagnostic_jsonl.endswith("diagnostic.jsonl")
+
+
+def test_scan_logger_mirror_carries_characterization_records_to_diagnostic_jsonl(tmp_path: Path) -> None:
+    diagnostic_jsonl = tmp_path / "diagnostic.jsonl"
+    logger = ScanLogger(tmp_path / "scan.log", mirror_paths=[diagnostic_jsonl])
+    engine, _store, _ctx, _logger = make_engine(tmp_path, logger=logger)
+
+    engine.ingest(0, [make_segment(100_100_000, width_hz=2_000)])
+
+    records = load_jsonl_records(diagnostic_jsonl)
+    characterization_records = [record for record in records if record.get("event") == "characterization_record"]
+    assert len(characterization_records) == 1
+    summary = summarize_characterization_records(characterization_records, sample_limit=5)
+    assert summary["record_count"] == 1
+    assert summary["records"][0]["measured_characterization"]["occupied_bandwidth_hz"] == 2_000.0

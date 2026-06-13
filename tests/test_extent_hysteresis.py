@@ -1,4 +1,7 @@
 from sdrwatch.baseline.persistence import BaselinePersistence, EdgeCounters
+from sdrwatch.detection.types import RevisitTag
+
+from tests.helpers_fm_detection import fm_args, make_engine, make_segment, make_store
 
 
 def test_left_edge_expansion_requires_multiple_observations() -> None:
@@ -99,3 +102,97 @@ def test_width_ema_respects_configured_max_detection_width() -> None:
     result = stub._blend_width_ema(200_000.0, 400_000.0)
 
     assert result == 270_000.0
+
+
+def _insert_detection(store, ctx, *, low: int, center: int, high: int) -> int:
+    detection_id = store.insert_baseline_detection(
+        ctx.id,
+        low,
+        high,
+        center,
+        "2026-06-12T00:00:00Z",
+        "2026-06-12T00:00:01Z",
+        1,
+        1,
+        0.5,
+    )
+    store.con.commit()
+    return detection_id
+
+
+def test_upsert_update_keeps_persisted_center_inside_hysteresis_held_edges(tmp_path) -> None:
+    args = fm_args(center_match_hz=300_000.0, extent_expand_hysteresis=3, extent_shrink_hysteresis=3)
+    engine, store, ctx, _logger = make_engine(tmp_path, args=args)
+    detection_id = _insert_detection(
+        store,
+        ctx,
+        low=100_000_000,
+        center=100_040_000,
+        high=100_080_000,
+    )
+    engine.persistence._persisted = store.load_baseline_detections(ctx.id)
+
+    engine.ingest(0, [make_segment(100_200_000, width_hz=80_000)])
+
+    [det] = [row for row in store.load_baseline_detections(ctx.id) if row.id == detection_id]
+    assert det.f_low_hz <= det.f_center_hz <= det.f_high_hz
+
+
+def test_revisit_confirmation_keeps_persisted_center_inside_hysteresis_held_edges(tmp_path) -> None:
+    args = fm_args(extent_expand_hysteresis=3, extent_shrink_hysteresis=3, revisit_span_limit_hz=0.0)
+    engine, store, ctx, _logger = make_engine(tmp_path, args=args)
+    detection_id = _insert_detection(
+        store,
+        ctx,
+        low=100_000_000,
+        center=100_040_000,
+        high=100_080_000,
+    )
+    engine.persistence._persisted = store.load_baseline_detections(ctx.id)
+    tag = RevisitTag(
+        tag_id="rv-test",
+        detection_id=detection_id,
+        f_center_hz=100_200_000,
+        f_low_hz=100_160_000,
+        f_high_hz=100_240_000,
+        reason="new",
+        created_utc="2026-06-12T00:00:02Z",
+    )
+
+    engine.apply_revisit_confirmation(tag, make_segment(100_200_000, width_hz=80_000))
+
+    [det] = [row for row in store.load_baseline_detections(ctx.id) if row.id == detection_id]
+    assert det.f_low_hz <= det.f_center_hz <= det.f_high_hz
+
+
+def test_revisit_confirmation_clips_persisted_center_to_baseline_edge(tmp_path) -> None:
+    store, ctx = make_store(tmp_path, start_hz=100_000_000, stop_hz=100_150_000)
+    args = fm_args(extent_expand_hysteresis=3, extent_shrink_hysteresis=3, revisit_span_limit_hz=0.0)
+    engine, _store, _ctx, _logger = make_engine(tmp_path, args=args)
+    engine.store = store
+    engine.baseline_ctx = ctx
+    engine.persistence.store = store
+    engine.persistence.baseline_ctx = ctx
+    detection_id = _insert_detection(
+        store,
+        ctx,
+        low=100_070_000,
+        center=100_110_000,
+        high=100_140_000,
+    )
+    engine.persistence._persisted = store.load_baseline_detections(ctx.id)
+    tag = RevisitTag(
+        tag_id="rv-edge",
+        detection_id=detection_id,
+        f_center_hz=100_250_000,
+        f_low_hz=100_210_000,
+        f_high_hz=100_290_000,
+        reason="new",
+        created_utc="2026-06-12T00:00:02Z",
+    )
+
+    engine.apply_revisit_confirmation(tag, make_segment(100_250_000, width_hz=80_000))
+
+    [det] = [row for row in store.load_baseline_detections(ctx.id) if row.id == detection_id]
+    assert ctx.freq_start_hz <= det.f_center_hz <= ctx.freq_stop_hz
+    assert det.f_low_hz <= det.f_center_hz <= det.f_high_hz

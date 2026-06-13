@@ -56,8 +56,8 @@ Write these tests first and confirm they fail before implementation.
 ### Implementation for User Story 1
 
 - [X] T011 [US1] Populate coarse-pass `raw_*`, `measured_*`, `match_*`, and `display_*` characterization evidence from existing segments and span shaping in `sdrwatch/detection/engine.py`
-- [ ] T012 [US1] Preserve current FM Validation stable-card behavior while keeping measured bandwidth separate from display span in `sdrwatch/baseline/persistence.py` and `sdrwatch/detection/engine.py`
-- [ ] T013 [US1] Emit coarse-pass characterization evidence and bounded per-window summaries in `sdrwatch/util/detection_diagnostics.py` and `sdrwatch/sweep/sweeper.py`
+- [X] T012 [US1] Preserve current FM Validation stable-card behavior while keeping measured bandwidth separate from display span in `sdrwatch/baseline/persistence.py` and `sdrwatch/detection/engine.py`
+- [X] T013 [US1] Emit coarse-pass characterization evidence and bounded per-window summaries in `sdrwatch/util/detection_diagnostics.py` and `sdrwatch/sweep/sweeper.py`
 - [X] T014 [US1] Run focused US1 no-hardware characterization tests and record the exact command and results in `specs/004-fm-signal-characterization/quickstart.md`
 
 **Checkpoint**: FM Validation remains stable and operator-friendly while the diagnostics surface distinguishes raw, measured, match, and display widths.

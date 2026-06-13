@@ -217,6 +217,7 @@ class BaselinePersistence:
         det.f_low_hz = new_low
         det.f_high_hz = new_high
         det.f_center_hz = int(seg.f_center_hz)
+        self._enforce_persisted_span_invariant(det)
         det.last_seen_utc = utc_now_str()
         det.missing_since_utc = None
         self.store.begin()
@@ -320,6 +321,7 @@ class BaselinePersistence:
                 match.f_low_hz = new_low
                 match.f_high_hz = new_high
                 match.f_center_hz = blended_center
+                self._enforce_persisted_span_invariant(match)
                 match.last_seen_utc = timestamp
                 match.total_hits += cluster.hits
                 match.total_windows += len(cluster.windows)
@@ -676,6 +678,46 @@ class BaselinePersistence:
         if high <= low:
             high = min(self.baseline_ctx.freq_stop_hz, low + epsilon)
         return low, high
+
+    def _enforce_persisted_span_invariant(self, det: PersistentDetection) -> None:
+        baseline_low = int(self.baseline_ctx.freq_start_hz)
+        baseline_high = int(self.baseline_ctx.freq_stop_hz)
+        if baseline_high < baseline_low:
+            baseline_low, baseline_high = baseline_high, baseline_low
+
+        center = int(det.f_center_hz)
+        center = min(max(center, baseline_low), baseline_high)
+
+        low = int(det.f_low_hz)
+        high = int(det.f_high_hz)
+        if high < low:
+            low, high = high, low
+        low = max(low, baseline_low)
+        high = min(high, baseline_high)
+
+        if center < low:
+            low = center
+        if center > high:
+            high = center
+
+        max_width = int(round(self.max_detection_width_hz)) if self.max_detection_width_hz > 0.0 else 0
+        if max_width > 0 and high - low > max_width:
+            half = max_width // 2
+            low = max(center - half, baseline_low)
+            high = min(low + max_width, baseline_high)
+            if center > high:
+                high = center
+                low = max(baseline_low, high - max_width)
+            if center < low:
+                low = center
+                high = min(baseline_high, low + max_width)
+
+        if high < low:
+            high = low
+
+        det.f_low_hz = int(low)
+        det.f_high_hz = int(high)
+        det.f_center_hz = int(center)
 
     def _blend_width_ema(self, prev_width: float, measured_width: float) -> float:
         original_prev_width = float(prev_width)
