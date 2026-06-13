@@ -127,6 +127,7 @@
                 <label for="scan_preset">Preset</label>
                 <select id="scan_preset" class="input" autocomplete="off">
                   <option value="rtl_v4_discovery" selected>RTL-SDR v4 Discovery</option>
+                  <option value="fm_validation">FM Validation</option>
                   <option value="stable_baseline">Stable Baseline</option>
                   <option value="fast_wide_survey">Fast Wide Survey</option>
                   <option value="custom">Custom</option>
@@ -707,6 +708,43 @@ const SCAN_PRESETS = {
       two_pass: false
     }
   },
+  fm_validation: {
+    label: 'FM Validation',
+    description: 'FM broadcast validation: overlapping 1.2 MS/s step, profile-driven FM span matching, bounded widths, and two-pass revisits so 88-108 MHz creates stable station-scale cards.',
+    values: {
+      samp_rate: '2.4e6',
+      step: '1200000',
+      gain_mode: 'manual',
+      gain: '20',
+      fft: '8192',
+      avg: '10',
+      threshold_db: '6',
+      guard_bins: '3',
+      min_width_bins: '5',
+      cfar: 'os',
+      cfar_train: '32',
+      cfar_guard: '6',
+      cfar_quantile: '0.6',
+      cfar_alpha_enabled: false,
+      cfar_alpha_db: '6',
+      cluster_merge_hz: '12000',
+      max_detection_width_hz: '270000',
+      max_detection_width_ratio: '2.5',
+      persistence_mode: '',
+      persistence_hit_ratio: '0.25',
+      persistence_min_seconds: '2',
+      persistence_min_hits: '1',
+      persistence_min_windows: '1',
+      two_pass: true,
+      revisit_fft: '32768',
+      revisit_avg: '4',
+      revisit_margin_hz: '200000',
+      revisit_span_limit_hz: '420000',
+      revisit_max_bands: '40',
+      revisit_floor_threshold_db: '6',
+      profile: 'fm_broadcast'
+    }
+  },
   stable_baseline: {
     label: 'Stable Baseline',
     description: 'Slower baseline work: fixed 30 dB gain, overlapping 1.2 MS/s step, FFT 8192/avg 16, and stricter 2/2 persistence for cleaner promoted detections.',
@@ -779,12 +817,22 @@ const PRESET_CONTROL_IDS = [
   'cfar_quantile',
   'cfar_alpha_enabled',
   'cfar_alpha_db',
+  'cluster_merge_hz',
+  'max_detection_width_hz',
+  'max_detection_width_ratio',
   'persistence_mode',
   'persistence_hit_ratio',
   'persistence_min_seconds',
   'persistence_min_hits',
   'persistence_min_windows',
-  'two_pass'
+  'two_pass',
+  'revisit_fft',
+  'revisit_avg',
+  'revisit_margin_hz',
+  'revisit_span_limit_hz',
+  'revisit_max_bands',
+  'revisit_floor_threshold_db',
+  'profile'
 ];
 
 let applyingScanPreset = false;
@@ -835,6 +883,15 @@ function setControlValue(id, value) {
   if (!el) return;
   if (el.type === 'checkbox') {
     el.checked = Boolean(value);
+  } else if (el.tagName === 'SELECT' && value) {
+    const textValue = String(value);
+    if (!Array.from(el.options).some(option => option.value === textValue)) {
+      const option = document.createElement('option');
+      option.value = textValue;
+      option.textContent = textValue;
+      el.appendChild(option);
+    }
+    el.value = textValue;
   } else {
     el.value = value ?? '';
   }
@@ -858,6 +915,11 @@ function applyScanPreset(presetId, options = {}) {
   applyingScanPreset = true;
   try {
     setControlValue('scan_preset', presetId);
+    PRESET_CONTROL_IDS.forEach(id => {
+      if (Object.prototype.hasOwnProperty.call(SAFE_SCAN_DEFAULTS, id)) {
+        setControlValue(id, SAFE_SCAN_DEFAULTS[id]);
+      }
+    });
     Object.entries(preset.values).forEach(([id, value]) => setControlValue(id, value));
     updateGainMode();
     updateCfarAlphaMode();

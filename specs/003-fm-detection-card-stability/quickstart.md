@@ -110,6 +110,44 @@ Useful smoke targets:
 - Controller `_build_cmd` includes `--profile fm_broadcast` and `--two-pass` when FM Validation submits those params.
 - Scanner diagnostic tuning params show effective FM profile values when `profile=fm_broadcast` is applied.
 
+## Automated Validation Results
+
+Run date: 2026-06-12.
+
+The first focused pytest attempt used `--basetemp .pytest-tmp` and was blocked by a Windows directory lock on the existing temp directory. The successful runs below used fresh basetemp directories.
+
+Focused FM/card-stability tests:
+
+```powershell
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest tests/test_fm_validation_profile.py tests/test_control_fm_validation.py tests/test_control_page_scan_settings.py tests/test_fm_persistence_stability.py tests/test_non_fm_width_scope.py tests/test_extent_hysteresis.py tests/test_fm_persistence_diagnostics.py tests/test_web_diagnostics_bundle.py -q --basetemp .pytest-tmp-fm-implement2
+```
+
+Result: `44 passed in 1.53s`.
+
+Focused no-hardware regression set:
+
+```powershell
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest tests/test_control_page_scan_settings.py tests/test_detection_diagnostics.py tests/test_extent_hysteresis.py tests/test_segment_splitting.py tests/test_control_diagnostics_mode.py tests/test_fm_validation_profile.py tests/test_control_fm_validation.py tests/test_fm_persistence_stability.py tests/test_non_fm_width_scope.py tests/test_fm_persistence_diagnostics.py tests/test_web_diagnostics_bundle.py -q --basetemp .pytest-tmp-fm-final
+```
+
+Result: `55 passed in 1.53s`.
+
+Backend profile smoke:
+
+```powershell
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m sdrwatch.cli --list-profiles
+```
+
+Result: success. The output includes `fm_broadcast` with `two_pass=true`, `step_hz=1200000`, `center_match_hz=60000`, `min_match_bandwidth_hz=80000`, `min_display_bandwidth_hz=200000`, `max_detection_width_hz=270000`, and revisit settings.
+
+## Implementation Scope Notes
+
+- Added a GUI FM Validation preset while preserving RTL-SDR v4 Discovery as the selected reset/default path.
+- FM Validation submits existing `/api/jobs` params, including `profile=fm_broadcast`, explicit two-pass/revisit settings, width cap, and compatible visible tuning values.
+- No database schema migration, frontend build system, SDR driver, or detector rewrite was added.
+- Runtime changes are limited to preset wiring, diagnostic log mirroring into diagnostic JSONL, effective-setting visibility, and structured persistence/width decision events.
+- Hardware GUI/controller acceptance is still required on Raspberry Pi 5 with RTL-SDR Blog v4 before closing field acceptance.
+
 ## Expected Outcome
 
 - FM Validation through the GUI produces a reasonable, stable set of FM-band cards, not hundreds of tiny 293-880 Hz cards.

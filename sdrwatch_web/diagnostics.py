@@ -238,6 +238,57 @@ def _diagnostic_path(job: Dict[str, Any]) -> str:
     return str(value or "")
 
 
+def _count_key(counter: Dict[str, int], key: Any) -> None:
+    if key in (None, ""):
+        key = "unknown"
+    key_text = str(key)
+    counter[key_text] = counter.get(key_text, 0) + 1
+
+
+def _summarize_decision_tail(text: str) -> Tuple[Dict[str, Any], bool]:
+    summary: Dict[str, Any] = {
+        "event_counts": {},
+        "persistence_actions": {},
+        "width_stages": {},
+        "revisit_events": {},
+        "effective_settings": {},
+        "parse_errors": 0,
+    }
+    has_decision_evidence = False
+    effective_settings: Dict[str, Any] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            summary["parse_errors"] += 1
+            continue
+        if not isinstance(record, dict):
+            continue
+        event = record.get("event")
+        if event in (None, ""):
+            continue
+        event_name = str(event)
+        _count_key(summary["event_counts"], event_name)
+        if event_name == "detection_window" and isinstance(record.get("tuning_params"), dict):
+            effective_settings = dict(record["tuning_params"])
+        elif event_name == "sweep_start" and isinstance(record.get("params"), dict):
+            effective_settings = dict(record["params"])
+        elif event_name == "persistence_decision":
+            has_decision_evidence = True
+            _count_key(summary["persistence_actions"], record.get("action"))
+        elif event_name == "width_decision":
+            has_decision_evidence = True
+            _count_key(summary["width_stages"], record.get("stage"))
+        elif event_name.startswith("revisit_"):
+            has_decision_evidence = True
+            _count_key(summary["revisit_events"], event_name)
+    summary["effective_settings"] = effective_settings
+    return summary, has_decision_evidence
+
+
 def _add_log_evidence(
     zf: zipfile.ZipFile,
     manifest: BundleManifest,
@@ -271,10 +322,17 @@ def _add_diagnostic_jsonl(
     text, count, truncated, error = tail_file(path, bounds.diagnostic_tail_lines)
     if error:
         manifest.missing("diagnostic_jsonl", error)
+        manifest.missing("decision_evidence", "diagnostic JSONL unavailable")
         return
     if truncated:
         manifest.truncated("diagnostic_jsonl", "tail limited", included_lines=count)
-    _add_bytes(zf, manifest, "diagnostics/diagnostic-jsonl-tail.jsonl", (text or "").encode("utf-8"))
+        manifest.truncated("decision_evidence", "diagnostic tail limited", included_lines=count)
+    text = text or ""
+    _add_bytes(zf, manifest, "diagnostics/diagnostic-jsonl-tail.jsonl", text.encode("utf-8"))
+    summary, has_decision_evidence = _summarize_decision_tail(text)
+    _add_json(zf, manifest, "diagnostics/decision-summary.json", summary)
+    if not has_decision_evidence:
+        manifest.missing("decision_evidence", "no decision events in diagnostic JSONL tail")
 
 
 def _add_database_evidence(

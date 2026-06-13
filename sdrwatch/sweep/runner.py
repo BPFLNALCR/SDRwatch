@@ -31,8 +31,12 @@ class ScannerRunner:
         self.sweeper: Optional[Sweeper] = None
 
     def _extra_targets(self):
-        jsonl_path = getattr(self.args, "jsonl", None)
-        return [jsonl_path] if jsonl_path else None
+        targets = []
+        for attr in ("jsonl", "diagnostic_jsonl"):
+            path = getattr(self.args, attr, None)
+            if path and path not in targets:
+                targets.append(path)
+        return targets or None
 
     def _resolve_baseline(self):
         planned_start = min(self.args.start, self.args.stop)

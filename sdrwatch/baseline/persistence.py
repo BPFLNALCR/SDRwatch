@@ -147,6 +147,14 @@ class BaselinePersistence:
                 center_hz=det.f_center_hz,
                 width_hz=max(det.f_high_hz - det.f_low_hz, 0),
             )
+            self._log(
+                "persistence_decision",
+                action="missing",
+                detection_id=det.id,
+                baseline_id=det.baseline_id,
+                center_hz=det.f_center_hz,
+                width_hz=max(det.f_high_hz - det.f_low_hz, 0),
+            )
             if self.two_pass_enabled:
                 self._schedule_revisit(
                     detection_id=det.id,
@@ -321,6 +329,17 @@ class BaselinePersistence:
                 if bandplan_notes is not None:
                     match.bandplan_notes = bandplan_notes
                 self.store.update_baseline_detection(match)
+                self._log(
+                    "persistence_decision",
+                    action="update",
+                    detection_id=match.id,
+                    baseline_id=self.baseline_ctx.id,
+                    center_hz=match.f_center_hz,
+                    width_hz=max(match.f_high_hz - match.f_low_hz, 0),
+                    hits=match.total_hits,
+                    windows=match.total_windows,
+                    confidence=confidence,
+                )
                 is_new = False
             else:
                 detection_id = self.store.insert_baseline_detection(
@@ -361,6 +380,17 @@ class BaselinePersistence:
                 self._persisted.append(new_det)
                 self._seen_persistent.add(detection_id)
                 self._extent_state[detection_id] = ExtentHysteresisState()
+                self._log(
+                    "persistence_decision",
+                    action="insert",
+                    detection_id=detection_id,
+                    baseline_id=self.baseline_ctx.id,
+                    center_hz=cluster_center_hz,
+                    width_hz=max(cluster.f_high_hz - cluster.f_low_hz, 0),
+                    hits=cluster.hits,
+                    windows=len(cluster.windows),
+                    confidence=confidence,
+                )
                 is_new = True
                 if self.two_pass_enabled:
                     self._schedule_revisit(detection_id=detection_id, seg=seg, reason="new")
@@ -406,11 +436,29 @@ class BaselinePersistence:
                         width_seg_hz=width_seg,
                         max_ratio=max_ratio,
                     )
+                    self._log(
+                        "persistence_decision",
+                        action="width_reject",
+                        detection_id=det.id,
+                        baseline_id=self.baseline_ctx.id,
+                        center_hz=seg.f_center_hz,
+                        width_det_hz=width_det,
+                        width_seg_hz=width_seg,
+                        max_ratio=max_ratio,
+                        reason="segment width exceeds max ratio",
+                    )
                     continue
                 self._seen_persistent.add(det.id)
                 if det.missing_since_utc:
                     det.missing_since_utc = None
                     self.store.clear_detection_missing(det.id, det.baseline_id)
+                    self._log(
+                        "persistence_decision",
+                        action="missing_cleared",
+                        detection_id=det.id,
+                        baseline_id=self.baseline_ctx.id,
+                        center_hz=det.f_center_hz,
+                    )
                 self._log(
                     "persist_match",
                     detection_id=det.id,
@@ -421,9 +469,29 @@ class BaselinePersistence:
                     seg_width_hz=max(seg.bandwidth_hz, 0.0),
                     persisted_width_hz=max(det.f_high_hz - det.f_low_hz, 0),
                 )
+                self._log(
+                    "persistence_decision",
+                    action="match",
+                    detection_id=det.id,
+                    baseline_id=self.baseline_ctx.id,
+                    center_hz=det.f_center_hz,
+                    candidate_center_hz=seg.f_center_hz,
+                    center_delta_hz=int(seg.f_center_hz - det.f_center_hz),
+                    spans_overlap=spans_overlap,
+                    center_close=center_close,
+                    seg_width_hz=max(seg.bandwidth_hz, 0.0),
+                    persisted_width_hz=max(det.f_high_hz - det.f_low_hz, 0),
+                )
                 return det
         self._log(
             "persist_no_match",
+            baseline_id=self.baseline_ctx.id,
+            center_hz=seg.f_center_hz,
+            width_hz=max(seg.bandwidth_hz, 0.0),
+        )
+        self._log(
+            "persistence_decision",
+            action="no_match",
             baseline_id=self.baseline_ctx.id,
             center_hz=seg.f_center_hz,
             width_hz=max(seg.bandwidth_hz, 0.0),
@@ -601,21 +669,42 @@ class BaselinePersistence:
         return low, high
 
     def _blend_width_ema(self, prev_width: float, measured_width: float) -> float:
+        original_prev_width = float(prev_width)
+        original_measured_width = float(measured_width)
         if prev_width <= 0.0:
             prev_width = max(self.min_detection_width_hz, measured_width)
         measurement = max(measured_width, self.min_detection_width_hz)
+        was_floored = measurement != measured_width
         outlier_ratio = float(self.width_outlier_ratio)
+        outlier_rejected = False
         if prev_width > 0.0 and outlier_ratio > 0.0:
             ratio = measurement / prev_width
             # Reject only large *expansion* outliers. Shrink outliers are allowed
             # so oversized persisted spans can converge back down over time.
             if ratio > outlier_ratio:
                 measurement = prev_width
+                outlier_rejected = True
         alpha = float(min(max(self.width_ema_alpha, 0.01), 1.0))
         blended = prev_width + alpha * (measurement - prev_width)
         blended = max(blended, self.min_detection_width_hz)
+        was_clamped = False
         if self.max_detection_width_hz > 0.0 and blended > self.max_detection_width_hz:
             blended = self.max_detection_width_hz
+            was_clamped = True
+        self._log(
+            "width_decision",
+            stage="persistence_width_ema",
+            previous_width_hz=original_prev_width,
+            input_width_hz=original_measured_width,
+            output_width_hz=blended,
+            min_width_hz=float(self.min_detection_width_hz),
+            max_width_hz=float(self.max_detection_width_hz),
+            alpha=alpha,
+            outlier_ratio=outlier_ratio,
+            was_floored=was_floored,
+            was_clamped=was_clamped,
+            outlier_rejected=outlier_rejected,
+        )
         return blended
 
     @staticmethod
@@ -676,9 +765,11 @@ class BaselinePersistence:
             pass
 
     def _log(self, event: str, **fields) -> None:
-        if not self.logger:
+        logger = getattr(self, "logger", None)
+        if not logger:
             return
         payload = dict(fields)
-        if self.profile_name:
-            payload.setdefault("profile", self.profile_name)
-        self.logger.log(event, **payload)
+        profile_name = getattr(self, "profile_name", None)
+        if profile_name:
+            payload.setdefault("profile", profile_name)
+        logger.log(event, **payload)

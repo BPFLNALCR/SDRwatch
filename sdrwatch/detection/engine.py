@@ -236,6 +236,7 @@ class DetectionEngine:
         raw_low: int,
         raw_high: int,
         *,
+        stage: str,
         pad_hz: float,
         min_bw_hz: float,
     ) -> Tuple[int, int]:
@@ -243,29 +244,57 @@ class DetectionEngine:
         # When centroiding spans beyond the scan edges, the raw center can land
         # slightly outside the configured sweep range; clamping avoids emitting
         # out-of-band centers with nonsensical low/high bounds.
+        original_center_hz = int(center_hz)
         center_hz = int(
             min(
                 max(int(center_hz), int(self.baseline_ctx.freq_start_hz)),
                 int(self.baseline_ctx.freq_stop_hz),
             )
         )
-        width = max(float(raw_high - raw_low), self.bin_hz)
+        input_width = max(float(raw_high - raw_low), self.bin_hz)
+        width = input_width
         if pad_hz > 0.0:
             width += float(pad_hz) * 2.0
+        padded_width = width
+        was_floored = False
         if min_bw_hz > 0.0 and width < float(min_bw_hz):
             width = float(min_bw_hz)
+            was_floored = True
 
         # Apply a hard cap to the emitted span if configured. This prevents
         # runaway widths when clusters drift/chain across adjacent segments.
+        was_clamped = False
         if self.max_detection_width_hz > 0.0 and width > self.max_detection_width_hz:
             width = self.max_detection_width_hz
+            was_clamped = True
         half = width / 2.0
         low = int(round(center_hz - half))
         high = int(round(center_hz + half))
+        unclipped_low = low
+        unclipped_high = high
         low = max(low, self.baseline_ctx.freq_start_hz)
         high = min(high, self.baseline_ctx.freq_stop_hz)
         if high <= low:
             high = low + int(max(1.0, self.bin_hz))
+        output_width = max(float(high - low), self.bin_hz)
+        self._log(
+            "width_decision",
+            stage=stage,
+            baseline_id=self.baseline_ctx.id,
+            center_hz=center_hz,
+            requested_center_hz=original_center_hz,
+            raw_low_hz=int(raw_low),
+            raw_high_hz=int(raw_high),
+            input_width_hz=input_width,
+            padded_width_hz=padded_width,
+            output_width_hz=output_width,
+            pad_hz=float(pad_hz),
+            min_width_hz=float(min_bw_hz),
+            max_width_hz=float(self.max_detection_width_hz),
+            was_floored=was_floored,
+            was_clamped=was_clamped,
+            baseline_clipped=bool(low != unclipped_low or high != unclipped_high),
+        )
         return low, high
 
     def _shape_match_span(self, center_hz: int, raw_low: int, raw_high: int) -> Tuple[int, int]:
@@ -273,6 +302,7 @@ class DetectionEngine:
             center_hz,
             raw_low,
             raw_high,
+            stage="shape_match",
             pad_hz=self.match_bandwidth_pad_hz,
             min_bw_hz=self.min_match_bandwidth_hz,
         )
@@ -282,6 +312,7 @@ class DetectionEngine:
             center_hz,
             raw_low,
             raw_high,
+            stage="shape_display",
             pad_hz=self.display_bandwidth_pad_hz,
             min_bw_hz=self.min_display_bandwidth_hz,
         )

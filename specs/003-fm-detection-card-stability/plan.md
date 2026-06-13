@@ -156,6 +156,12 @@ This is not candidate starvation. The system produces many candidates, accepted 
 6. **Improve persistence observability** with structured diagnostic events or compact summaries for `persist_no_match`, `persist_match`, insert/update, width clamp/floor, missing marking, revisit queue/filter/apply, and final counts.
 7. **Keep changes narrow**. Do not rewrite CFAR, PSD, schema, dashboard rendering, or controller lifecycle unless a test exposes a small compatibility bug.
 
+## Implementation Choice
+
+Implemented on 2026-06-12 as a profile-driven GUI path. FM Validation is an additive control-page preset that submits existing `/api/jobs` params, including `profile=fm_broadcast`, explicit two-pass/revisit values, and visible width cap/matching controls. No new detector algorithm or database schema was added.
+
+The scanner already applied the FM profile's hidden stability fields (`center_match_hz`, match/display bandwidth floors, centroid fields, and confidence normalizers). The implementation made those settings observable in sweeper diagnostic `tuning_params`, mirrored structured scan logs into the diagnostic JSONL when diagnostics are enabled, and added normalized `persistence_decision` and `width_decision` events for bundle summaries.
+
 ## Test Strategy Before Implementation
 
 Automated tests should be written or extended before code changes:

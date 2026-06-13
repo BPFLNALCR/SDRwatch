@@ -189,6 +189,31 @@ EXPECTED_PRESETS: Dict[str, Dict[str, str]] = {
         "persistence_min_hits": "1",
         "persistence_min_windows": "1",
     },
+    "fm_validation": {
+        "samp_rate": "2.4e6",
+        "step": "1200000",
+        "gain_mode": "manual",
+        "gain": "20",
+        "fft": "8192",
+        "avg": "10",
+        "threshold_db": "6",
+        "guard_bins": "3",
+        "min_width_bins": "5",
+        "cluster_merge_hz": "12000",
+        "max_detection_width_hz": "270000",
+        "max_detection_width_ratio": "2.5",
+        "persistence_hit_ratio": "0.25",
+        "persistence_min_seconds": "2",
+        "persistence_min_hits": "1",
+        "persistence_min_windows": "1",
+        "revisit_fft": "32768",
+        "revisit_avg": "4",
+        "revisit_margin_hz": "200000",
+        "revisit_span_limit_hz": "420000",
+        "revisit_max_bands": "40",
+        "revisit_floor_threshold_db": "6",
+        "profile": "fm_broadcast",
+    },
     "stable_baseline": {
         "samp_rate": "2.4e6",
         "step": "1200000",
@@ -337,6 +362,7 @@ def test_gui_tuning_presets_render_with_visible_descriptions(tmp_path: Path) -> 
     assert 'id="scan_preset_description"' in html
     for value, label in (
         ("rtl_v4_discovery", "RTL-SDR v4 Discovery"),
+        ("fm_validation", "FM Validation"),
         ("stable_baseline", "Stable Baseline"),
         ("fast_wide_survey", "Fast Wide Survey"),
         ("custom", "Custom"),
@@ -346,6 +372,7 @@ def test_gui_tuning_presets_render_with_visible_descriptions(tmp_path: Path) -> 
 
     for description in (
         "relaxed 1/1 promotion so initial cards can appear",
+        "FM broadcast validation",
         "overlapping 1.2 MS/s step",
         "lower FFT favors speed over precise characterization",
     ):
@@ -358,6 +385,19 @@ def test_rtl_sdr_v4_discovery_preset_applies_first_light_values(tmp_path: Path) 
 
     for key, value in EXPECTED_PRESETS["rtl_v4_discovery"].items():
         _assert_js_string_value(block, key, value)
+
+
+def test_fm_validation_preset_applies_profile_two_pass_and_width_values(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+    block = _preset_block(html, "fm_validation")
+
+    for key, value in EXPECTED_PRESETS["fm_validation"].items():
+        _assert_js_string_value(block, key, value)
+    assert "two_pass: true" in block
+    assert "cfar: 'os'" in block
+    assert "cfar_train: '32'" in block
+    assert "cfar_guard: '6'" in block
+    assert "cfar_quantile: '0.6'" in block
 
 
 def test_stable_baseline_preset_applies_overlapping_values(tmp_path: Path) -> None:
@@ -393,9 +433,37 @@ def test_manual_edits_after_preset_use_existing_payload_fields(tmp_path: Path) -
 
     assert "function markCustomScanPreset()" in html
     assert "scanPresetSelect.value = 'custom'" in html
-    for element_id in ("gain", "step", "fft", "avg", "persistence_min_hits", "persistence_min_windows"):
+    for element_id in (
+        "gain",
+        "step",
+        "fft",
+        "avg",
+        "cluster_merge_hz",
+        "max_detection_width_hz",
+        "max_detection_width_ratio",
+        "persistence_min_hits",
+        "persistence_min_windows",
+        "two_pass",
+        "revisit_fft",
+        "revisit_span_limit_hz",
+        "profile",
+    ):
         assert f"'{element_id}'" in _const_block(html, "PRESET_CONTROL_IDS")
-    for param_name in ("gain", "step", "fft", "avg", "persistence_min_hits", "persistence_min_windows"):
+    for param_name in (
+        "gain",
+        "step",
+        "fft",
+        "avg",
+        "cluster_merge_hz",
+        "max_detection_width_hz",
+        "max_detection_width_ratio",
+        "persistence_min_hits",
+        "persistence_min_windows",
+        "two_pass",
+        "revisit_fft",
+        "revisit_span_limit_hz",
+        "profile",
+    ):
         assert f"params.{param_name}" in builder
 
 
@@ -507,6 +575,16 @@ def test_reset_to_safe_defaults_restores_discovery_preset(tmp_path: Path) -> Non
     assert 'value="2400000"' in _tag(html, "step")
     assert 'value="1"' in _tag(html, "persistence_min_hits")
     assert 'value="1"' in _tag(html, "persistence_min_windows")
+
+
+def test_discovery_payload_regression_after_fm_validation_addition(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+    discovery = _preset_block(html, "rtl_v4_discovery")
+
+    assert "profile" not in discovery
+    assert "two_pass: false" in discovery
+    assert "revisit_fft" not in discovery
+    assert '<option value="rtl_v4_discovery" selected>RTL-SDR v4 Discovery</option>' in html
 
 
 def test_copy_current_scan_settings_uses_payload_builder_and_omits_blank_overrides(tmp_path: Path) -> None:

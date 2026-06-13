@@ -170,7 +170,16 @@ def test_diagnostic_bundle_contains_available_evidence(tmp_path: Path) -> None:
     diag_path = tmp_path / "diagnostic.jsonl"
     _create_temp_db(db_path)
     _write_text(log_path, ["log one", "log two"])
-    _write_text(diag_path, ['{"event": 1}', '{"event": 2}'])
+    _write_text(
+        diag_path,
+        [
+            '{"event": "detection_window", "tuning_params": {"profile": "fm_broadcast", "two_pass": true}}',
+            '{"event": "persistence_decision", "action": "insert"}',
+            '{"event": "persistence_decision", "action": "update"}',
+            '{"event": "width_decision", "stage": "shape_display", "was_floored": true}',
+            '{"event": "revisit_queue", "action": "queued"}',
+        ],
+    )
 
     bundle = build_diagnostic_bundle(
         job=_job(tmp_path, diag_path, log_path),
@@ -193,6 +202,14 @@ def test_diagnostic_bundle_contains_available_evidence(tmp_path: Path) -> None:
         assert "database/scan-updates.json" in names
         assert "database/monitoring-zones.json" in names
         assert "database/friendly-signals.json" in names
+        assert "diagnostics/decision-summary.json" in names
+        summary = json.loads(zf.read("diagnostics/decision-summary.json"))
+        assert summary["event_counts"]["persistence_decision"] == 2
+        assert summary["persistence_actions"] == {"insert": 1, "update": 1}
+        assert summary["width_stages"] == {"shape_display": 1}
+        assert summary["revisit_events"] == {"revisit_queue": 1}
+        assert summary["effective_settings"]["profile"] == "fm_broadcast"
+        assert summary["effective_settings"]["two_pass"] is True
         manifest = json.loads(zf.read("manifest.json"))
         assert manifest["job_id"] == "abc123def456"
         assert manifest["missing"] == []
@@ -223,6 +240,35 @@ def test_diagnostic_bundle_records_truncation_and_missing_evidence(tmp_path: Pat
         assert "diagnostic_jsonl" in truncated
         assert "baseline_detections" in truncated
         assert zf.read("logs/scanner-log-tail.txt").decode("utf-8") == "line2\nline3\n"
+    finally:
+        zf.close()
+        buffer.close()
+
+
+def test_diagnostic_bundle_decision_summary_marks_empty_tail(tmp_path: Path) -> None:
+    db_path = tmp_path / "sdrwatch.db"
+    log_path = tmp_path / "scanner.log"
+    diag_path = tmp_path / "diagnostic.jsonl"
+    _create_temp_db(db_path)
+    _write_text(log_path, ["log"])
+    _write_text(diag_path, ['{"event": "detection_window", "tuning_params": {"two_pass": false}}'])
+
+    bundle = build_diagnostic_bundle(
+        job=_job(tmp_path, diag_path, log_path),
+        db_path=str(db_path),
+        bounds=DiagnosticBundleBounds(log_tail_lines=20, diagnostic_tail_lines=20, row_limit=20),
+    )
+
+    zf, buffer = _zip_entries(bundle.content)
+    try:
+        summary = json.loads(zf.read("diagnostics/decision-summary.json"))
+        assert summary["event_counts"] == {"detection_window": 1}
+        assert summary["persistence_actions"] == {}
+        assert summary["effective_settings"]["two_pass"] is False
+        manifest = json.loads(zf.read("manifest.json"))
+        assert {"category": "decision_evidence", "reason": "no decision events in diagnostic JSONL tail"} in manifest[
+            "missing"
+        ]
     finally:
         zf.close()
         buffer.close()

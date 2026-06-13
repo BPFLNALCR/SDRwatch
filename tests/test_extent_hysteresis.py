@@ -81,3 +81,21 @@ def test_width_ema_rejects_outliers() -> None:
     stub = _make_persistence_stub(alpha=0.5, outlier_ratio=3.0)
     result = stub._blend_width_ema(1000.0, 4000.0)
     assert result == 1000.0
+
+
+def test_width_ema_applies_min_detection_width_floor() -> None:
+    stub = _make_persistence_stub(alpha=0.5)
+    stub.min_detection_width_hz = 80_000.0
+
+    result = stub._blend_width_ema(10_000.0, 2_000.0)
+
+    assert result == 80_000.0
+
+
+def test_width_ema_respects_configured_max_detection_width() -> None:
+    stub = _make_persistence_stub(alpha=1.0, outlier_ratio=10.0)
+    stub.max_detection_width_hz = 270_000.0
+
+    result = stub._blend_width_ema(200_000.0, 400_000.0)
+
+    assert result == 270_000.0

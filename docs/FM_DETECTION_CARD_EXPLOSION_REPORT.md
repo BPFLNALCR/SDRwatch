@@ -148,3 +148,24 @@ The highest-probability failure is a combination of segmentation and baseline up
 6. Extend diagnostics so bundles expose create/update/no-match/match/merge/width-clamp/revisit decisions directly instead of requiring inference from final rows.
 
 Do not solve this by simply raising thresholds until cards disappear. The evidence shows actual overproduction and unstable persistence, not a lack of accepted RF candidates.
+
+## Post-Implementation Update
+
+Updated: 2026-06-12
+
+The implementation follows the recommended profile-driven direction:
+
+- Added a GUI-visible `FM Validation` preset while preserving `RTL-SDR v4 Discovery` as the selected first-light default.
+- FM Validation submits existing `/api/jobs` params, including `profile=fm_broadcast`, `two_pass=true`, bounded revisit settings, `cluster_merge_hz=12000`, `max_detection_width_ratio=2.5`, and `max_detection_width_hz=270000`.
+- Preset application clears preset-controlled fields before applying the selected preset so FM profile/revisit settings do not leak back into Discovery.
+- Sweeper diagnostic `tuning_params` now includes FM profile-applied effective settings such as center matching, match/display bandwidth floors, and revisit values.
+- Structured `persistence_decision` and `width_decision` events now record insert/update/no-match/missing/missing-clear and width floor/cap behavior.
+- Diagnostic bundles now include `diagnostics/decision-summary.json` and record missing or tail-limited decision evidence in `manifest.json`.
+
+Automated validation completed with the bundled Python runtime:
+
+- Focused FM/card-stability suite: `44 passed in 1.53s`.
+- Focused no-hardware regression suite: `55 passed in 1.53s`.
+- Backend profile smoke: `python -m sdrwatch.cli --list-profiles` succeeded and reported the expected `fm_broadcast` stability fields.
+
+Hardware GUI/controller validation on Raspberry Pi 5 with RTL-SDR Blog v4 was not run in this environment. Field acceptance still needs a fresh GUI FM Validation diagnostic bundle confirming that persisted FM cards are no longer dominated by 293-880 Hz widths and that the exported decision summary explains create/update/missing/width/revisit behavior.
