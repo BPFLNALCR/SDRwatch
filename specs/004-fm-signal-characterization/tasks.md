@@ -95,16 +95,16 @@ Write these tests first and confirm they fail before implementation.
 
 ### Tests for User Story 3
 
-- [ ] T022 [P] [US3] Add revisit refinement tests for measured center, bandwidth, and confidence updates without extra cards in `tests/test_fm_characterization_persistence.py`
-- [ ] T023 [P] [US3] Add persistence invariant coverage for coarse updates, revisit confirmation, and hysteresis behavior in `tests/test_extent_hysteresis.py`
-- [ ] T024 [P] [US3] Add revisit provenance and stability-summary tests in `tests/test_fm_characterization_diagnostics.py`
+- [X] T022 [P] [US3] Add revisit refinement tests for measured center, bandwidth, and confidence updates without extra cards in `tests/test_fm_characterization_persistence.py`
+- [X] T023 [P] [US3] Add persistence invariant coverage for coarse updates, revisit confirmation, and hysteresis behavior in `tests/test_extent_hysteresis.py`
+- [X] T024 [P] [US3] Add revisit provenance and stability-summary tests in `tests/test_fm_characterization_diagnostics.py`
 
 ### Implementation for User Story 3
 
-- [ ] T025 [US3] Aggregate revisit-derived `measured_*`, `characterization_confidence`, `center_stability_hz`, and `bandwidth_stability_hz` values in `sdrwatch/baseline/persistence.py` and `sdrwatch/sweep/sweeper.py`
-- [ ] T026 [US3] Refine measured center, measured bandwidth, and confidence from revisit evidence without multiplying cards in `sdrwatch/detection/engine.py` and `sdrwatch/baseline/persistence.py`
-- [ ] T027 [US3] Fix any invariant or hysteresis edge cases surfaced by T023 while keeping schema unchanged in `sdrwatch/baseline/persistence.py`
-- [ ] T028 [US3] Run focused US3 revisit and invariant tests and record the exact command and results in `specs/004-fm-signal-characterization/quickstart.md`
+- [X] T025 [US3] Aggregate revisit-derived `measured_*`, `characterization_confidence`, `center_stability_hz`, and `bandwidth_stability_hz` values in `sdrwatch/baseline/persistence.py` and `sdrwatch/sweep/sweeper.py`
+- [X] T026 [US3] Refine measured center, measured bandwidth, and confidence from revisit evidence without multiplying cards in `sdrwatch/detection/engine.py` and `sdrwatch/baseline/persistence.py`
+- [X] T027 [US3] Fix any invariant or hysteresis edge cases surfaced by T023 while keeping schema unchanged in `sdrwatch/baseline/persistence.py`
+- [X] T028 [US3] Run focused US3 revisit and invariant tests and record the exact command and results in `specs/004-fm-signal-characterization/quickstart.md`
 
 **Checkpoint**: Revisit improves characterization quality without undoing card stability or persistence safety.
 

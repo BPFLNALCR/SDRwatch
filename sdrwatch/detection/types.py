@@ -70,6 +70,8 @@ class CharacterizationEvidence:
     measured_span: CharacterizationSpan
     match_span: CharacterizationSpan
     display_span: CharacterizationSpan
+    stable_center_hz: int
+    center_delta_hz: int
     peak_db: float
     noise_db: float
     snr_db: float
@@ -99,6 +101,8 @@ class CharacterizationEvidence:
             **self.measured_span.prefixed_fields("measured"),
             **self.match_span.prefixed_fields("match"),
             **self.display_span.prefixed_fields("display"),
+            "stable_center_hz": self.stable_center_hz,
+            "center_delta_hz": self.center_delta_hz,
             "peak_db": self.peak_db,
             "noise_db": self.noise_db,
             "snr_db": self.snr_db,
@@ -132,6 +136,8 @@ class CharacterizationEvidence:
             "raw_segment": self.raw_segment.summary_dict(),
             "measured_characterization": {
                 "center_hz": self.measured_span.center_hz,
+                "stable_center_hz": self.stable_center_hz,
+                "center_delta_hz": self.center_delta_hz,
                 "occupied_bandwidth_hz": self.measured_span.bandwidth_hz,
                 "bandwidth_confidence": self.measured_bandwidth_confidence,
                 "characterization_confidence": self.characterization_confidence,

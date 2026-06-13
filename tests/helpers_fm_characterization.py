@@ -43,6 +43,8 @@ def make_characterization_evidence(
             center_hz=100_100_000,
             bandwidth_hz=200_000.0,
         ),
+        stable_center_hz=100_100_000,
+        center_delta_hz=0,
         peak_db=-35.0,
         noise_db=-80.0,
         snr_db=24.0,
@@ -86,6 +88,9 @@ def assert_characterization_record_shape(record: Mapping[str, Any]) -> None:
         "display_high_hz",
         "display_center_hz",
         "display_bandwidth_hz",
+        "stable_center_hz",
+        "center_delta_hz",
+        "center_stability_hz",
         "characterization_confidence",
         "characterization_method",
         "classification_candidate",
@@ -105,5 +110,5 @@ def assert_characterization_record_shape(record: Mapping[str, Any]) -> None:
     assert record["measured_low_hz"] <= record["measured_center_hz"] <= record["measured_high_hz"]
     assert record["match_low_hz"] <= record["match_center_hz"] <= record["match_high_hz"]
     assert record["display_low_hz"] <= record["display_center_hz"] <= record["display_high_hz"]
+    assert record["display_center_hz"] == record["stable_center_hz"]
     assert record["raw_bandwidth_hz"] <= record["measured_bandwidth_hz"] <= record["display_bandwidth_hz"]
-

@@ -104,6 +104,17 @@ def test_width_ema_respects_configured_max_detection_width() -> None:
     assert result == 270_000.0
 
 
+def test_bounded_center_step_damps_one_off_fragment_jump() -> None:
+    result = BaselinePersistence._bounded_center_step(
+        current_hz=100_100_000,
+        target_hz=100_160_000,
+        max_step_hz=15_000.0,
+        epsilon_hz=500,
+    )
+
+    assert result == 100_115_000
+
+
 def _insert_detection(store, ctx, *, low: int, center: int, high: int) -> int:
     detection_id = store.insert_baseline_detection(
         ctx.id,

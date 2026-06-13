@@ -86,6 +86,24 @@ Observed result:
 56 passed in 1.85s
 ```
 
+US3 revisit and center-stability validation on June 13, 2026:
+
+```powershell
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest tests/test_fm_characterization.py tests/test_fm_characterization_persistence.py tests/test_fm_characterization_diagnostics.py tests/test_extent_hysteresis.py tests/test_fm_persistence_stability.py tests/test_fm_persistence_diagnostics.py tests/test_non_fm_width_scope.py tests/test_web_diagnostics_bundle.py tests/test_control_fm_validation.py tests/test_control_page_scan_settings.py -q --basetemp .pytest-tmp-char-us3-broader
+```
+
+Observed result:
+
+```text
+60 passed in 2.36s
+```
+
+US3 implementation notes:
+
+- Characterization records now carry `measured_center_hz`, `stable_center_hz`, `display_center_hz`, `center_delta_hz`, `center_stability_hz`, and `source_pass` so center jitter is visible without changing the persistent schema.
+- FM Validation center updates now use a bounded stable-center smoother in persistence so repeated coarse fragment wobble is damped instead of moving the persisted/card center one-for-one.
+- Revisit confirmations now emit `characterization_record` events with `source_pass="revisit"` and increment `revisit_measurement_count`, so diagnostic bundles can show revisit contribution directly instead of only `revisit_apply`.
+
 ## GUI And Controller Acceptance Path
 
 1. Open the SDRwatch web UI.
@@ -99,10 +117,12 @@ Observed result:
 9. Verify the exported evidence separates:
    - raw detector segment span
    - measured center and occupied bandwidth
+   - stable center and center delta
    - persistence or match span
    - display or card span
    - contextual bandplan or profile metadata
-10. Confirm that any reported classification candidate includes evidence sources and is not based only on contextual labels.
+10. Confirm the bundle now includes either `source_pass="revisit"` characterization records or nonzero `revisit_measurement_count` for stations that received revisit confirmation.
+11. Confirm that any reported classification candidate includes evidence sources and is not based only on contextual labels.
 
 ## Discovery Regression Check
 
@@ -118,6 +138,7 @@ For a successful FM characterization run, the bundle should make these facts exp
 
 - raw segment width is visible
 - measured occupied bandwidth is visible
+- stable center and center delta are visible
 - match span is visible
 - display span is visible
 - contextual bandplan and profile labels are separate from measured evidence

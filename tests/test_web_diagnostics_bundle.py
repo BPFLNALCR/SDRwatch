@@ -419,6 +419,8 @@ def test_diagnostic_bundle_exports_bounded_characterization_summary(tmp_path: Pa
                     "match_high_hz": 100_140_000,
                     "match_bandwidth_hz": 80_000.0,
                     "display_low_hz": 100_000_000,
+                    "stable_center_hz": 100_100_000,
+                    "center_delta_hz": 0,
                     "display_center_hz": 100_100_000,
                     "display_high_hz": 100_200_000,
                     "display_bandwidth_hz": 200_000.0,
@@ -449,6 +451,8 @@ def test_diagnostic_bundle_exports_bounded_characterization_summary(tmp_path: Pa
                     "match_high_hz": 100_340_000,
                     "match_bandwidth_hz": 80_000.0,
                     "display_low_hz": 100_200_000,
+                    "stable_center_hz": 100_292_000,
+                    "center_delta_hz": 8_000,
                     "display_center_hz": 100_300_000,
                     "display_high_hz": 100_400_000,
                     "display_bandwidth_hz": 200_000.0,
@@ -479,6 +483,8 @@ def test_diagnostic_bundle_exports_bounded_characterization_summary(tmp_path: Pa
         assert len(summary["records"]) == 1
         [sample] = summary["records"]
         assert sample["measured_characterization"]["occupied_bandwidth_hz"] == 80_000.0
+        assert "stable_center_hz" in sample["measured_characterization"]
+        assert "center_delta_hz" in sample["measured_characterization"]
         assert sample["display_span"]["bandwidth_hz"] == 200_000.0
         assert sample["context"]["profile_context"] == "fm_broadcast"
     finally:

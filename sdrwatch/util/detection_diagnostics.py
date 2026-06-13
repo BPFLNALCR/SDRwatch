@@ -63,6 +63,30 @@ def summarize_characterization_record(record: Dict[str, Any]) -> Dict[str, Any]:
         measured_span=_span_from_record(record, prefix="measured", nested_key="measured_span"),
         match_span=_span_from_record(record, prefix="match", nested_key="match_span"),
         display_span=_span_from_record(record, prefix="display", nested_key="display_span"),
+        stable_center_hz=int(
+            record.get(
+                "stable_center_hz",
+                record.get("display_center_hz", record.get("match_center_hz", record.get("measured_center_hz", 0))),
+            )
+            or 0
+        ),
+        center_delta_hz=int(
+            record.get(
+                "center_delta_hz",
+                int(record.get("measured_center_hz", 0) or 0)
+                - int(
+                    record.get(
+                        "stable_center_hz",
+                        record.get(
+                            "display_center_hz",
+                            record.get("match_center_hz", record.get("measured_center_hz", 0)),
+                        ),
+                    )
+                    or 0
+                ),
+            )
+            or 0
+        ),
         peak_db=float(record.get("peak_db", 0.0) or 0.0),
         noise_db=float(record.get("noise_db", 0.0) or 0.0),
         snr_db=float(record.get("snr_db", 0.0) or 0.0),

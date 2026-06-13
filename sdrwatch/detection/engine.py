@@ -7,7 +7,7 @@ from typing import Any, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 
-from sdrwatch.baseline.persistence import BaselinePersistence
+from sdrwatch.baseline.persistence import BaselinePersistence, CharacterizationSnapshot
 from sdrwatch.baseline.spur import SpurEvaluator
 from sdrwatch.baseline.store import BaselineContext, Store
 from sdrwatch.detection.types import (
@@ -433,11 +433,7 @@ class DetectionEngine:
         raw_high = int(cluster.f_high_hz)
 
         match_low, match_high = self._shape_match_span(cluster_center_hz, raw_low, raw_high)
-        display_low, display_high = self._shape_display_span(cluster_center_hz, raw_low, raw_high)
-
         match_width = max(float(match_high - match_low), float(best_seg.bandwidth_hz), self.bin_hz)
-        display_width = max(float(display_high - display_low), float(best_seg.bandwidth_hz), self.bin_hz)
-
         match_seg = Segment(
             f_low_hz=match_low,
             f_high_hz=match_high,
@@ -447,14 +443,20 @@ class DetectionEngine:
             snr_db=best_seg.snr_db,
             bandwidth_hz=match_width,
         )
-        display_seg = Segment(
-            f_low_hz=display_low,
-            f_high_hz=display_high,
+        prepersist_display_low, prepersist_display_high = self._shape_display_span(cluster_center_hz, raw_low, raw_high)
+        prepersist_display_width = max(
+            float(prepersist_display_high - prepersist_display_low),
+            float(best_seg.bandwidth_hz),
+            self.bin_hz,
+        )
+        prepersist_display_seg = Segment(
+            f_low_hz=prepersist_display_low,
+            f_high_hz=prepersist_display_high,
             f_center_hz=cluster_center_hz,
             peak_db=best_seg.peak_db,
             noise_db=best_seg.noise_db,
             snr_db=best_seg.snr_db,
-            bandwidth_hz=display_width,
+            bandwidth_hz=prepersist_display_width,
         )
         svc, reg, note = self.bandplan.lookup(cluster_center_hz)
 
@@ -467,7 +469,7 @@ class DetectionEngine:
             persist_result = self.persistence.persist_detection(
                 cluster=cluster,
                 combined_seg=match_seg,
-                emit_seg=display_seg,
+                emit_seg=prepersist_display_seg,
                 confidence=confidence,
                 window_ratio=window_ratio,
                 duration_seconds=duration_seconds,
@@ -481,6 +483,12 @@ class DetectionEngine:
             cluster.f_high_hz = raw_high
 
         persisted_detection = persist_result.detection
+        characterization = persist_result.characterization
+        stable_center_hz = (
+            characterization.stable_center_hz
+            if characterization is not None
+            else (persisted_detection.f_center_hz if persisted_detection else cluster_center_hz)
+        )
         match_center_hz = persisted_detection.f_center_hz if persisted_detection else cluster_center_hz
         match_span = CharacterizationSpan.from_bounds(
             low_hz=(persisted_detection.f_low_hz if persisted_detection else match_low),
@@ -493,55 +501,44 @@ class DetectionEngine:
             ),
             min_bandwidth_hz=self.bin_hz,
         )
-        characterization_record = build_characterization_record(
-            evidence=CharacterizationEvidence(
-                detection_id=(persisted_detection.id if persisted_detection else None),
-                baseline_id=self.baseline_ctx.id,
-                source_pass="coarse",
-                raw_segment=CharacterizationSpan.from_bounds(
-                    low_hz=best_seg.f_low_hz,
-                    high_hz=best_seg.f_high_hz,
-                    center_hz=best_seg.f_center_hz,
-                    bandwidth_hz=float(best_seg.bandwidth_hz),
-                    min_bandwidth_hz=self.bin_hz,
-                ),
-                measured_span=CharacterizationSpan.from_bounds(
-                    low_hz=raw_low,
-                    high_hz=raw_high,
-                    center_hz=cluster_center_hz,
-                    bandwidth_hz=max(float(raw_high - raw_low), float(best_seg.bandwidth_hz), self.bin_hz),
-                    min_bandwidth_hz=self.bin_hz,
-                ),
-                match_span=match_span,
-                display_span=CharacterizationSpan.from_bounds(
-                    low_hz=display_low,
-                    high_hz=display_high,
-                    center_hz=display_seg.f_center_hz,
-                    bandwidth_hz=float(display_width),
-                    min_bandwidth_hz=self.bin_hz,
-                ),
-                peak_db=float(best_seg.peak_db),
-                noise_db=float(best_seg.noise_db),
-                snr_db=float(best_seg.snr_db),
-                measured_bandwidth_confidence=float(confidence),
-                characterization_confidence=float(confidence),
-                characterization_method="coarse_cluster_span",
-                center_stability_hz=0.0,
-                bandwidth_stability_hz=0.0,
-                revisit_measurement_count=0,
-                coarse_measurement_count=max(len(cluster.windows), 1),
-                classification_candidate="unknown",
-                classification_evidence=[],
-                evidence_sources=["coarse_cluster"],
-                bandplan_service=svc or None,
-                bandplan_region=reg or None,
-                bandplan_notes=note or None,
-                profile_context=self.profile_name,
-                context_only=False,
-            )
+        display_low, display_high = self._shape_display_span(stable_center_hz, raw_low, raw_high)
+        display_width = max(float(display_high - display_low), float(best_seg.bandwidth_hz), self.bin_hz)
+        display_seg = Segment(
+            f_low_hz=display_low,
+            f_high_hz=display_high,
+            f_center_hz=stable_center_hz,
+            peak_db=best_seg.peak_db,
+            noise_db=best_seg.noise_db,
+            snr_db=best_seg.snr_db,
+            bandwidth_hz=display_width,
         )
-        char_event = str(characterization_record.pop("event", "characterization_record"))
-        self._log(char_event, **characterization_record)
+        self._emit_characterization_record(
+            source_pass="coarse",
+            persisted_detection=persisted_detection,
+            raw_segment=best_seg,
+            measured_center_hz=cluster_center_hz,
+            measured_low_hz=raw_low,
+            measured_high_hz=raw_high,
+            measured_bandwidth_hz=max(float(raw_high - raw_low), float(best_seg.bandwidth_hz), self.bin_hz),
+            match_span=match_span,
+            display_span=CharacterizationSpan.from_bounds(
+                low_hz=display_low,
+                high_hz=display_high,
+                center_hz=display_seg.f_center_hz,
+                bandwidth_hz=float(display_width),
+                min_bandwidth_hz=self.bin_hz,
+            ),
+            peak_db=float(best_seg.peak_db),
+            noise_db=float(best_seg.noise_db),
+            snr_db=float(best_seg.snr_db),
+            base_confidence=float(confidence),
+            characterization_method="coarse_cluster_span",
+            characterization=characterization,
+            evidence_sources=["coarse_cluster"],
+            service=svc,
+            region=reg,
+            notes=note,
+        )
 
         self._pending_emits += 1
         if persist_result.is_new:
@@ -569,12 +566,150 @@ class DetectionEngine:
             region=reg,
         )
 
+    def _characterization_confidence(
+        self,
+        *,
+        base_confidence: float,
+        characterization: Optional[CharacterizationSnapshot],
+    ) -> float:
+        revisit_count = characterization.revisit_measurement_count if characterization is not None else 0
+        revisit_boost = min(0.15, 0.05 * revisit_count)
+        return float(np.clip(base_confidence + revisit_boost, 0.0, 1.0))
+
+    def _emit_characterization_record(
+        self,
+        *,
+        source_pass: str,
+        persisted_detection,
+        raw_segment: Segment,
+        measured_center_hz: int,
+        measured_low_hz: int,
+        measured_high_hz: int,
+        measured_bandwidth_hz: float,
+        match_span: CharacterizationSpan,
+        display_span: CharacterizationSpan,
+        peak_db: float,
+        noise_db: float,
+        snr_db: float,
+        base_confidence: float,
+        characterization_method: str,
+        characterization: Optional[CharacterizationSnapshot],
+        evidence_sources: List[str],
+        service: Optional[str],
+        region: Optional[str],
+        notes: Optional[str],
+    ) -> None:
+        stable_center_hz = (
+            characterization.stable_center_hz if characterization is not None else int(display_span.center_hz)
+        )
+        confidence = self._characterization_confidence(
+            base_confidence=base_confidence,
+            characterization=characterization,
+        )
+        characterization_record = build_characterization_record(
+            evidence=CharacterizationEvidence(
+                detection_id=(persisted_detection.id if persisted_detection else None),
+                baseline_id=self.baseline_ctx.id,
+                source_pass=source_pass,
+                raw_segment=CharacterizationSpan.from_bounds(
+                    low_hz=raw_segment.f_low_hz,
+                    high_hz=raw_segment.f_high_hz,
+                    center_hz=raw_segment.f_center_hz,
+                    bandwidth_hz=float(raw_segment.bandwidth_hz),
+                    min_bandwidth_hz=self.bin_hz,
+                ),
+                measured_span=CharacterizationSpan.from_bounds(
+                    low_hz=measured_low_hz,
+                    high_hz=measured_high_hz,
+                    center_hz=measured_center_hz,
+                    bandwidth_hz=float(measured_bandwidth_hz),
+                    min_bandwidth_hz=self.bin_hz,
+                ),
+                match_span=match_span,
+                display_span=display_span,
+                stable_center_hz=int(stable_center_hz),
+                center_delta_hz=(
+                    characterization.center_delta_hz
+                    if characterization is not None
+                    else int(measured_center_hz - stable_center_hz)
+                ),
+                peak_db=float(peak_db),
+                noise_db=float(noise_db),
+                snr_db=float(snr_db),
+                measured_bandwidth_confidence=confidence,
+                characterization_confidence=confidence,
+                characterization_method=characterization_method,
+                center_stability_hz=(
+                    characterization.center_stability_hz if characterization is not None else 0.0
+                ),
+                bandwidth_stability_hz=(
+                    characterization.bandwidth_stability_hz if characterization is not None else 0.0
+                ),
+                revisit_measurement_count=(
+                    characterization.revisit_measurement_count if characterization is not None else 0
+                ),
+                coarse_measurement_count=(
+                    characterization.coarse_measurement_count if characterization is not None else 1
+                ),
+                classification_candidate="unknown",
+                classification_evidence=[],
+                evidence_sources=evidence_sources,
+                bandplan_service=service or None,
+                bandplan_region=region or None,
+                bandplan_notes=notes or None,
+                profile_context=self.profile_name,
+                context_only=False,
+            )
+        )
+        char_event = str(characterization_record.pop("event", "characterization_record"))
+        self._log(char_event, **characterization_record)
+
 
     def finalize_coarse_pass(self) -> List[RevisitTag]:
         return self.persistence.finalize_coarse_pass()
 
     def apply_revisit_confirmation(self, tag: RevisitTag, seg: Segment) -> None:
-        self.persistence.apply_revisit_confirmation(tag, seg)
+        result = self.persistence.apply_revisit_confirmation(tag, seg)
+        if result is None:
+            return
+        det = result.detection
+        characterization = result.characterization
+        display_low, display_high = self._shape_display_span(det.f_center_hz, seg.f_low_hz, seg.f_high_hz)
+        display_width = max(float(display_high - display_low), float(seg.bandwidth_hz), self.bin_hz)
+        match_span = CharacterizationSpan.from_bounds(
+            low_hz=det.f_low_hz,
+            high_hz=det.f_high_hz,
+            center_hz=det.f_center_hz,
+            bandwidth_hz=float(det.f_high_hz - det.f_low_hz),
+            min_bandwidth_hz=self.bin_hz,
+        )
+        self._emit_characterization_record(
+            source_pass="revisit",
+            persisted_detection=det,
+            raw_segment=seg,
+            measured_center_hz=int(seg.f_center_hz),
+            measured_low_hz=int(seg.f_low_hz),
+            measured_high_hz=int(seg.f_high_hz),
+            measured_bandwidth_hz=max(float(seg.f_high_hz - seg.f_low_hz), float(seg.bandwidth_hz), self.bin_hz),
+            match_span=match_span,
+            display_span=CharacterizationSpan.from_bounds(
+                low_hz=display_low,
+                high_hz=display_high,
+                center_hz=det.f_center_hz,
+                bandwidth_hz=float(display_width),
+                min_bandwidth_hz=self.bin_hz,
+            ),
+            peak_db=float(seg.peak_db),
+            noise_db=float(seg.noise_db),
+            snr_db=float(seg.snr_db),
+            base_confidence=float(det.confidence),
+            characterization_method="revisit_refinement",
+            characterization=characterization,
+            evidence_sources=["coarse_cluster", "revisit_confirmation"],
+            service=det.service,
+            region=det.region,
+            notes=det.bandplan_notes,
+        )
 
     def apply_revisit_miss(self, tag: RevisitTag) -> None:
         self.persistence.apply_revisit_miss(tag)
