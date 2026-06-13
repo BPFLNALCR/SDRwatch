@@ -65,3 +65,34 @@ def test_controller_command_keeps_discovery_without_profile_or_two_pass() -> Non
     assert "--profile" not in cmd
     assert "--two-pass" not in cmd
     assert cmd[cmd.index("--step") + 1] == "2400000"
+
+
+def test_controller_command_ignores_characterization_only_fields() -> None:
+    cmd = build_scanner_cmd(
+        {
+            "start": 88_000_000,
+            "stop": 108_000_000,
+            "samp_rate": 2_400_000,
+            "step": 1_200_000,
+            "fft": 8192,
+            "avg": 10,
+            "threshold_db": 6,
+            "guard_bins": 3,
+            "min_width_bins": 5,
+            "profile": "fm_broadcast",
+            "two_pass": True,
+            "measured_center_hz": 100_100_000,
+            "measured_bandwidth_hz": 180_000,
+            "characterization_confidence": 0.9,
+            "classification_candidate": "fm_broadcast_candidate",
+            "profile_context": "fm_broadcast",
+        }
+    )
+
+    assert "--profile" in cmd
+    assert "--two-pass" in cmd
+    assert "--measured-center-hz" not in cmd
+    assert "--measured-bandwidth-hz" not in cmd
+    assert "--characterization-confidence" not in cmd
+    assert "--classification-candidate" not in cmd
+    assert "--profile-context" not in cmd

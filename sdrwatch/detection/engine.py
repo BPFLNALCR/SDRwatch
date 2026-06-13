@@ -10,7 +10,14 @@ import numpy as np
 from sdrwatch.baseline.persistence import BaselinePersistence
 from sdrwatch.baseline.spur import SpurEvaluator
 from sdrwatch.baseline.store import BaselineContext, Store
-from sdrwatch.detection.types import DetectionCluster, RevisitTag, Segment
+from sdrwatch.detection.types import (
+    CharacterizationEvidence,
+    CharacterizationSpan,
+    DetectionCluster,
+    RevisitTag,
+    Segment,
+)
+from sdrwatch.util.detection_diagnostics import build_characterization_record
 from sdrwatch.util.time import utc_now_str
 
 if TYPE_CHECKING:  # pragma: no cover - type hint only
@@ -472,6 +479,70 @@ class DetectionEngine:
         finally:
             cluster.f_low_hz = raw_low
             cluster.f_high_hz = raw_high
+
+        persisted_detection = persist_result.detection
+        match_center_hz = persisted_detection.f_center_hz if persisted_detection else cluster_center_hz
+        match_span = CharacterizationSpan.from_bounds(
+            low_hz=(persisted_detection.f_low_hz if persisted_detection else match_low),
+            high_hz=(persisted_detection.f_high_hz if persisted_detection else match_high),
+            center_hz=match_center_hz,
+            bandwidth_hz=float(
+                (persisted_detection.f_high_hz - persisted_detection.f_low_hz)
+                if persisted_detection
+                else match_width
+            ),
+            min_bandwidth_hz=self.bin_hz,
+        )
+        characterization_record = build_characterization_record(
+            evidence=CharacterizationEvidence(
+                detection_id=(persisted_detection.id if persisted_detection else None),
+                baseline_id=self.baseline_ctx.id,
+                source_pass="coarse",
+                raw_segment=CharacterizationSpan.from_bounds(
+                    low_hz=best_seg.f_low_hz,
+                    high_hz=best_seg.f_high_hz,
+                    center_hz=best_seg.f_center_hz,
+                    bandwidth_hz=float(best_seg.bandwidth_hz),
+                    min_bandwidth_hz=self.bin_hz,
+                ),
+                measured_span=CharacterizationSpan.from_bounds(
+                    low_hz=raw_low,
+                    high_hz=raw_high,
+                    center_hz=cluster_center_hz,
+                    bandwidth_hz=max(float(raw_high - raw_low), float(best_seg.bandwidth_hz), self.bin_hz),
+                    min_bandwidth_hz=self.bin_hz,
+                ),
+                match_span=match_span,
+                display_span=CharacterizationSpan.from_bounds(
+                    low_hz=display_low,
+                    high_hz=display_high,
+                    center_hz=display_seg.f_center_hz,
+                    bandwidth_hz=float(display_width),
+                    min_bandwidth_hz=self.bin_hz,
+                ),
+                peak_db=float(best_seg.peak_db),
+                noise_db=float(best_seg.noise_db),
+                snr_db=float(best_seg.snr_db),
+                measured_bandwidth_confidence=float(confidence),
+                characterization_confidence=float(confidence),
+                characterization_method="coarse_cluster_span",
+                center_stability_hz=0.0,
+                bandwidth_stability_hz=0.0,
+                revisit_measurement_count=0,
+                coarse_measurement_count=max(len(cluster.windows), 1),
+                classification_candidate="unknown",
+                classification_evidence=[],
+                evidence_sources=["coarse_cluster"],
+                bandplan_service=svc or None,
+                bandplan_region=reg or None,
+                bandplan_notes=note or None,
+                profile_context=self.profile_name,
+                context_only=False,
+            )
+        )
+        char_event = str(characterization_record.pop("event", "characterization_record"))
+        self._log(char_event, **characterization_record)
+
         self._pending_emits += 1
         if persist_result.is_new:
             self._pending_new_signals += 1

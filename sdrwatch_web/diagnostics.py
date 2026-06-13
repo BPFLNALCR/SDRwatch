@@ -23,6 +23,7 @@ from sdrwatch_web.config import (
     DIAGNOSTIC_BUNDLE_MAX_ROW_LIMIT,
     DIAGNOSTIC_BUNDLE_ROW_LIMIT,
 )
+from sdrwatch.util.detection_diagnostics import summarize_characterization_records
 
 
 @dataclass(frozen=True)
@@ -289,6 +290,25 @@ def _summarize_decision_tail(text: str) -> Tuple[Dict[str, Any], bool]:
     return summary, has_decision_evidence
 
 
+def _summarize_characterization_tail(text: str, sample_limit: int) -> Dict[str, Any]:
+    parse_errors = 0
+    records: List[Dict[str, Any]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            parse_errors += 1
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    summary = summarize_characterization_records(records, sample_limit=sample_limit)
+    summary["parse_errors"] = parse_errors
+    return summary
+
+
 def _add_log_evidence(
     zf: zipfile.ZipFile,
     manifest: BundleManifest,
@@ -331,6 +351,17 @@ def _add_diagnostic_jsonl(
     _add_bytes(zf, manifest, "diagnostics/diagnostic-jsonl-tail.jsonl", text.encode("utf-8"))
     summary, has_decision_evidence = _summarize_decision_tail(text)
     _add_json(zf, manifest, "diagnostics/decision-summary.json", summary)
+    characterization_summary = _summarize_characterization_tail(text, bounds.row_limit)
+    if characterization_summary.get("truncated"):
+        manifest.truncated(
+            "characterization_summary",
+            "sample limited",
+            included_records=min(
+                int(characterization_summary.get("record_count", 0) or 0),
+                bounds.row_limit,
+            ),
+        )
+    _add_json(zf, manifest, "diagnostics/characterization-summary.json", characterization_summary)
     if not has_decision_evidence:
         manifest.missing("decision_evidence", "no decision events in diagnostic JSONL tail")
 

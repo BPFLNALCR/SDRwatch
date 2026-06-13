@@ -1,6 +1,6 @@
 # Quickstart: FM Signal Characterization
 
-This guide describes the intended validation path for the FM Signal Characterization feature. It is a planning artifact for the first Spec Kit pass; no runtime implementation has been added yet in this feature directory.
+This guide describes the current validation path for the FM Signal Characterization feature. The first implementation pass now includes diagnostics-first characterization scaffolding, bounded export summaries, and no-hardware FM regression coverage without a schema migration.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ This guide describes the intended validation path for the FM Signal Characteriza
 
 ## Test-First Work Before Any Runtime Change
 
-Add or extend automated tests for the requested characterization cases before changing scanner, persistence, or diagnostic behavior.
+Add or extend automated tests for the requested characterization cases before broadening scanner, persistence, or diagnostic behavior further.
 
 Required cases:
 
@@ -48,7 +48,25 @@ Suggested Windows and Codex environment command shape:
 & 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest tests/test_fm_persistence_stability.py tests/test_fm_persistence_diagnostics.py tests/test_non_fm_width_scope.py tests/test_fm_validation_profile.py tests/test_web_diagnostics_bundle.py -q --basetemp .pytest-tmp
 ```
 
-Extend the command with any new characterization-focused tests before implementation.
+Current focused US1 command and result on branch `006-fm-signal-characterization`:
+
+```powershell
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest tests/test_fm_characterization.py tests/test_fm_characterization_persistence.py tests/test_fm_persistence_stability.py tests/test_fm_persistence_diagnostics.py tests/test_web_diagnostics_bundle.py -q --basetemp .pytest-tmp-char-us1-doc
+```
+
+Observed result on June 12, 2026:
+
+```text
+21 passed in 0.84s
+```
+
+This focused run currently covers:
+
+- explicit `raw_*`, `measured_*`, `match_*`, and `display_*` characterization record shape
+- wide and spiky FM-like bounded-card behavior with measured-versus-display width separation
+- tiny-fragment protection so narrow FFT fragments do not inflate measured FM bandwidth by themselves
+- bounded diagnostic bundle export plus center-within-span regression scanning
+- existing FM stability and persistence diagnostics regressions
 
 ## GUI And Controller Acceptance Path
 

@@ -18,8 +18,8 @@
 
 **Purpose**: Create reusable no-hardware fixtures and shared helpers so characterization work stays deterministic and diagnostics-first.
 
-- [ ] T001 [P] Create shared characterization fixture helpers for explicit `raw_*`, `measured_*`, `match_*`, and `display_*` evidence in `tests/helpers_fm_characterization.py`
-- [ ] T002 [P] Extend FM engine and store fixture defaults for characterization-friendly args and isolated temp databases in `tests/helpers_fm_detection.py`
+- [X] T001 [P] Create shared characterization fixture helpers for explicit `raw_*`, `measured_*`, `match_*`, and `display_*` evidence in `tests/helpers_fm_characterization.py`
+- [X] T002 [P] Extend FM engine and store fixture defaults for characterization-friendly args and isolated temp databases in `tests/helpers_fm_detection.py`
 
 ---
 
@@ -29,11 +29,11 @@
 
 **⚠️ CRITICAL**: No user story implementation should begin until this phase is complete.
 
-- [ ] T003 [P] Add initial characterization record-shape tests for explicit `raw_*`, `measured_*`, `match_*`, and `display_*` fields in `tests/test_fm_characterization.py`
-- [ ] T004 [P] Add `/api/jobs` and controller command regression tests proving characterization remains derived and the existing payload shape is unchanged in `tests/test_control_page_scan_settings.py` and `tests/test_control_fm_validation.py`
-- [ ] T005 [P] Add bounded diagnostic summary contract tests for characterization exports in `tests/test_fm_characterization_diagnostics.py` and `tests/test_web_diagnostics_bundle.py`
-- [ ] T006 Implement shared diagnostics-first characterization dataclasses and serializers with explicit `raw_*`, `measured_*`, `match_*`, `display_*`, `classification_*`, and `bandplan_*` names in `sdrwatch/detection/types.py` and `sdrwatch/util/detection_diagnostics.py`
-- [ ] T007 Wire the shared characterization scaffold into coarse-pass detection records without changing persistence schema or Discovery behavior in `sdrwatch/detection/engine.py` and `sdrwatch/sweep/sweeper.py`
+- [X] T003 [P] Add initial characterization record-shape tests for explicit `raw_*`, `measured_*`, `match_*`, and `display_*` fields in `tests/test_fm_characterization.py`
+- [X] T004 [P] Add `/api/jobs` and controller command regression tests proving characterization remains derived and the existing payload shape is unchanged in `tests/test_control_page_scan_settings.py` and `tests/test_control_fm_validation.py`
+- [X] T005 [P] Add bounded diagnostic summary contract tests for characterization exports in `tests/test_fm_characterization_diagnostics.py` and `tests/test_web_diagnostics_bundle.py`
+- [X] T006 Implement shared diagnostics-first characterization dataclasses and serializers with explicit `raw_*`, `measured_*`, `match_*`, `display_*`, `classification_*`, and `bandplan_*` names in `sdrwatch/detection/types.py` and `sdrwatch/util/detection_diagnostics.py`
+- [X] T007 Wire the shared characterization scaffold into coarse-pass detection records without changing persistence schema or Discovery behavior in `sdrwatch/detection/engine.py` and `sdrwatch/sweep/sweeper.py`
 
 **Checkpoint**: The core characterization vocabulary, `/api/jobs` compatibility guardrails, and bounded diagnostics contract are in place.
 
@@ -49,16 +49,16 @@
 
 Write these tests first and confirm they fail before implementation.
 
-- [ ] T008 [P] [US1] Add wide and spiky FM-like bounded-card tests that also prove measured bandwidth is separate from display width in `tests/test_fm_characterization.py`
-- [ ] T009 [P] [US1] Add tiny-fragment tests proving narrow FFT fragments do not become fake measured FM bandwidth by themselves in `tests/test_fm_characterization_persistence.py`
-- [ ] T010 [P] [US1] Add diagnostic bundle tests for separate raw, measured, match, and display span export in `tests/test_web_diagnostics_bundle.py`
+- [X] T008 [P] [US1] Add wide and spiky FM-like bounded-card tests that also prove measured bandwidth is separate from display width in `tests/test_fm_characterization.py`
+- [X] T009 [P] [US1] Add tiny-fragment tests proving narrow FFT fragments do not become fake measured FM bandwidth by themselves in `tests/test_fm_characterization_persistence.py`
+- [X] T010 [P] [US1] Add diagnostic bundle tests for separate raw, measured, match, and display span export plus center-within-span regression scanning in `tests/test_web_diagnostics_bundle.py`
 
 ### Implementation for User Story 1
 
-- [ ] T011 [US1] Populate coarse-pass `raw_*`, `measured_*`, `match_*`, and `display_*` characterization evidence from existing segments and span shaping in `sdrwatch/detection/engine.py`
+- [X] T011 [US1] Populate coarse-pass `raw_*`, `measured_*`, `match_*`, and `display_*` characterization evidence from existing segments and span shaping in `sdrwatch/detection/engine.py`
 - [ ] T012 [US1] Preserve current FM Validation stable-card behavior while keeping measured bandwidth separate from display span in `sdrwatch/baseline/persistence.py` and `sdrwatch/detection/engine.py`
 - [ ] T013 [US1] Emit coarse-pass characterization evidence and bounded per-window summaries in `sdrwatch/util/detection_diagnostics.py` and `sdrwatch/sweep/sweeper.py`
-- [ ] T014 [US1] Run focused US1 no-hardware characterization tests and record the exact command and results in `specs/004-fm-signal-characterization/quickstart.md`
+- [X] T014 [US1] Run focused US1 no-hardware characterization tests and record the exact command and results in `specs/004-fm-signal-characterization/quickstart.md`
 
 **Checkpoint**: FM Validation remains stable and operator-friendly while the diagnostics surface distinguishes raw, measured, match, and display widths.
 
@@ -190,7 +190,7 @@ Write these tests first and confirm they fail before implementation.
 ```text
 Task: "Add wide and spiky FM-like bounded-card tests that also prove measured bandwidth is separate from display width in tests/test_fm_characterization.py"
 Task: "Add tiny-fragment tests proving narrow FFT fragments do not become fake measured FM bandwidth by themselves in tests/test_fm_characterization_persistence.py"
-Task: "Add diagnostic bundle tests for separate raw, measured, match, and display span export in tests/test_web_diagnostics_bundle.py"
+Task: "Add diagnostic bundle tests for separate raw, measured, match, and display span export plus center-within-span regression scanning in tests/test_web_diagnostics_bundle.py"
 ```
 
 ## Parallel Example: User Story 2

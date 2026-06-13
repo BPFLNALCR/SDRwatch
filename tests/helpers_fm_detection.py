@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable
+import json
 
 from sdrwatch.baseline.store import Store
 from sdrwatch.detection.engine import DetectionEngine
@@ -40,6 +41,7 @@ def fm_args(**overrides: Any) -> SimpleNamespace:
         "new_ema_occ": 0.02,
         "notify": False,
         "jsonl": None,
+        "diagnostic_jsonl": None,
         "two_pass": True,
         "revisit_margin_hz": 200_000.0,
         "revisit_span_limit_hz": 420_000.0,
@@ -72,6 +74,7 @@ def narrow_args(**overrides: Any) -> SimpleNamespace:
         "new_ema_occ": 0.02,
         "notify": False,
         "jsonl": None,
+        "diagnostic_jsonl": None,
         "two_pass": False,
         "cluster_merge_hz": None,
         "center_match_hz": None,
@@ -114,9 +117,37 @@ def make_store(tmp_path: Path, *, start_hz: int = FM_START_HZ, stop_hz: int = FM
     return store, ctx
 
 
-def make_engine(tmp_path: Path, *, args: SimpleNamespace | None = None, logger: ListLogger | None = None):
+def enable_isolated_jsonl_paths(tmp_path: Path, args: SimpleNamespace) -> SimpleNamespace:
+    if getattr(args, "jsonl", None) in (None, ""):
+        args.jsonl = str(tmp_path / "signals.jsonl")
+    if getattr(args, "diagnostic_jsonl", None) in (None, ""):
+        args.diagnostic_jsonl = str(tmp_path / "diagnostic.jsonl")
+    return args
+
+
+def load_jsonl_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        records.append(json.loads(line))
+    return records
+
+
+def make_engine(
+    tmp_path: Path,
+    *,
+    args: SimpleNamespace | None = None,
+    logger: ListLogger | None = None,
+    isolated_jsonl: bool = False,
+):
     store, ctx = make_store(tmp_path)
     args = args or fm_args()
+    if isolated_jsonl:
+        args = enable_isolated_jsonl_paths(tmp_path, args)
     logger = logger or ListLogger()
     engine = DetectionEngine(
         store=store,

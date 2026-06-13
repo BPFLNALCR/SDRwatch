@@ -16,6 +16,7 @@ from sdrwatch.util.time import utc_now_str
 class PersistResult:
     is_new: bool
     occ_ratio: Optional[float]
+    detection: Optional[PersistentDetection] = None
 
 
 @dataclass
@@ -94,7 +95,7 @@ class BaselinePersistence:
         region: Optional[str],
         notes: Optional[str],
     ) -> PersistResult:
-        is_new_detection = self._upsert_detection(
+        is_new_detection, persisted_detection = self._upsert_detection(
             cluster, combined_seg, confidence,
             service=service, region=region, bandplan_notes=notes
         )
@@ -130,7 +131,7 @@ class BaselinePersistence:
                 f"SNR {combined_seg.snr_db:.1f} dB; {service or 'Unknown'} {region or ''}"
             )
             self._maybe_notify("SDRWatch: New signal", body)
-        return PersistResult(is_new=is_new_flag, occ_ratio=occ_ratio)
+        return PersistResult(is_new=is_new_flag, occ_ratio=occ_ratio, detection=persisted_detection)
 
     def finalize_coarse_pass(self) -> List[RevisitTag]:
         missing_ts = utc_now_str()
@@ -279,9 +280,15 @@ class BaselinePersistence:
     # Internal helpers
     # -----------------
 
-    def _upsert_detection(self, cluster: DetectionCluster, seg: Segment, confidence: float,
-                          service: Optional[str] = None, region: Optional[str] = None,
-                          bandplan_notes: Optional[str] = None) -> bool:
+    def _upsert_detection(
+        self,
+        cluster: DetectionCluster,
+        seg: Segment,
+        confidence: float,
+        service: Optional[str] = None,
+        region: Optional[str] = None,
+        bandplan_notes: Optional[str] = None,
+    ) -> Tuple[bool, PersistentDetection]:
         timestamp = utc_now_str()
         self.store.begin()
         try:
@@ -341,6 +348,7 @@ class BaselinePersistence:
                     confidence=confidence,
                 )
                 is_new = False
+                persisted_detection = match
             else:
                 detection_id = self.store.insert_baseline_detection(
                     self.baseline_ctx.id,
@@ -392,10 +400,11 @@ class BaselinePersistence:
                     confidence=confidence,
                 )
                 is_new = True
+                persisted_detection = new_det
                 if self.two_pass_enabled:
                     self._schedule_revisit(detection_id=detection_id, seg=seg, reason="new")
             self.store.commit()
-            return is_new
+            return is_new, persisted_detection
         except Exception:
             self.store.rollback()
             raise
