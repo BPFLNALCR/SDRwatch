@@ -520,6 +520,23 @@ def test_generated_settings_builder_keeps_existing_param_names(tmp_path: Path) -
         assert f"params.{param_name}" in html
 
 
+def test_generated_settings_builder_keeps_characterization_fields_derived(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+    builder = _function_block(html, "buildScanJobPayload")
+
+    for forbidden_name in (
+        "raw_center_hz",
+        "measured_center_hz",
+        "measured_bandwidth_hz",
+        "match_bandwidth_hz",
+        "display_bandwidth_hz",
+        "characterization_confidence",
+        "classification_candidate",
+        "profile_context",
+    ):
+        assert forbidden_name not in builder
+
+
 def test_expert_controls_render_required_settings(tmp_path: Path) -> None:
     html = _control_html(tmp_path)
 

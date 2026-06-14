@@ -164,6 +164,140 @@ def _zip_entries(content: bytes) -> tuple[zipfile.ZipFile, BytesIO]:
     return zipfile.ZipFile(buffer), buffer
 
 
+def _coerce_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(str(value)))
+        except (TypeError, ValueError):
+            return None
+
+
+def _append_span_violation(
+    errors: list[str],
+    *,
+    label: str,
+    low: Any,
+    center: Any,
+    high: Any,
+) -> None:
+    low_int = _coerce_int(low)
+    center_int = _coerce_int(center)
+    high_int = _coerce_int(high)
+    if low_int is None or center_int is None or high_int is None:
+        return
+    if not (low_int <= center_int <= high_int):
+        errors.append(f"{label}: expected {low_int} <= {center_int} <= {high_int}")
+
+
+def _collect_span_violations(record: Any, label: str) -> list[str]:
+    if isinstance(record, list):
+        errors: list[str] = []
+        for index, item in enumerate(record):
+            errors.extend(_collect_span_violations(item, f"{label}[{index}]"))
+        return errors
+    if not isinstance(record, dict):
+        return []
+
+    errors: list[str] = []
+
+    _append_span_violation(
+        errors,
+        label=f"{label}.persisted",
+        low=record.get("f_low_hz"),
+        center=record.get("f_center_hz"),
+        high=record.get("f_high_hz"),
+    )
+    _append_span_violation(
+        errors,
+        label=f"{label}.raw",
+        low=record.get("raw_low_hz"),
+        center=record.get("raw_center_hz"),
+        high=record.get("raw_high_hz"),
+    )
+    _append_span_violation(
+        errors,
+        label=f"{label}.measured",
+        low=record.get("measured_low_hz"),
+        center=record.get("measured_center_hz"),
+        high=record.get("measured_high_hz"),
+    )
+    _append_span_violation(
+        errors,
+        label=f"{label}.match",
+        low=record.get("match_low_hz"),
+        center=record.get("match_center_hz"),
+        high=record.get("match_high_hz"),
+    )
+    _append_span_violation(
+        errors,
+        label=f"{label}.display",
+        low=record.get("display_low_hz"),
+        center=record.get("display_center_hz"),
+        high=record.get("display_high_hz"),
+    )
+
+    nested_specs = [
+        ("raw_segment", "raw_low_hz", "raw_center_hz", "raw_high_hz"),
+        ("match_span", "match_low_hz", "match_center_hz", "match_high_hz"),
+        ("display_span", "display_low_hz", "display_center_hz", "display_high_hz"),
+        ("measured_span", "measured_low_hz", "measured_center_hz", "measured_high_hz"),
+    ]
+    for key, top_level_low_key, top_level_center_key, top_level_high_key in nested_specs:
+        nested = record.get(key)
+        if not isinstance(nested, dict):
+            continue
+        low = nested.get("low_hz", nested.get("f_low_hz", record.get(top_level_low_key)))
+        high = nested.get("high_hz", nested.get("f_high_hz", record.get(top_level_high_key)))
+        center = record.get(top_level_center_key)
+        if center in (None, ""):
+            center = nested.get("center_hz", nested.get("f_center_hz", nested.get(top_level_center_key)))
+        _append_span_violation(errors, label=f"{label}.{key}", low=low, center=center, high=high)
+
+    for key, value in record.items():
+        if isinstance(value, (dict, list)):
+            errors.extend(_collect_span_violations(value, f"{label}.{key}"))
+    return errors
+
+
+def _bundle_span_violations(zf: zipfile.ZipFile) -> list[str]:
+    errors: list[str] = []
+    names = set(zf.namelist())
+
+    if "database/baseline-detections.json" in names:
+        baseline_rows = json.loads(zf.read("database/baseline-detections.json"))
+        errors.extend(_collect_span_violations(baseline_rows, "database/baseline-detections.json"))
+
+    if "diagnostics/diagnostic-jsonl-tail.jsonl" in names:
+        text = zf.read("diagnostics/diagnostic-jsonl-tail.jsonl").decode("utf-8")
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            line = line.strip()
+            if not line:
+                continue
+            payload = json.loads(line)
+            errors.extend(_collect_span_violations(payload, f"diagnostics/diagnostic-jsonl-tail.jsonl:{line_no}"))
+
+    for name in sorted(names):
+        if not name.startswith("diagnostics/") or "characterization" not in name or name.endswith("diagnostic-jsonl-tail.jsonl"):
+            continue
+        if name.endswith(".json"):
+            payload = json.loads(zf.read(name))
+            errors.extend(_collect_span_violations(payload, name))
+        elif name.endswith(".jsonl"):
+            text = zf.read(name).decode("utf-8")
+            for line_no, line in enumerate(text.splitlines(), start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                payload = json.loads(line)
+                errors.extend(_collect_span_violations(payload, f"{name}:{line_no}"))
+
+    return errors
+
+
 def test_diagnostic_bundle_contains_available_evidence(tmp_path: Path) -> None:
     db_path = tmp_path / "sdrwatch.db"
     log_path = tmp_path / "scanner.log"
@@ -215,6 +349,195 @@ def test_diagnostic_bundle_contains_available_evidence(tmp_path: Path) -> None:
         assert manifest["missing"] == []
     finally:
         zf.close()
+        buffer.close()
+
+
+def test_diagnostic_bundle_exported_centers_stay_within_exported_spans(tmp_path: Path) -> None:
+    db_path = tmp_path / "sdrwatch.db"
+    log_path = tmp_path / "scanner.log"
+    diag_path = tmp_path / "diagnostic.jsonl"
+    _create_temp_db(db_path)
+    _write_text(log_path, ["log"])
+    _write_text(
+        diag_path,
+        [
+            json.dumps(
+                {
+                    "event": "characterization_record",
+                    "raw_low_hz": 100_099_000,
+                    "raw_center_hz": 100_100_000,
+                    "raw_high_hz": 100_101_000,
+                    "measured_low_hz": 100_020_000,
+                    "measured_center_hz": 100_100_000,
+                    "measured_high_hz": 100_180_000,
+                    "match_low_hz": 100_060_000,
+                    "match_center_hz": 100_100_000,
+                    "match_high_hz": 100_140_000,
+                }
+            )
+        ],
+    )
+
+    bundle = build_diagnostic_bundle(
+        job=_job(tmp_path, diag_path, log_path),
+        db_path=str(db_path),
+        bounds=DiagnosticBundleBounds(log_tail_lines=20, diagnostic_tail_lines=20, row_limit=20),
+    )
+
+    zf, buffer = _zip_entries(bundle.content)
+    try:
+        assert _bundle_span_violations(zf) == []
+    finally:
+        zf.close()
+        buffer.close()
+
+
+def test_diagnostic_bundle_exports_bounded_characterization_summary(tmp_path: Path) -> None:
+    db_path = tmp_path / "sdrwatch.db"
+    log_path = tmp_path / "scanner.log"
+    diag_path = tmp_path / "diagnostic.jsonl"
+    _create_temp_db(db_path)
+    _write_text(log_path, ["log"])
+    _write_text(
+        diag_path,
+        [
+            json.dumps(
+                {
+                    "event": "characterization_record",
+                    "source_pass": "coarse",
+                    "raw_low_hz": 100_099_000,
+                    "raw_center_hz": 100_100_000,
+                    "raw_high_hz": 100_101_000,
+                    "raw_bandwidth_hz": 2_000.0,
+                    "measured_low_hz": 100_060_000,
+                    "measured_center_hz": 100_100_000,
+                    "measured_high_hz": 100_140_000,
+                    "measured_bandwidth_hz": 80_000.0,
+                    "measured_bandwidth_confidence": 0.7,
+                    "match_low_hz": 100_060_000,
+                    "match_center_hz": 100_100_000,
+                    "match_high_hz": 100_140_000,
+                    "match_bandwidth_hz": 80_000.0,
+                    "display_low_hz": 100_000_000,
+                    "stable_center_hz": 100_100_000,
+                    "center_delta_hz": 0,
+                    "display_center_hz": 100_100_000,
+                    "display_high_hz": 100_200_000,
+                    "display_bandwidth_hz": 200_000.0,
+                    "characterization_confidence": 0.8,
+                    "characterization_method": "coarse_cluster_span",
+                    "classification_candidate": "unknown",
+                    "classification_evidence": [],
+                    "evidence_sources": ["coarse_cluster"],
+                    "bandplan_service": "FM Broadcast",
+                    "profile_context": "fm_broadcast",
+                }
+            ),
+            json.dumps(
+                {
+                    "event": "characterization_record",
+                    "source_pass": "revisit",
+                    "raw_low_hz": 100_299_000,
+                    "raw_center_hz": 100_300_000,
+                    "raw_high_hz": 100_301_000,
+                    "raw_bandwidth_hz": 2_000.0,
+                    "measured_low_hz": 100_260_000,
+                    "measured_center_hz": 100_300_000,
+                    "measured_high_hz": 100_340_000,
+                    "measured_bandwidth_hz": 80_000.0,
+                    "measured_bandwidth_confidence": 0.9,
+                    "match_low_hz": 100_260_000,
+                    "match_center_hz": 100_300_000,
+                    "match_high_hz": 100_340_000,
+                    "match_bandwidth_hz": 80_000.0,
+                    "display_low_hz": 100_200_000,
+                    "stable_center_hz": 100_292_000,
+                    "center_delta_hz": 8_000,
+                    "display_center_hz": 100_300_000,
+                    "display_high_hz": 100_400_000,
+                    "display_bandwidth_hz": 200_000.0,
+                    "characterization_confidence": 0.9,
+                    "characterization_method": "revisit_refinement",
+                    "classification_candidate": "unknown",
+                    "classification_evidence": [],
+                    "evidence_sources": ["revisit_confirmation"],
+                    "bandplan_service": "FM Broadcast",
+                    "profile_context": "fm_broadcast",
+                }
+            ),
+        ],
+    )
+
+    bundle = build_diagnostic_bundle(
+        job=_job(tmp_path, diag_path, log_path),
+        db_path=str(db_path),
+        bounds=DiagnosticBundleBounds(log_tail_lines=20, diagnostic_tail_lines=20, row_limit=1),
+    )
+
+    zf, buffer = _zip_entries(bundle.content)
+    try:
+        summary = json.loads(zf.read("diagnostics/characterization-summary.json"))
+        assert summary["record_count"] == 2
+        assert summary["source_pass_counts"] == {"coarse": 1, "revisit": 1}
+        assert summary["truncated"] is True
+        assert len(summary["records"]) == 1
+        [sample] = summary["records"]
+        assert sample["measured_characterization"]["occupied_bandwidth_hz"] == 80_000.0
+        assert "stable_center_hz" in sample["measured_characterization"]
+        assert "center_delta_hz" in sample["measured_characterization"]
+        assert sample["display_span"]["bandwidth_hz"] == 200_000.0
+        assert sample["context"]["profile_context"] == "fm_broadcast"
+    finally:
+        zf.close()
+        buffer.close()
+
+
+def test_diagnostic_bundle_span_scan_reports_invalid_exported_centers() -> None:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "database/baseline-detections.json",
+            json.dumps(
+                [
+                    {
+                        "id": 1,
+                        "baseline_id": 1,
+                        "f_low_hz": 100_000_000,
+                        "f_center_hz": 100_250_000,
+                        "f_high_hz": 100_200_000,
+                    }
+                ]
+            ),
+        )
+        zf.writestr(
+            "diagnostics/characterization-records.json",
+            json.dumps(
+                [
+                    {
+                        "raw_low_hz": 100_099_000,
+                        "raw_center_hz": 100_102_000,
+                        "raw_high_hz": 100_101_000,
+                        "measured_low_hz": 100_020_000,
+                        "measured_center_hz": 100_200_000,
+                        "measured_high_hz": 100_180_000,
+                        "match_low_hz": 100_060_000,
+                        "match_center_hz": 100_150_000,
+                        "match_high_hz": 100_140_000,
+                    }
+                ]
+            ),
+        )
+
+    zf, zip_buffer = _zip_entries(buffer.getvalue())
+    try:
+        errors = _bundle_span_violations(zf)
+        assert any("database/baseline-detections.json[0].persisted" in error for error in errors)
+        assert any("diagnostics/characterization-records.json[0].raw" in error for error in errors)
+        assert any("diagnostics/characterization-records.json[0].measured" in error for error in errors)
+        assert any("diagnostics/characterization-records.json[0].match" in error for error in errors)
+    finally:
+        zf.close()
+        zip_buffer.close()
         buffer.close()
 
 

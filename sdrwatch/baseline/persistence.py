@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass, field
+from statistics import median
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from sdrwatch.baseline.store import BaselineContext, Store
@@ -16,6 +17,33 @@ from sdrwatch.util.time import utc_now_str
 class PersistResult:
     is_new: bool
     occ_ratio: Optional[float]
+    detection: Optional[PersistentDetection] = None
+    characterization: Optional["CharacterizationSnapshot"] = None
+
+
+@dataclass(frozen=True)
+class CharacterizationSnapshot:
+    stable_center_hz: int
+    center_delta_hz: int
+    center_stability_hz: float
+    bandwidth_stability_hz: float
+    coarse_measurement_count: int
+    revisit_measurement_count: int
+
+
+@dataclass
+class CharacterizationTracker:
+    stable_center_hz: int
+    recent_measured_centers_hz: List[int] = field(default_factory=list)
+    recent_measured_bandwidths_hz: List[float] = field(default_factory=list)
+    coarse_measurement_count: int = 0
+    revisit_measurement_count: int = 0
+
+
+@dataclass(frozen=True)
+class RevisitConfirmationResult:
+    detection: PersistentDetection
+    characterization: CharacterizationSnapshot
 
 
 @dataclass
@@ -61,6 +89,16 @@ class BaselinePersistence:
         )
         self.width_ema_alpha = float(getattr(args, "width_ema_alpha", 0.25) or 0.25)
         self.width_outlier_ratio = float(getattr(args, "width_outlier_ratio", 4.0) or 4.0)
+        self.center_history_limit = max(3, int(getattr(args, "center_history_limit", 5) or 5))
+        self.center_deadband_hz = max(1, int(round(self.bin_hz)))
+        default_center_step = self.center_match_hz / 4.0 if self.center_match_hz > 0.0 else max(self.min_detection_width_hz, self.bin_hz)
+        if self.max_detection_width_hz > 0.0:
+            default_center_step = min(default_center_step, self.max_detection_width_hz / 4.0)
+        self.center_max_step_hz = max(float(self.center_deadband_hz), float(default_center_step))
+        self.revisit_center_max_step_hz = max(
+            self.center_max_step_hz,
+            min(float(self.center_match_hz), self.center_max_step_hz * 1.5) if self.center_match_hz > 0.0 else self.center_max_step_hz,
+        )
         self.logger = logger
         self.profile_name = getattr(args, "profile", None)
         self.jsonl_path = getattr(args, "jsonl", None)
@@ -75,6 +113,9 @@ class BaselinePersistence:
         self._revisit_tags: List[RevisitTag] = []
         self._tag_counter = 0
         self._extent_state: Dict[int, ExtentHysteresisState] = {det.id: ExtentHysteresisState() for det in self._persisted}
+        self._characterization_state: Dict[int, CharacterizationTracker] = {
+            det.id: CharacterizationTracker(stable_center_hz=int(det.f_center_hz)) for det in self._persisted
+        }
 
     # -----------------
     # Public interface
@@ -94,7 +135,7 @@ class BaselinePersistence:
         region: Optional[str],
         notes: Optional[str],
     ) -> PersistResult:
-        is_new_detection = self._upsert_detection(
+        is_new_detection, persisted_detection, characterization = self._upsert_detection(
             cluster, combined_seg, confidence,
             service=service, region=region, bandplan_notes=notes
         )
@@ -130,7 +171,12 @@ class BaselinePersistence:
                 f"SNR {combined_seg.snr_db:.1f} dB; {service or 'Unknown'} {region or ''}"
             )
             self._maybe_notify("SDRWatch: New signal", body)
-        return PersistResult(is_new=is_new_flag, occ_ratio=occ_ratio)
+        return PersistResult(
+            is_new=is_new_flag,
+            occ_ratio=occ_ratio,
+            detection=persisted_detection,
+            characterization=characterization,
+        )
 
     def finalize_coarse_pass(self) -> List[RevisitTag]:
         missing_ts = utc_now_str()
@@ -189,11 +235,18 @@ class BaselinePersistence:
         self._seen_persistent.clear()
         return tags
 
-    def apply_revisit_confirmation(self, tag: RevisitTag, seg: Segment) -> None:
+    def apply_revisit_confirmation(self, tag: RevisitTag, seg: Segment) -> Optional[RevisitConfirmationResult]:
         det = self._find_persistent_by_id(tag.detection_id)
         if det is None:
-            return
+            return None
         seg = self._constrain_revisit_segment(det, seg)
+        characterization = self._record_characterization_measurement(
+            det,
+            measured_center_hz=int(seg.f_center_hz),
+            measured_bandwidth_hz=max(float(seg.f_high_hz - seg.f_low_hz), self.bin_hz),
+            source_pass="revisit",
+            stable_center_hz=None if self._center_smoothing_enabled() else int(seg.f_center_hz),
+        )
         # Revisit confirmations should not permanently "ratchet" extents wider via
         # min/max unioning. Use the same width-EMA + hysteresis logic as coarse
         # persistence so widths can converge and stay bounded.
@@ -201,8 +254,9 @@ class BaselinePersistence:
         measured_width = max(float(seg.f_high_hz - seg.f_low_hz), self.bin_hz)
         target_width = self._blend_width_ema(prev_width, measured_width)
         half = target_width / 2.0
-        proposed_low = int(round(float(seg.f_center_hz) - half))
-        proposed_high = int(round(float(seg.f_center_hz) + half))
+        stable_center_hz = characterization.stable_center_hz
+        proposed_low = int(round(float(stable_center_hz) - half))
+        proposed_high = int(round(float(stable_center_hz) + half))
         baseline_low = self.baseline_ctx.freq_start_hz
         baseline_high = self.baseline_ctx.freq_stop_hz
         proposed_low = max(proposed_low, baseline_low)
@@ -215,7 +269,8 @@ class BaselinePersistence:
         new_low, new_high = self._apply_extent_hysteresis(det, proposed_low, proposed_high)
         det.f_low_hz = new_low
         det.f_high_hz = new_high
-        det.f_center_hz = int(seg.f_center_hz)
+        det.f_center_hz = int(stable_center_hz)
+        self._enforce_persisted_span_invariant(det)
         det.last_seen_utc = utc_now_str()
         det.missing_since_utc = None
         self.store.begin()
@@ -231,8 +286,12 @@ class BaselinePersistence:
             tag_id=tag.tag_id,
             detection_id=det.id,
             center_hz=det.f_center_hz,
+            measured_center_hz=int(seg.f_center_hz),
+            stable_center_hz=stable_center_hz,
+            center_delta_hz=characterization.center_delta_hz,
             width_hz=max(det.f_high_hz - det.f_low_hz, 0),
         )
+        return RevisitConfirmationResult(detection=det, characterization=characterization)
 
     def apply_revisit_miss(self, tag: RevisitTag) -> None:
         det = self._find_persistent_by_id(tag.detection_id)
@@ -249,6 +308,7 @@ class BaselinePersistence:
                 raise
             self._persisted = [d for d in self._persisted if d.id != det.id]
             self._extent_state.pop(det.id, None)
+            self._characterization_state.pop(det.id, None)
             self._log(
                 "revisit_apply",
                 action="pruned",
@@ -279,21 +339,39 @@ class BaselinePersistence:
     # Internal helpers
     # -----------------
 
-    def _upsert_detection(self, cluster: DetectionCluster, seg: Segment, confidence: float,
-                          service: Optional[str] = None, region: Optional[str] = None,
-                          bandplan_notes: Optional[str] = None) -> bool:
+    def _upsert_detection(
+        self,
+        cluster: DetectionCluster,
+        seg: Segment,
+        confidence: float,
+        service: Optional[str] = None,
+        region: Optional[str] = None,
+        bandplan_notes: Optional[str] = None,
+    ) -> Tuple[bool, PersistentDetection, CharacterizationSnapshot]:
         timestamp = utc_now_str()
         self.store.begin()
         try:
             match = self._match_persistent(seg)
             cluster_center_hz = seg.f_center_hz
+            measured_bandwidth_hz = max(float(cluster.f_high_hz - cluster.f_low_hz), self.bin_hz)
             if match:
-                blended_center = self._blend_centers(
-                    match.f_center_hz,
-                    match.total_hits,
-                    cluster_center_hz,
-                    cluster.hits,
+                characterization = self._record_characterization_measurement(
+                    match,
+                    measured_center_hz=cluster_center_hz,
+                    measured_bandwidth_hz=measured_bandwidth_hz,
+                    source_pass="coarse",
+                    stable_center_hz=(
+                        None
+                        if self._center_smoothing_enabled()
+                        else self._blend_centers(
+                            match.f_center_hz,
+                            match.total_hits,
+                            cluster_center_hz,
+                            cluster.hits,
+                        )
+                    ),
                 )
+                blended_center = characterization.stable_center_hz
                 prev_width = max(float(match.f_high_hz - match.f_low_hz), self.bin_hz)
                 cluster_width = max(float(cluster.f_high_hz - cluster.f_low_hz), self.bin_hz)
                 target_width = self._blend_width_ema(prev_width, cluster_width)
@@ -313,6 +391,7 @@ class BaselinePersistence:
                 match.f_low_hz = new_low
                 match.f_high_hz = new_high
                 match.f_center_hz = blended_center
+                self._enforce_persisted_span_invariant(match)
                 match.last_seen_utc = timestamp
                 match.total_hits += cluster.hits
                 match.total_windows += len(cluster.windows)
@@ -335,12 +414,16 @@ class BaselinePersistence:
                     detection_id=match.id,
                     baseline_id=self.baseline_ctx.id,
                     center_hz=match.f_center_hz,
+                    measured_center_hz=cluster_center_hz,
+                    stable_center_hz=characterization.stable_center_hz,
+                    center_delta_hz=characterization.center_delta_hz,
                     width_hz=max(match.f_high_hz - match.f_low_hz, 0),
                     hits=match.total_hits,
                     windows=match.total_windows,
                     confidence=confidence,
                 )
                 is_new = False
+                persisted_detection = match
             else:
                 detection_id = self.store.insert_baseline_detection(
                     self.baseline_ctx.id,
@@ -380,22 +463,32 @@ class BaselinePersistence:
                 self._persisted.append(new_det)
                 self._seen_persistent.add(detection_id)
                 self._extent_state[detection_id] = ExtentHysteresisState()
+                characterization = self._record_characterization_measurement(
+                    new_det,
+                    measured_center_hz=cluster_center_hz,
+                    measured_bandwidth_hz=measured_bandwidth_hz,
+                    source_pass="coarse",
+                    stable_center_hz=cluster_center_hz,
+                )
                 self._log(
                     "persistence_decision",
                     action="insert",
                     detection_id=detection_id,
                     baseline_id=self.baseline_ctx.id,
                     center_hz=cluster_center_hz,
+                    stable_center_hz=characterization.stable_center_hz,
+                    center_delta_hz=characterization.center_delta_hz,
                     width_hz=max(cluster.f_high_hz - cluster.f_low_hz, 0),
                     hits=cluster.hits,
                     windows=len(cluster.windows),
                     confidence=confidence,
                 )
                 is_new = True
+                persisted_detection = new_det
                 if self.two_pass_enabled:
                     self._schedule_revisit(detection_id=detection_id, seg=seg, reason="new")
             self.store.commit()
-            return is_new
+            return is_new, persisted_detection, characterization
         except Exception:
             self.store.rollback()
             raise
@@ -509,6 +602,69 @@ class BaselinePersistence:
         if bin_index is None:
             return None
         return self.store.baseline_duty_cycle(self.baseline_ctx.id, bin_index)
+
+    def _center_smoothing_enabled(self) -> bool:
+        return str(self.profile_name or "").lower() == "fm_broadcast"
+
+    def _tracker_for(self, det: PersistentDetection) -> CharacterizationTracker:
+        return self._characterization_state.setdefault(
+            det.id,
+            CharacterizationTracker(stable_center_hz=int(det.f_center_hz)),
+        )
+
+    def _record_characterization_measurement(
+        self,
+        det: PersistentDetection,
+        *,
+        measured_center_hz: int,
+        measured_bandwidth_hz: float,
+        source_pass: str,
+        stable_center_hz: Optional[int],
+    ) -> CharacterizationSnapshot:
+        tracker = self._tracker_for(det)
+        tracker.recent_measured_centers_hz.append(int(measured_center_hz))
+        tracker.recent_measured_bandwidths_hz.append(max(float(measured_bandwidth_hz), self.bin_hz))
+        if len(tracker.recent_measured_centers_hz) > self.center_history_limit:
+            tracker.recent_measured_centers_hz = tracker.recent_measured_centers_hz[-self.center_history_limit :]
+        if len(tracker.recent_measured_bandwidths_hz) > self.center_history_limit:
+            tracker.recent_measured_bandwidths_hz = tracker.recent_measured_bandwidths_hz[-self.center_history_limit :]
+
+        if source_pass == "revisit":
+            tracker.revisit_measurement_count += 1
+        else:
+            tracker.coarse_measurement_count += 1
+
+        if stable_center_hz is None:
+            target_center_hz = int(round(median(tracker.recent_measured_centers_hz)))
+            step_limit_hz = (
+                self.revisit_center_max_step_hz if source_pass == "revisit" else self.center_max_step_hz
+            )
+            stable_center_hz = self._bounded_center_step(
+                current_hz=int(tracker.stable_center_hz),
+                target_hz=target_center_hz,
+                max_step_hz=step_limit_hz,
+                epsilon_hz=self.center_deadband_hz,
+            )
+        tracker.stable_center_hz = int(stable_center_hz)
+
+        center_stability_hz = 0.0
+        if len(tracker.recent_measured_centers_hz) > 1:
+            center_stability_hz = float(
+                max(tracker.recent_measured_centers_hz) - min(tracker.recent_measured_centers_hz)
+            )
+        bandwidth_stability_hz = 0.0
+        if len(tracker.recent_measured_bandwidths_hz) > 1:
+            bandwidth_stability_hz = float(
+                max(tracker.recent_measured_bandwidths_hz) - min(tracker.recent_measured_bandwidths_hz)
+            )
+        return CharacterizationSnapshot(
+            stable_center_hz=int(tracker.stable_center_hz),
+            center_delta_hz=int(int(measured_center_hz) - int(tracker.stable_center_hz)),
+            center_stability_hz=center_stability_hz,
+            bandwidth_stability_hz=bandwidth_stability_hz,
+            coarse_measurement_count=int(tracker.coarse_measurement_count),
+            revisit_measurement_count=int(tracker.revisit_measurement_count),
+        )
 
     def _bin_index_for_freq(self, freq_hz: int) -> Optional[int]:
         if freq_hz < self.baseline_ctx.freq_start_hz or freq_hz > self.baseline_ctx.freq_stop_hz:
@@ -633,6 +789,18 @@ class BaselinePersistence:
         )
         return filtered
 
+    @staticmethod
+    def _bounded_center_step(*, current_hz: int, target_hz: int, max_step_hz: float, epsilon_hz: int) -> int:
+        delta_hz = int(target_hz) - int(current_hz)
+        if abs(delta_hz) <= int(epsilon_hz):
+            return int(current_hz)
+        step_limit_hz = max(float(max_step_hz), float(epsilon_hz))
+        if delta_hz > step_limit_hz:
+            delta_hz = int(round(step_limit_hz))
+        elif delta_hz < -step_limit_hz:
+            delta_hz = -int(round(step_limit_hz))
+        return int(current_hz) + int(delta_hz)
+
     def _blend_centers(self, center_a: int, weight_a: int, center_b: int, weight_b: int) -> int:
         wa = max(1, int(weight_a))
         wb = max(1, int(weight_b))
@@ -667,6 +835,46 @@ class BaselinePersistence:
         if high <= low:
             high = min(self.baseline_ctx.freq_stop_hz, low + epsilon)
         return low, high
+
+    def _enforce_persisted_span_invariant(self, det: PersistentDetection) -> None:
+        baseline_low = int(self.baseline_ctx.freq_start_hz)
+        baseline_high = int(self.baseline_ctx.freq_stop_hz)
+        if baseline_high < baseline_low:
+            baseline_low, baseline_high = baseline_high, baseline_low
+
+        center = int(det.f_center_hz)
+        center = min(max(center, baseline_low), baseline_high)
+
+        low = int(det.f_low_hz)
+        high = int(det.f_high_hz)
+        if high < low:
+            low, high = high, low
+        low = max(low, baseline_low)
+        high = min(high, baseline_high)
+
+        if center < low:
+            low = center
+        if center > high:
+            high = center
+
+        max_width = int(round(self.max_detection_width_hz)) if self.max_detection_width_hz > 0.0 else 0
+        if max_width > 0 and high - low > max_width:
+            half = max_width // 2
+            low = max(center - half, baseline_low)
+            high = min(low + max_width, baseline_high)
+            if center > high:
+                high = center
+                low = max(baseline_low, high - max_width)
+            if center < low:
+                low = center
+                high = min(baseline_high, low + max_width)
+
+        if high < low:
+            high = low
+
+        det.f_low_hz = int(low)
+        det.f_high_hz = int(high)
+        det.f_center_hz = int(center)
 
     def _blend_width_ema(self, prev_width: float, measured_width: float) -> float:
         original_prev_width = float(prev_width)
