@@ -93,6 +93,10 @@ class RTLSDRSource:
     """Convenience wrapper around pyrtlsdr.RtlSdr."""
 
     def __init__(self, samp_rate: float, gain: str | float, *, device_index: Optional[int] = None, serial_number: Optional[str] = None):
+        self.device_index = device_index
+        self.serial_number = serial_number
+        self.requested_sample_rate = samp_rate
+        self.requested_gain = gain
         if not HAVE_RTLSDR:
             raise RuntimeError("pyrtlsdr not available")
         if serial_number:

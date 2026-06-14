@@ -177,10 +177,97 @@ class DetectionCluster:
     last_window: int
     hits: int = 0
     windows: Set[int] = field(default_factory=set)
+    sweep_loop_ids: Set[int] = field(default_factory=set)
     best_seg: Segment = field(default_factory=lambda: Segment(0, 0, 0, -999.0, -999.0, -999.0, 0.0))
     emitted: bool = False
     center_weight_sum: float = 0.0
     center_weight_total: float = 0.0
+
+
+@dataclass(frozen=True)
+class CrossSweepObservation:
+    sweep_loop_id: int
+    window_idx: int
+    center_hz: int
+    raw_low_hz: int
+    raw_high_hz: int
+    raw_bandwidth_hz: float
+    match_low_hz: int
+    match_high_hz: int
+    match_bandwidth_hz: float
+    measured_bandwidth_hz: float
+    source_pass: str
+    snr_db: float
+    peak_db: float
+    noise_db: float
+    observed_at_utc: str
+
+
+@dataclass
+class CrossSweepCandidateState:
+    candidate_id: str
+    baseline_id: int
+    first_observed_sweep_id: int
+    last_observed_sweep_id: int
+    observation_count: int
+    observed_sweep_ids: Set[int]
+    stable_center_hz: int
+    match_low_hz: int
+    match_high_hz: int
+    match_bandwidth_hz: float
+    measured_bandwidth_hz: float
+    last_raw_segment: Segment
+    last_observation: CrossSweepObservation
+    promotion_ready: bool = False
+    rejection_reason: Optional[str] = None
+
+    @property
+    def observation_loop_count(self) -> int:
+        return len(self.observed_sweep_ids)
+
+
+@dataclass(frozen=True)
+class DeviceTelemetrySnapshot:
+    event: str
+    device_key: Optional[str]
+    device_kind: Optional[str]
+    device_index: Optional[int]
+    device_serial: Optional[str]
+    device_label: Optional[str]
+    device_tuner: Optional[str]
+    driver: Optional[str]
+    requested_gain: Optional[str]
+    actual_gain: Optional[float]
+    gain_mode: str
+    supported_gains: Optional[List[float]]
+    sample_rate_hz: Optional[float]
+    actual_sample_rate_hz: Optional[float]
+    fft: Optional[int]
+    bin_width_hz: Optional[float]
+    selected_profile: Optional[str]
+    unavailable_fields: List[str] = field(default_factory=list)
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "event": self.event,
+            "device_key": self.device_key,
+            "device_kind": self.device_kind,
+            "device_index": self.device_index,
+            "device_serial": self.device_serial,
+            "device_label": self.device_label,
+            "device_tuner": self.device_tuner,
+            "driver": self.driver,
+            "requested_gain": self.requested_gain,
+            "actual_gain": self.actual_gain,
+            "gain_mode": self.gain_mode,
+            "supported_gains": self.supported_gains,
+            "sample_rate_hz": self.sample_rate_hz,
+            "actual_sample_rate_hz": self.actual_sample_rate_hz,
+            "fft": self.fft,
+            "bin_width_hz": self.bin_width_hz,
+            "selected_profile": self.selected_profile,
+            "unavailable_fields": list(self.unavailable_fields),
+        }
 
 
 @dataclass

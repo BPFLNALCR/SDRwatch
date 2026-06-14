@@ -37,6 +37,29 @@ def test_multiple_separated_fm_like_signals_remain_separate(tmp_path) -> None:
     assert centers[1] - centers[0] > 120_000
 
 
+def test_fm_broadcast_profile_keeps_close_but_separable_cards_bounded(tmp_path) -> None:
+    engine, store, ctx, logger = make_engine(tmp_path)
+
+    ingest_segments(
+        engine,
+        [
+            100_100_000,
+            100_112_000,
+            100_240_000,
+            100_252_000,
+            100_102_000,
+            100_242_000,
+        ],
+        width_hz=2_000,
+    )
+
+    detections = sorted(store.load_baseline_detections(ctx.id), key=lambda det: det.f_center_hz)
+    assert len(detections) == 2
+    assert detections[1].f_center_hz - detections[0].f_center_hz > 80_000
+    assert all(70_000 <= det.f_high_hz - det.f_low_hz <= 270_000 for det in detections)
+    assert {record["action"] for record in logger.events("persistence_decision")} >= {"insert"}
+
+
 def test_repeated_nearby_fm_fragments_clear_missing_and_update_existing_row(tmp_path) -> None:
     logger = ListLogger()
     engine, store, ctx, logger = make_engine(tmp_path, logger=logger)

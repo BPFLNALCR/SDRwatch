@@ -58,6 +58,18 @@ Recommended shape:
     "revisit_queue": 2,
     "revisit_result": 2
   },
+  "aggregate_counts": {
+    "segment_inventory_count": 12,
+    "cluster_emitted_count": 4,
+    "cluster_rejected_count": 8,
+    "persistence_match_count": 5,
+    "persistence_no_match_count": 3,
+    "persistence_cross_sweep_promote_count": 1,
+    "width_decision_count": 10,
+    "revisit_queued_count": 2,
+    "revisit_result_count": 2,
+    "characterization_record_count": 4
+  },
   "parse_errors": 0,
   "truncated": false
 }

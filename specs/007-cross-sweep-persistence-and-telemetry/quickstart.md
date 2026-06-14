@@ -87,11 +87,16 @@ Expected backend smoke outcomes:
 10. Export a diagnostic bundle from the GUI.
 11. Confirm the bundle includes:
     - effective-parameter manifest
+      - archive path: `job/effective-parameters.json`
+      - JSONL event: `effective_parameters`
     - requested and applied or skipped profile state
     - final effective scanner parameters
     - structured aggregate decision counts
+      - archive path: `diagnostics/decision-summary.json`
     - raw/measured/match/display characterization summaries
     - requested gain, actual gain when available, gain mode, device metadata, sample rate, FFT, and bin width
+      - archive path: `job/device-telemetry.json`
+      - JSONL event: `device_telemetry`
 12. Confirm FM cards remain stable, separated, and bounded.
 13. Repeat Discovery from the GUI and confirm it remains available as first-light behavior.
 
@@ -126,3 +131,9 @@ This step requires current SDR hardware and should remain open when not run.
 - Diagnostic bundles are sufficient to reconstruct important scanner/profile/controller decisions.
 - Web/API scans and scanner smoke invocations use equivalent supported characterization parameters.
 - Device and gain telemetry make receiver-state changes visible without failing scans when fields are unavailable.
+
+## Implementation Validation Log
+
+- 2026-06-14 T001 branch check: `git branch --show-current` returned `007-cross-sweep-persistence-and-telemetry`.
+- 2026-06-14 T063 backend smoke: `python -m sdrwatch.cli --list-profiles` completed successfully and included `fm_broadcast` with `persistence_min_sweep_loops`, match/display bandwidth controls, width caps, revisit settings, and centroid controls.
+- 2026-06-14 T064 hardware telemetry acceptance: not run in this no-hardware environment; Raspberry Pi 5 plus RTL-SDR Blog v4 validation remains the manual acceptance step above.

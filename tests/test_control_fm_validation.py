@@ -96,3 +96,55 @@ def test_controller_command_ignores_characterization_only_fields() -> None:
     assert "--characterization-confidence" not in cmd
     assert "--classification-candidate" not in cmd
     assert "--profile-context" not in cmd
+
+
+def test_controller_command_passes_supported_characterization_revisit_and_persistence_params() -> None:
+    params = {
+        "start": 88_000_000,
+        "stop": 108_000_000,
+        "profile": "fm_broadcast",
+        "segment_center_mode": "centroid",
+        "segment_centroid_span_hz": 240_000,
+        "segment_centroid_drop_db": 20,
+        "segment_centroid_floor_margin_db": 2,
+        "match_bandwidth_pad_hz": 10_000,
+        "min_match_bandwidth_hz": 80_000,
+        "display_bandwidth_pad_hz": 30_000,
+        "min_display_bandwidth_hz": 200_000,
+        "max_persist_width_hz": 270_000,
+        "max_card_width_hz": 270_000,
+        "center_match_hz": 60_000,
+        "persistence_mode": "hits",
+        "persistence_hit_ratio": 0.25,
+        "persistence_min_seconds": 2,
+        "persistence_min_hits": 1,
+        "persistence_min_windows": 1,
+        "persistence_min_sweep_loops": 3,
+        "two_pass": True,
+        "revisit_fft": 32768,
+        "revisit_avg": 4,
+        "revisit_margin_hz": 200_000,
+        "revisit_span_limit_hz": 420_000,
+        "revisit_max_bands": 40,
+        "revisit_floor_threshold_db": 6,
+    }
+
+    cmd = build_scanner_cmd(params)
+
+    expected_flags = {
+        "--segment-center-mode": "centroid",
+        "--segment-centroid-span-hz": "240000",
+        "--segment-centroid-drop-db": "20",
+        "--segment-centroid-floor-margin-db": "2",
+        "--match-bandwidth-pad-hz": "10000",
+        "--min-match-bandwidth-hz": "80000",
+        "--display-bandwidth-pad-hz": "30000",
+        "--min-display-bandwidth-hz": "200000",
+        "--max-detection-width-hz": "270000",
+        "--center-match-hz": "60000",
+        "--persistence-min-sweep-loops": "3",
+        "--revisit-span-limit-hz": "420000",
+    }
+    for flag, value in expected_flags.items():
+        assert cmd[cmd.index(flag) + 1] == value
+    assert "--two-pass" in cmd

@@ -352,6 +352,54 @@ def test_diagnostic_bundle_contains_available_evidence(tmp_path: Path) -> None:
         buffer.close()
 
 
+def test_diagnostic_bundle_decision_summary_includes_structured_aggregate_counts(tmp_path: Path) -> None:
+    db_path = tmp_path / "sdrwatch.db"
+    log_path = tmp_path / "scanner.log"
+    diag_path = tmp_path / "diagnostic.jsonl"
+    _create_temp_db(db_path)
+    _write_text(log_path, ["log"])
+    _write_text(
+        diag_path,
+        [
+            '{"event": "segment_inventory", "num_segments": 2}',
+            '{"event": "cluster_emit", "center_hz": 100100000}',
+            '{"event": "cluster_reject", "center_hz": 100300000}',
+            '{"event": "persistence_decision", "action": "match"}',
+            '{"event": "persistence_decision", "action": "no_match"}',
+            '{"event": "persistence_decision", "action": "cross_sweep_promote"}',
+            '{"event": "width_decision", "stage": "shape_match"}',
+            '{"event": "revisit_queue", "action": "queued"}',
+            '{"event": "revisit_result", "matched": true}',
+            '{"event": "characterization_record", "source_pass": "coarse"}',
+        ],
+    )
+
+    bundle = build_diagnostic_bundle(
+        job=_job(tmp_path, diag_path, log_path),
+        db_path=str(db_path),
+        bounds=DiagnosticBundleBounds(log_tail_lines=20, diagnostic_tail_lines=20, row_limit=20),
+    )
+
+    zf, buffer = _zip_entries(bundle.content)
+    try:
+        summary = json.loads(zf.read("diagnostics/decision-summary.json"))
+        aggregates = summary["aggregate_counts"]
+        assert aggregates["segment_inventory_count"] == 1
+        assert aggregates["cluster_emitted_count"] == 1
+        assert aggregates["cluster_rejected_count"] == 1
+        assert aggregates["persistence_match_count"] == 1
+        assert aggregates["persistence_no_match_count"] == 1
+        assert aggregates["persistence_cross_sweep_promote_count"] == 1
+        assert aggregates["width_decision_count"] == 1
+        assert aggregates["revisit_queued_count"] == 1
+        assert aggregates["revisit_result_count"] == 1
+        assert aggregates["characterization_record_count"] == 1
+        assert summary["truncated"] is False
+    finally:
+        zf.close()
+        buffer.close()
+
+
 def test_diagnostic_bundle_exported_centers_stay_within_exported_spans(tmp_path: Path) -> None:
     db_path = tmp_path / "sdrwatch.db"
     log_path = tmp_path / "scanner.log"

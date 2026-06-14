@@ -14,6 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from sdrwatch.util.detection_diagnostics import (
+    build_device_telemetry_snapshot,
+    build_effective_parameter_manifest,
+    summarize_characterization_records,
+)
 from sdrwatch_web.config import (
     DIAGNOSTIC_BUNDLE_FILENAME_PREFIX,
     DIAGNOSTIC_BUNDLE_JSONL_TAIL_LINES,
@@ -23,7 +28,6 @@ from sdrwatch_web.config import (
     DIAGNOSTIC_BUNDLE_MAX_ROW_LIMIT,
     DIAGNOSTIC_BUNDLE_ROW_LIMIT,
 )
-from sdrwatch.util.detection_diagnostics import summarize_characterization_records
 
 
 @dataclass(frozen=True)
@@ -253,7 +257,20 @@ def _summarize_decision_tail(text: str) -> Tuple[Dict[str, Any], bool]:
         "width_stages": {},
         "revisit_events": {},
         "effective_settings": {},
+        "aggregate_counts": {
+            "segment_inventory_count": 0,
+            "cluster_emitted_count": 0,
+            "cluster_rejected_count": 0,
+            "persistence_match_count": 0,
+            "persistence_no_match_count": 0,
+            "persistence_cross_sweep_promote_count": 0,
+            "width_decision_count": 0,
+            "revisit_queued_count": 0,
+            "revisit_result_count": 0,
+            "characterization_record_count": 0,
+        },
         "parse_errors": 0,
+        "truncated": False,
     }
     has_decision_evidence = False
     effective_settings: Dict[str, Any] = {}
@@ -273,13 +290,37 @@ def _summarize_decision_tail(text: str) -> Tuple[Dict[str, Any], bool]:
             continue
         event_name = str(event)
         _count_key(summary["event_counts"], event_name)
+        aggregates = summary["aggregate_counts"]
+        if event_name == "segment_inventory":
+            aggregates["segment_inventory_count"] += 1
+        elif event_name == "cluster_emit":
+            aggregates["cluster_emitted_count"] += 1
+            has_decision_evidence = True
+        elif event_name == "cluster_reject":
+            aggregates["cluster_rejected_count"] += 1
+            has_decision_evidence = True
+        elif event_name == "width_decision":
+            aggregates["width_decision_count"] += 1
+        elif event_name == "revisit_queue":
+            aggregates["revisit_queued_count"] += 1
+        elif event_name == "revisit_result":
+            aggregates["revisit_result_count"] += 1
+        elif event_name == "characterization_record":
+            aggregates["characterization_record_count"] += 1
         if event_name == "detection_window" and isinstance(record.get("tuning_params"), dict):
             effective_settings = dict(record["tuning_params"])
         elif event_name == "sweep_start" and isinstance(record.get("params"), dict):
             effective_settings = dict(record["params"])
         elif event_name == "persistence_decision":
             has_decision_evidence = True
-            _count_key(summary["persistence_actions"], record.get("action"))
+            action = record.get("action")
+            _count_key(summary["persistence_actions"], action)
+            if action == "match":
+                aggregates["persistence_match_count"] += 1
+            elif action in {"no_match", "cross_sweep_no_match"}:
+                aggregates["persistence_no_match_count"] += 1
+            elif action == "cross_sweep_promote":
+                aggregates["persistence_cross_sweep_promote_count"] += 1
         elif event_name == "width_decision":
             has_decision_evidence = True
             _count_key(summary["width_stages"], record.get("stage"))
@@ -288,6 +329,35 @@ def _summarize_decision_tail(text: str) -> Tuple[Dict[str, Any], bool]:
             _count_key(summary["revisit_events"], event_name)
     summary["effective_settings"] = effective_settings
     return summary, has_decision_evidence
+
+
+def _clean_job_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in record.items()
+        if key not in {"event", "ts", "run_id", "sweep_id", "time_utc"}
+    }
+
+
+def _extract_job_level_diagnostics(text: str) -> Dict[str, Any]:
+    extracted: Dict[str, Any] = {"effective_parameters": None, "device_telemetry": None, "parse_errors": 0}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            extracted["parse_errors"] += 1
+            continue
+        if not isinstance(record, dict):
+            continue
+        event = record.get("event")
+        if event == "effective_parameters":
+            extracted["effective_parameters"] = _clean_job_record(record)
+        elif event == "device_telemetry":
+            extracted["device_telemetry"] = _clean_job_record(record)
+    return extracted
 
 
 def _summarize_characterization_tail(text: str, sample_limit: int) -> Dict[str, Any]:
@@ -337,20 +407,22 @@ def _add_diagnostic_jsonl(
     manifest: BundleManifest,
     job: Dict[str, Any],
     bounds: DiagnosticBundleBounds,
-) -> None:
+) -> Dict[str, Any]:
     path = _diagnostic_path(job)
     text, count, truncated, error = tail_file(path, bounds.diagnostic_tail_lines)
     if error:
         manifest.missing("diagnostic_jsonl", error)
         manifest.missing("decision_evidence", "diagnostic JSONL unavailable")
-        return
+        return {"effective_parameters": None, "device_telemetry": None}
     if truncated:
         manifest.truncated("diagnostic_jsonl", "tail limited", included_lines=count)
         manifest.truncated("decision_evidence", "diagnostic tail limited", included_lines=count)
     text = text or ""
     _add_bytes(zf, manifest, "diagnostics/diagnostic-jsonl-tail.jsonl", text.encode("utf-8"))
     summary, has_decision_evidence = _summarize_decision_tail(text)
+    summary["truncated"] = bool(truncated)
     _add_json(zf, manifest, "diagnostics/decision-summary.json", summary)
+    job_level = _extract_job_level_diagnostics(text)
     characterization_summary = _summarize_characterization_tail(text, bounds.row_limit)
     if characterization_summary.get("truncated"):
         manifest.truncated(
@@ -364,6 +436,7 @@ def _add_diagnostic_jsonl(
     _add_json(zf, manifest, "diagnostics/characterization-summary.json", characterization_summary)
     if not has_decision_evidence:
         manifest.missing("decision_evidence", "no decision events in diagnostic JSONL tail")
+    return job_level
 
 
 def _add_database_evidence(
@@ -492,7 +565,27 @@ def build_diagnostic_bundle(
             command_text = str(cmd)
         _add_bytes(zf, manifest, "job/scanner-command.txt", (command_text + "\n").encode("utf-8"))
         _add_log_evidence(zf, manifest, job, scanner_log_text, bounds)
-        _add_diagnostic_jsonl(zf, manifest, job, bounds)
+        job_level = _add_diagnostic_jsonl(zf, manifest, job, bounds)
+        params = _job_params(job)
+        device_telemetry = job_level.get("device_telemetry")
+        if device_telemetry is None:
+            device_telemetry = build_device_telemetry_snapshot(
+                type("DiagnosticArgs", (), params)(),
+                None,
+                device_key=str(job.get("device_key") or params.get("device_key") or ""),
+            )
+        effective_parameters = job_level.get("effective_parameters")
+        if effective_parameters is None:
+            effective_parameters = build_effective_parameter_manifest(
+                type("DiagnosticArgs", (), params)(),
+                job_id=str(job.get("id") or "unknown"),
+                device_telemetry=device_telemetry,
+            )
+        manifest.data["effective_parameters"] = effective_parameters
+        _add_json(zf, manifest, "job/effective-parameters.json", effective_parameters)
+        if device_telemetry is not None:
+            manifest.data["device_telemetry"] = device_telemetry
+            _add_json(zf, manifest, "job/device-telemetry.json", device_telemetry)
         _add_database_evidence(zf, manifest, db_path=db_path, job=job, bounds=bounds)
         _add_bytes(zf, manifest, "NOTES.md", render_operator_notes_template(job).encode("utf-8"))
         _add_json(zf, manifest, "manifest.json", manifest.data)

@@ -694,6 +694,7 @@ class JobManager:
             # Unknown key: fall back to caller-provided driver (if any)
             if explicit_driver:
                 cmd += ["--driver", explicit_driver]
+        cmd += ["--device-key", str(device_key)]
 
         # Numeric params
         mapping_num = {
@@ -713,9 +714,18 @@ class JobManager:
             "persistence_min_seconds": "--persistence-min-seconds",
             "persistence_min_hits": "--persistence-min-hits",
             "persistence_min_windows": "--persistence-min-windows",
+            "persistence_min_sweep_loops": "--persistence-min-sweep-loops",
             "cluster_merge_hz": "--cluster-merge-hz",
             "max_detection_width_ratio": "--max-detection-width-ratio",
             "max_detection_width_hz": "--max-detection-width-hz",
+            "center_match_hz": "--center-match-hz",
+            "segment_centroid_span_hz": "--segment-centroid-span-hz",
+            "segment_centroid_drop_db": "--segment-centroid-drop-db",
+            "segment_centroid_floor_margin_db": "--segment-centroid-floor-margin-db",
+            "match_bandwidth_pad_hz": "--match-bandwidth-pad-hz",
+            "min_match_bandwidth_hz": "--min-match-bandwidth-hz",
+            "display_bandwidth_pad_hz": "--display-bandwidth-pad-hz",
+            "min_display_bandwidth_hz": "--min-display-bandwidth-hz",
             "cfar_train": "--cfar-train",
             "cfar_guard": "--cfar-guard",
             "cfar_quantile": "--cfar-quantile",
@@ -732,6 +742,13 @@ class JobManager:
             if v is not None:
                 cmd += [flag, str(v)]
 
+        if args.get("max_detection_width_hz") is None:
+            width_cap = args.get("max_persist_width_hz")
+            if width_cap is None:
+                width_cap = args.get("max_card_width_hz")
+            if width_cap is not None:
+                cmd += ["--max-detection-width-hz", str(width_cap)]
+
         # Simple string/file params
         if args.get("db"):
             cmd += ["--db", str(args["db"])]
@@ -741,6 +758,8 @@ class JobManager:
             cmd += ["--gain", str(args["gain"])]
         if args.get("profile"):
             cmd += ["--profile", str(args["profile"])]
+        if args.get("segment_center_mode"):
+            cmd += ["--segment-center-mode", str(args["segment_center_mode"])]
         if args.get("duration"):
             cmd += ["--duration", str(args["duration"])]
         if args.get("jsonl"):

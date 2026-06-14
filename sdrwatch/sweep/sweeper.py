@@ -26,6 +26,7 @@ from sdrwatch.io.bandplan import Bandplan
 from sdrwatch.sweep.scheduler import WindowScheduler
 from sdrwatch.util.detection_diagnostics import (
     DetectionDiagnosticWriter,
+    build_effective_parameter_manifest,
     build_window_record,
 )
 from sdrwatch.util.scan_logger import ScanLogger
@@ -216,6 +217,24 @@ class Sweeper:
         self.logger = logger
         diagnostic_path = getattr(args, "diagnostic_jsonl", None)
         self.diagnostic_writer = DetectionDiagnosticWriter(diagnostic_path) if diagnostic_path else None
+        self._detection_engine: Optional[DetectionEngine] = None
+        self._detection_engine_bin_hz: Optional[float] = None
+        self._effective_manifest_logged = False
+
+    def _get_detection_engine(self, bin_hz: float) -> DetectionEngine:
+        if self._detection_engine is None or self._detection_engine_bin_hz != float(bin_hz):
+            self._detection_engine = DetectionEngine(
+                self.store,
+                self.bandplan,
+                self.args,
+                bin_hz=bin_hz,
+                baseline_ctx=self.baseline_ctx,
+                min_hits=int(getattr(self.args, "persistence_min_hits", 2)),
+                min_windows=int(getattr(self.args, "persistence_min_windows", 2)),
+                logger=self.logger,
+            )
+            self._detection_engine_bin_hz = float(bin_hz)
+        return self._detection_engine
 
     def _sweep_params(self) -> Dict[str, Any]:
         args = self.args
@@ -236,7 +255,12 @@ class Sweeper:
             "cfar_alpha_db": args.cfar_alpha_db,
             "gain": args.gain,
             "driver": args.driver,
+            "device_key": getattr(args, "device_key", None),
             "profile": getattr(args, "profile", None),
+            "requested_profile": getattr(args, "_requested_profile", getattr(args, "profile", None)),
+            "applied_profile": getattr(args, "_applied_profile", None),
+            "profile_applied": getattr(args, "_profile_applied", False),
+            "profile_skip_reason": getattr(args, "_profile_skip_reason", None),
             "spur_calibration": bool(args.spur_calibration),
             "two_pass": bool(getattr(args, "two_pass", False)),
             "persistence_mode": getattr(args, "persistence_mode", None),
@@ -244,6 +268,7 @@ class Sweeper:
             "persistence_min_seconds": getattr(args, "persistence_min_seconds", None),
             "persistence_min_hits": getattr(args, "persistence_min_hits", None),
             "persistence_min_windows": getattr(args, "persistence_min_windows", None),
+            "persistence_min_sweep_loops": getattr(args, "persistence_min_sweep_loops", None),
             "bandwidth_pad_hz": getattr(args, "bandwidth_pad_hz", None),
             "min_emit_bandwidth_hz": getattr(args, "min_emit_bandwidth_hz", None),
             "confidence_hit_normalizer": getattr(args, "confidence_hit_normalizer", None),
@@ -263,11 +288,26 @@ class Sweeper:
             "cluster_merge_hz": getattr(args, "cluster_merge_hz", None),
             "max_detection_width_ratio": getattr(args, "max_detection_width_ratio", None),
             "max_detection_width_hz": getattr(args, "max_detection_width_hz", None),
+            "max_persist_width_hz": getattr(args, "max_persist_width_hz", None)
+            or getattr(args, "max_detection_width_hz", None),
+            "max_card_width_hz": getattr(args, "max_card_width_hz", None)
+            or getattr(args, "max_detection_width_hz", None),
             "segment_center_mode": getattr(args, "segment_center_mode", None),
             "segment_centroid_span_hz": getattr(args, "segment_centroid_span_hz", None),
             "segment_centroid_drop_db": getattr(args, "segment_centroid_drop_db", None),
             "segment_centroid_floor_margin_db": getattr(args, "segment_centroid_floor_margin_db", None),
         }
+
+    def _log_effective_manifest_once(self) -> None:
+        if self._effective_manifest_logged or not self.logger:
+            return
+        manifest = build_effective_parameter_manifest(
+            self.args,
+            job_id=getattr(self.args, "job_id", None),
+            device_telemetry=getattr(self.args, "_device_telemetry", None),
+        )
+        self.logger.log("effective_parameters", **manifest)
+        self._effective_manifest_logged = True
 
     def run(self, src, sweep_seq: int) -> None:
         """Perform a single wideband sweep and update baseline state."""
@@ -288,18 +328,10 @@ class Sweeper:
         if args.spur_calibration:
             detection_engine: Optional[DetectionEngine] = None
         else:
-            detection_engine = DetectionEngine(
-                store,
-                bandplan,
-                args,
-                bin_hz=bin_hz,
-                baseline_ctx=baseline_ctx,
-                min_hits=int(getattr(args, "persistence_min_hits", 2)),
-                min_windows=int(getattr(args, "persistence_min_windows", 2)),
-                logger=logger,
-            )
+            detection_engine = self._get_detection_engine(bin_hz)
 
         if logger:
+            self._log_effective_manifest_once()
             logger.start_sweep(
                 sweep_seq,
                 baseline_id=baseline_ctx.id,
@@ -387,7 +419,11 @@ class Sweeper:
 
                 if is_anom:
                     if detection_engine:
-                        accepted_hits, spur_ignored, promoted, new_signals = detection_engine.ingest(window_idx, [])
+                        accepted_hits, spur_ignored, promoted, new_signals = detection_engine.ingest(
+                            window_idx,
+                            [],
+                            sweep_loop_id=sweep_seq,
+                        )
                 else:
                     noise_db = robust_noise_floor_db(psd_db)
                     dynamic = noise_db + args.threshold_db
@@ -403,6 +439,7 @@ class Sweeper:
                         accepted_hits, spur_ignored, promoted, new_signals = detection_engine.ingest(
                             window_idx,
                             segs,
+                            sweep_loop_id=sweep_seq,
                         )
                 if self.diagnostic_writer:
                     self.diagnostic_writer.write(

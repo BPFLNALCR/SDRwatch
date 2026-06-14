@@ -12,6 +12,7 @@ from sdrwatch.baseline.store import Store
 from sdrwatch.drivers.rtlsdr import RTLSDRSource
 from sdrwatch.io.bandplan import Bandplan
 from sdrwatch.sweep.sweeper import Sweeper
+from sdrwatch.util.detection_diagnostics import build_device_telemetry_snapshot
 from sdrwatch.util.duration import parse_duration_to_seconds
 from sdrwatch.util.logging import get_logger
 from sdrwatch.util.scan_logger import ScanLogger
@@ -85,7 +86,14 @@ class ScannerRunner:
         args = self.args
         if args.driver != "rtlsdr_native":
             raise RuntimeError("unsupported driver. Use --driver rtlsdr_native")
-        src = RTLSDRSource(samp_rate=args.samp_rate, gain=args.gain)
+        device_key = str(getattr(args, "device_key", "") or "")
+        device_index = None
+        if device_key.startswith("rtl:"):
+            try:
+                device_index = int(device_key.split(":", 1)[1])
+            except (IndexError, ValueError):
+                device_index = None
+        src = RTLSDRSource(samp_rate=args.samp_rate, gain=args.gain, device_index=device_index)
         setattr(src, "device", "RTL-SDR (native)")
         return src
 
@@ -109,6 +117,15 @@ class ScannerRunner:
         baseline_ctx = self._resolve_baseline()
         src = self._select_source()
         self.src = src
+        telemetry = build_device_telemetry_snapshot(
+            self.args,
+            src,
+            device_key=getattr(self.args, "device_key", None),
+        )
+        setattr(self.args, "_device_telemetry", telemetry)
+        telemetry_event = dict(telemetry)
+        event_name = str(telemetry_event.pop("event", "device_telemetry"))
+        self.logger.log(event_name, **telemetry_event)
         self.sweeper = Sweeper(self.args, self.store, self.bandplan, baseline_ctx, self.logger)
 
         duration_s, start_time, sweeps_remaining = self._termination_policy()

@@ -40,8 +40,8 @@ Rules:
 | `min_match_bandwidth_hz` | `--min-match-bandwidth-hz` | `min_match_bandwidth_hz` | Required if scanner flag exists |
 | `display_bandwidth_pad_hz` | `--display-bandwidth-pad-hz` | `display_bandwidth_pad_hz` | Required if scanner flag exists |
 | `min_display_bandwidth_hz` | `--min-display-bandwidth-hz` | `min_display_bandwidth_hz` | Required if scanner flag exists |
-| `max_persist_width_hz` | existing max persisted-width flag or documented mapping | existing scanner arg | Required mapping or documented unsupported |
-| `max_card_width_hz` | existing max card-width flag or documented mapping | existing scanner arg | Required mapping or documented unsupported |
+| `max_persist_width_hz` | `--max-detection-width-hz` | `max_detection_width_hz` | Mapped equivalent |
+| `max_card_width_hz` | `--max-detection-width-hz` | `max_detection_width_hz` | Mapped equivalent |
 | `center_match_hz` | `--center-match-hz` | `center_match_hz` | Required if scanner flag exists |
 | `persistence_mode` | `--persistence-mode` | `persistence_mode` | Required |
 | `persistence_hit_ratio` | `--persistence-hit-ratio` | `persistence_hit_ratio` | Required |
@@ -60,7 +60,7 @@ Rules:
 ## Mapping Rules
 
 - If the scanner currently supports a parameter only as a profile-hidden arg, add a scanner flag or document why direct passthrough is unsupported.
-- If `max_persist_width_hz` and `max_card_width_hz` map to current `max_detection_width_hz`, document the mapping explicitly in tests and contracts.
+- `max_persist_width_hz` and `max_card_width_hz` intentionally map to current `max_detection_width_hz`; this preserves the existing scanner cap while giving controller/API callers contract names for persisted/card width limits.
 - Characterization result fields such as `measured_center_hz`, `measured_bandwidth_hz`, `classification_candidate`, and `profile_context` are derived output fields, not operator-entered request params.
 
 ## Acceptance Checks

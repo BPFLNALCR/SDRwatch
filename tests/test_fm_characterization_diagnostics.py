@@ -40,8 +40,13 @@ def test_characterization_summary_keeps_context_and_measured_fields_separate() -
     assert sample["measured_characterization"]["stable_center_hz"] == 100_100_000
     assert sample["measured_characterization"]["center_delta_hz"] == 0
     assert sample["display_span"]["bandwidth_hz"] == 200_000.0
+    assert sample["match_span"]["bandwidth_hz"] == 80_000.0
+    assert sample["match_span"]["bandwidth_hz"] < sample["display_span"]["bandwidth_hz"]
+    assert sample["raw_segment"]["bandwidth_hz"] < sample["measured_characterization"]["occupied_bandwidth_hz"]
     assert sample["context"]["bandplan_service"] == "FM Broadcast"
+    assert sample["context"]["profile_context"] == "fm_broadcast"
     assert sample["classification"]["candidate"] == "unknown"
+    assert sample["classification"]["context_only"] is False
 
 
 def test_make_engine_can_seed_isolated_characterization_jsonl_paths(tmp_path) -> None:

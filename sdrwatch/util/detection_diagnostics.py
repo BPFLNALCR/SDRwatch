@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-from sdrwatch.detection.types import CharacterizationEvidence, CharacterizationSpan, Segment
+from sdrwatch.detection.types import CharacterizationEvidence, CharacterizationSpan, DeviceTelemetrySnapshot, Segment
 from sdrwatch.util.time import utc_now_str
 
 
@@ -27,6 +27,222 @@ def build_characterization_record(*, evidence: CharacterizationEvidence) -> Dict
     record = evidence.to_record()
     record.setdefault("time_utc", utc_now_str())
     return record
+
+
+def _get_attr(source: Any, attr: str, default: Any = None) -> Any:
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        return source.get(attr, default)
+    return getattr(source, attr, default)
+
+
+def _clean_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(str(value)))
+        except (TypeError, ValueError):
+            return None
+
+
+def _bin_width_hz(args: Any) -> Optional[float]:
+    sample_rate = _clean_float(_get_attr(args, "samp_rate", _get_attr(args, "sample_rate_hz")))
+    fft = _clean_int(_get_attr(args, "fft"))
+    if sample_rate is None or fft in (None, 0):
+        return None
+    return float(sample_rate) / float(fft)
+
+
+def _call_or_value(value: Any) -> Any:
+    if callable(value):
+        try:
+            return value()
+        except TypeError:
+            return None
+        except Exception:
+            return None
+    return value
+
+
+def _supported_gains(dev: Any) -> Optional[list[float]]:
+    value = _call_or_value(_get_attr(dev, "valid_gains_db"))
+    if value is None:
+        value = _call_or_value(_get_attr(dev, "get_gains"))
+    if value is None:
+        return None
+    try:
+        return [float(item) for item in value]
+    except TypeError:
+        return None
+
+
+def build_device_telemetry_snapshot(
+    args: Any,
+    source: Any = None,
+    *,
+    device_key: Optional[str] = None,
+    selected_profile: Optional[str] = None,
+) -> Dict[str, Any]:
+    dev = _get_attr(source, "dev")
+    requested_gain_raw = _get_attr(args, "gain")
+    requested_gain = None if requested_gain_raw in (None, "") else str(requested_gain_raw)
+    gain_mode_raw = _get_attr(args, "gain_mode")
+    gain_mode = str(gain_mode_raw or ("auto" if str(requested_gain or "").lower() == "auto" else "manual"))
+    sample_rate = _clean_float(_get_attr(args, "samp_rate", _get_attr(args, "sample_rate_hz")))
+    fft = _clean_int(_get_attr(args, "fft"))
+    actual_gain = _clean_float(_get_attr(dev, "gain", _get_attr(source, "gain")))
+    supported_gains = _supported_gains(dev)
+    actual_sample_rate = _clean_float(_get_attr(dev, "sample_rate", _get_attr(source, "sample_rate")))
+    device_serial = _get_attr(dev, "serial_number", _get_attr(source, "serial_number"))
+    device_tuner = _get_attr(dev, "tuner_type", _get_attr(dev, "tuner", _get_attr(source, "tuner")))
+    device_index = _clean_int(_get_attr(source, "device_index", _get_attr(args, "device_index")))
+    label = _get_attr(source, "device", _get_attr(source, "device_label"))
+    driver = _get_attr(args, "driver", "rtlsdr_native")
+    key = device_key or _get_attr(args, "device_key")
+    unavailable_fields: list[str] = []
+    required_nullable = {
+        "actual_gain": actual_gain,
+        "supported_gains": supported_gains,
+        "device_index": device_index,
+        "device_serial": device_serial,
+        "device_tuner": device_tuner,
+        "actual_sample_rate_hz": actual_sample_rate,
+    }
+    for field, value in required_nullable.items():
+        if value is None:
+            unavailable_fields.append(field)
+    if label is None:
+        unavailable_fields.append("device_label")
+    snapshot = DeviceTelemetrySnapshot(
+        event="device_telemetry",
+        device_key=str(key) if key not in (None, "") else None,
+        device_kind=(str(key).split(":", 1)[0] if key not in (None, "") and ":" in str(key) else None),
+        device_index=device_index,
+        device_serial=(str(device_serial) if device_serial not in (None, "") else None),
+        device_label=(str(label) if label not in (None, "") else None),
+        device_tuner=(str(device_tuner) if device_tuner not in (None, "") else None),
+        driver=str(driver) if driver not in (None, "") else None,
+        requested_gain=requested_gain,
+        actual_gain=actual_gain,
+        gain_mode=gain_mode,
+        supported_gains=supported_gains,
+        sample_rate_hz=sample_rate,
+        actual_sample_rate_hz=actual_sample_rate,
+        fft=fft,
+        bin_width_hz=_bin_width_hz(args),
+        selected_profile=selected_profile if selected_profile is not None else _get_attr(args, "profile"),
+        unavailable_fields=unavailable_fields,
+    )
+    return snapshot.to_record()
+
+
+def _dict_attr(source: Any, attr: str) -> Dict[str, Any]:
+    value = _get_attr(source, attr, {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def build_effective_parameter_manifest(
+    args: Any,
+    *,
+    job_id: Optional[str] = None,
+    device_telemetry: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    requested_profile = _get_attr(args, "_requested_profile", _get_attr(args, "profile"))
+    profile_applied = bool(_get_attr(args, "_profile_applied", bool(_get_attr(args, "_applied_profile", None))))
+    applied_profile = _get_attr(args, "_applied_profile", requested_profile if profile_applied else None)
+    device = dict(device_telemetry or _dict_attr(args, "_device_telemetry"))
+    requested_gain = device.get("requested_gain")
+    if requested_gain is None:
+        gain_value = _get_attr(args, "gain")
+        requested_gain = None if gain_value in (None, "") else str(gain_value)
+    max_width = _clean_float(_get_attr(args, "max_detection_width_hz"))
+    max_persist_width = _clean_float(_get_attr(args, "max_persist_width_hz")) or max_width
+    max_card_width = _clean_float(_get_attr(args, "max_card_width_hz")) or max_width
+    manifest = {
+        "job_id": job_id or _get_attr(args, "job_id"),
+        "requested_profile": requested_profile,
+        "applied_profile": applied_profile,
+        "profile_applied": profile_applied,
+        "profile_skip_reason": _get_attr(args, "_profile_skip_reason"),
+        "operator_overrides": _dict_attr(args, "_operator_overrides"),
+        "profile_defaults": _dict_attr(args, "_profile_defaults"),
+        "fallback_defaults": _dict_attr(args, "_fallback_defaults"),
+        "final_effective_params": {
+            "start_hz": _clean_int(_get_attr(args, "start")),
+            "stop_hz": _clean_int(_get_attr(args, "stop")),
+            "step_hz": _clean_float(_get_attr(args, "step")),
+            "sample_rate_hz": _clean_float(_get_attr(args, "samp_rate")),
+            "fft": _clean_int(_get_attr(args, "fft")),
+            "avg": _clean_int(_get_attr(args, "avg")),
+            "bin_width_hz": _bin_width_hz(args),
+            "driver": _get_attr(args, "driver"),
+        },
+        "frequency_range_hz": {
+            "start_hz": _clean_int(_get_attr(args, "start")),
+            "stop_hz": _clean_int(_get_attr(args, "stop")),
+        },
+        "persistence": {
+            "mode": _get_attr(args, "persistence_mode"),
+            "hit_ratio": _clean_float(_get_attr(args, "persistence_hit_ratio")),
+            "min_seconds": _clean_float(_get_attr(args, "persistence_min_seconds")),
+            "min_hits": _clean_int(_get_attr(args, "persistence_min_hits")),
+            "min_windows": _clean_int(_get_attr(args, "persistence_min_windows")),
+            "min_sweep_loops": _clean_int(_get_attr(args, "persistence_min_sweep_loops")) or 1,
+        },
+        "revisit": {
+            "two_pass": bool(_get_attr(args, "two_pass", False)),
+            "fft": _clean_int(_get_attr(args, "revisit_fft")),
+            "avg": _clean_int(_get_attr(args, "revisit_avg")),
+            "margin_hz": _clean_float(_get_attr(args, "revisit_margin_hz")),
+            "span_limit_hz": _clean_float(_get_attr(args, "revisit_span_limit_hz")),
+            "max_bands": _clean_int(_get_attr(args, "revisit_max_bands")),
+            "floor_threshold_db": _clean_float(_get_attr(args, "revisit_floor_threshold_db")),
+        },
+        "span_controls": {
+            "segment_center_mode": _get_attr(args, "segment_center_mode"),
+            "segment_centroid_span_hz": _clean_float(_get_attr(args, "segment_centroid_span_hz")),
+            "segment_centroid_drop_db": _clean_float(_get_attr(args, "segment_centroid_drop_db")),
+            "segment_centroid_floor_margin_db": _clean_float(_get_attr(args, "segment_centroid_floor_margin_db")),
+            "match_bandwidth_pad_hz": _clean_float(_get_attr(args, "match_bandwidth_pad_hz")),
+            "min_match_bandwidth_hz": _clean_float(_get_attr(args, "min_match_bandwidth_hz")),
+            "display_bandwidth_pad_hz": _clean_float(_get_attr(args, "display_bandwidth_pad_hz")),
+            "min_display_bandwidth_hz": _clean_float(_get_attr(args, "min_display_bandwidth_hz")),
+            "center_match_hz": _clean_float(_get_attr(args, "center_match_hz")),
+            "max_persist_width_hz": max_persist_width,
+            "max_card_width_hz": max_card_width,
+            "max_detection_width_hz": max_width,
+        },
+        "gain": {
+            "requested_gain": requested_gain,
+            "gain_mode": device.get("gain_mode") or ("auto" if str(requested_gain or "").lower() == "auto" else "manual"),
+            "actual_gain": device.get("actual_gain"),
+            "supported_gains": device.get("supported_gains"),
+        },
+        "device": {
+            "device_key": device.get("device_key") or _get_attr(args, "device_key"),
+            "device_kind": device.get("device_kind"),
+            "device_index": device.get("device_index"),
+            "device_serial": device.get("device_serial"),
+            "device_label": device.get("device_label"),
+            "driver": device.get("driver") or _get_attr(args, "driver"),
+            "tuner": device.get("device_tuner"),
+            "unavailable_fields": list(device.get("unavailable_fields") or []),
+        },
+    }
+    return manifest
 
 
 def _count_key(counter: Dict[str, int], key: Any) -> None:

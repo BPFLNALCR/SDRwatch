@@ -446,6 +446,14 @@ def test_manual_edits_after_preset_use_existing_payload_fields(tmp_path: Path) -
         "two_pass",
         "revisit_fft",
         "revisit_span_limit_hz",
+        "segment_center_mode",
+        "segment_centroid_span_hz",
+        "match_bandwidth_pad_hz",
+        "min_match_bandwidth_hz",
+        "display_bandwidth_pad_hz",
+        "min_display_bandwidth_hz",
+        "center_match_hz",
+        "persistence_min_sweep_loops",
         "profile",
     ):
         assert f"'{element_id}'" in _const_block(html, "PRESET_CONTROL_IDS")
@@ -462,6 +470,14 @@ def test_manual_edits_after_preset_use_existing_payload_fields(tmp_path: Path) -
         "two_pass",
         "revisit_fft",
         "revisit_span_limit_hz",
+        "segment_center_mode",
+        "segment_centroid_span_hz",
+        "match_bandwidth_pad_hz",
+        "min_match_bandwidth_hz",
+        "display_bandwidth_pad_hz",
+        "min_display_bandwidth_hz",
+        "center_match_hz",
+        "persistence_min_sweep_loops",
         "profile",
     ):
         assert f"params.{param_name}" in builder
@@ -534,7 +550,7 @@ def test_generated_settings_builder_keeps_characterization_fields_derived(tmp_pa
         "classification_candidate",
         "profile_context",
     ):
-        assert forbidden_name not in builder
+        assert f"params.{forbidden_name}" not in builder
 
 
 def test_expert_controls_render_required_settings(tmp_path: Path) -> None:

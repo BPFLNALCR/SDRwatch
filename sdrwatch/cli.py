@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict
 from typing import Any, List, Optional, Set
 
 from sdrwatch.drivers.rtlsdr import HAVE_RTLSDR, RTLSDR_IMPORT_ERROR
@@ -70,6 +71,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--avg", type=int, help="Averaging factor (segments per PSD) (default 8)")
 
     p.add_argument("--driver", type=str, help="Driver key (default rtlsdr_native).")
+    p.add_argument("--device-key", dest="device_key", type=str, help="Controller device key for diagnostics")
     p.add_argument("--gain", type=str, help='Gain in dB or "auto" (default auto)')
 
     p.add_argument("--threshold-db", dest="threshold_db", type=float, help="Detection threshold above noise floor [dB] (default 8.0)")
@@ -105,6 +107,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Minimum distinct windows required before persistence evaluation (default 2)",
     )
     p.add_argument(
+        "--persistence-min-sweep-loops",
+        dest="persistence_min_sweep_loops",
+        type=int,
+        help="Minimum distinct complete sweep loops required before persistence promotion (default 1)",
+    )
+    p.add_argument(
         "--cluster-merge-hz",
         dest="cluster_merge_hz",
         type=float,
@@ -122,6 +130,27 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         type=float,
         help="Clamp persistent detection widths to this maximum Hz span (0 disables)",
     )
+    p.add_argument(
+        "--max-persist-width-hz",
+        dest="max_persist_width_hz",
+        type=float,
+        help="Alias for --max-detection-width-hz for persisted baseline spans",
+    )
+    p.add_argument(
+        "--max-card-width-hz",
+        dest="max_card_width_hz",
+        type=float,
+        help="Alias for --max-detection-width-hz for operator card spans",
+    )
+    p.add_argument("--center-match-hz", dest="center_match_hz", type=float, help="Center-frequency match tolerance [Hz]")
+    p.add_argument("--segment-center-mode", dest="segment_center_mode", choices=["midpoint", "peak", "centroid"], help="Segment center calculation mode")
+    p.add_argument("--segment-centroid-span-hz", dest="segment_centroid_span_hz", type=float, help="Centroid search span around detected segment center [Hz]")
+    p.add_argument("--segment-centroid-drop-db", dest="segment_centroid_drop_db", type=float, help="Centroid mask drop below segment peak [dB]")
+    p.add_argument("--segment-centroid-floor-margin-db", dest="segment_centroid_floor_margin_db", type=float, help="Centroid mask floor margin above noise [dB]")
+    p.add_argument("--match-bandwidth-pad-hz", dest="match_bandwidth_pad_hz", type=float, help="Hz padding for persistence match span")
+    p.add_argument("--min-match-bandwidth-hz", dest="min_match_bandwidth_hz", type=float, help="Minimum persistence match span width [Hz]")
+    p.add_argument("--display-bandwidth-pad-hz", dest="display_bandwidth_pad_hz", type=float, help="Hz padding for operator display span")
+    p.add_argument("--min-display-bandwidth-hz", dest="min_display_bandwidth_hz", type=float, help="Minimum operator display span width [Hz]")
     p.add_argument("--cfar", choices=["off", "os", "ca"], help="CFAR mode (default: os)")
     p.add_argument("--cfar-train", dest="cfar_train", type=int, help="Training cells per side for CFAR (default 24)")
     p.add_argument("--cfar-guard", dest="cfar_guard", type=int, help="Guard cells per side (excluded around CUT) for CFAR (default 4)")
@@ -189,6 +218,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     _set_default(args, args._cli_overrides, "fft", 4096)
     _set_default(args, args._cli_overrides, "avg", 8)
     _set_default(args, args._cli_overrides, "driver", "rtlsdr_native")
+    _set_default(args, args._cli_overrides, "device_key", None)
     _set_default(args, args._cli_overrides, "gain", "auto")
     _set_default(args, args._cli_overrides, "threshold_db", 8.0)
     _set_default(args, args._cli_overrides, "guard_bins", 1)
@@ -198,9 +228,21 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     _set_default(args, args._cli_overrides, "persistence_min_seconds", 10.0)
     _set_default(args, args._cli_overrides, "persistence_min_hits", 2)
     _set_default(args, args._cli_overrides, "persistence_min_windows", 2)
+    _set_default(args, args._cli_overrides, "persistence_min_sweep_loops", 1)
     _set_default(args, args._cli_overrides, "cluster_merge_hz", None)
     _set_default(args, args._cli_overrides, "max_detection_width_ratio", 3.0)
     _set_default(args, args._cli_overrides, "max_detection_width_hz", 0.0)
+    _set_default(args, args._cli_overrides, "max_persist_width_hz", None)
+    _set_default(args, args._cli_overrides, "max_card_width_hz", None)
+    _set_default(args, args._cli_overrides, "center_match_hz", None)
+    _set_default(args, args._cli_overrides, "segment_center_mode", None)
+    _set_default(args, args._cli_overrides, "segment_centroid_span_hz", None)
+    _set_default(args, args._cli_overrides, "segment_centroid_drop_db", None)
+    _set_default(args, args._cli_overrides, "segment_centroid_floor_margin_db", None)
+    _set_default(args, args._cli_overrides, "match_bandwidth_pad_hz", None)
+    _set_default(args, args._cli_overrides, "min_match_bandwidth_hz", None)
+    _set_default(args, args._cli_overrides, "display_bandwidth_pad_hz", None)
+    _set_default(args, args._cli_overrides, "min_display_bandwidth_hz", None)
     _set_default(args, args._cli_overrides, "cfar", "os")
     _set_default(args, args._cli_overrides, "cfar_train", 24)
     _set_default(args, args._cli_overrides, "cfar_guard", 4)
@@ -230,6 +272,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     _set_default(args, args._cli_overrides, "sleep_between_sweeps", 0.0)
     _set_default(args, args._cli_overrides, "tmpdir", os.environ.get("TMPDIR"))
     setattr(args, "abs_power_floor_db", None)
+    _initialize_profile_application_metadata(args)
 
     has_span = hasattr(args, "start") and hasattr(args, "stop")
     if not args.list_profiles and not has_span:
@@ -237,6 +280,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
     if has_span:
         _apply_scan_profile(args, p)
+        _apply_width_cap_aliases(args, getattr(args, "_cli_overrides", set()))
 
     if not args.list_profiles:
         baseline_raw = getattr(args, "baseline_id", None)
@@ -281,6 +325,61 @@ def _set_default(args: argparse.Namespace, overrides: Set[str], attr: str, value
         setattr(args, attr, value)
 
 
+def _apply_width_cap_aliases(args: argparse.Namespace, overrides: Set[str]) -> None:
+    if "max_detection_width_hz" in overrides:
+        return
+    for alias in ("max_persist_width_hz", "max_card_width_hz"):
+        value = getattr(args, alias, None)
+        if value not in (None, ""):
+            setattr(args, "max_detection_width_hz", value)
+            return
+
+
+def _fallback_defaults_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    keys = (
+        "step",
+        "samp_rate",
+        "fft",
+        "avg",
+        "threshold_db",
+        "guard_bins",
+        "min_width_bins",
+        "persistence_mode",
+        "persistence_hit_ratio",
+        "persistence_min_seconds",
+        "persistence_min_hits",
+        "persistence_min_windows",
+        "persistence_min_sweep_loops",
+        "max_detection_width_hz",
+        "gain",
+    )
+    return {key: getattr(args, key) for key in keys if hasattr(args, key)}
+
+
+def _initialize_profile_application_metadata(args: argparse.Namespace) -> None:
+    overrides: Set[str] = getattr(args, "_cli_overrides", set())
+    setattr(args, "_requested_profile", getattr(args, "profile", None))
+    setattr(args, "_applied_profile", None)
+    setattr(args, "_profile_applied", False)
+    setattr(args, "_profile_skip_reason", None)
+    setattr(args, "_profile_defaults", {})
+    setattr(args, "_fallback_defaults", _fallback_defaults_from_args(args))
+    setattr(
+        args,
+        "_operator_overrides",
+        {
+            key: getattr(args, key)
+            for key in sorted(overrides)
+            if key != "profile" and hasattr(args, key)
+        },
+    )
+
+
+def _scan_profile_defaults(profile) -> dict[str, Any]:
+    defaults = asdict(profile)
+    return {key: value for key, value in defaults.items() if value is not None}
+
+
 def _apply_scan_profile(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     profile_name = getattr(args, "profile", None)
     if not profile_name:
@@ -293,6 +392,16 @@ def _apply_scan_profile(args: argparse.Namespace, parser: argparse.ArgumentParse
     requested_low = min(args.start, args.stop)
     requested_high = max(args.start, args.stop)
     if requested_low < profile.f_low_hz or requested_high > profile.f_high_hz:
+        reason = (
+            f"requested span {requested_low/1e6:.3f}-{requested_high/1e6:.3f}MHz "
+            f"outside {profile.name} {profile.f_low_hz/1e6:.3f}-{profile.f_high_hz/1e6:.3f}MHz"
+        )
+        setattr(args, "_requested_profile", profile.name)
+        setattr(args, "_applied_profile", None)
+        setattr(args, "_profile_applied", False)
+        setattr(args, "_profile_skip_reason", reason)
+        setattr(args, "_profile_defaults", {})
+        setattr(args, "_fallback_defaults", _fallback_defaults_from_args(args))
         _log.warning(
             "requested span %.3f-%.3fMHz outside profile '%s' band, skipping profile defaults",
             requested_low / 1e6,
@@ -302,6 +411,12 @@ def _apply_scan_profile(args: argparse.Namespace, parser: argparse.ArgumentParse
         return
 
     overrides: Set[str] = getattr(args, "_cli_overrides", set())
+    setattr(args, "_requested_profile", profile.name)
+    setattr(args, "_applied_profile", profile.name)
+    setattr(args, "_profile_applied", True)
+    setattr(args, "_profile_skip_reason", None)
+    setattr(args, "_profile_defaults", _scan_profile_defaults(profile))
+    setattr(args, "_fallback_defaults", {})
 
     def maybe_set(attr: str, value: Any) -> None:
         if value is None:
@@ -325,6 +440,7 @@ def _apply_scan_profile(args: argparse.Namespace, parser: argparse.ArgumentParse
     maybe_set("persistence_min_seconds", profile.persistence_min_seconds)
     maybe_set("persistence_min_hits", profile.persistence_min_hits)
     maybe_set("persistence_min_windows", profile.persistence_min_windows)
+    maybe_set("persistence_min_sweep_loops", getattr(profile, "persistence_min_sweep_loops", None))
     maybe_set("revisit_fft", profile.revisit_fft)
     maybe_set("revisit_avg", profile.revisit_avg)
     maybe_set("revisit_margin_hz", profile.revisit_margin_hz)

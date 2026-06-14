@@ -13,6 +13,8 @@ from sdrwatch.baseline.store import BaselineContext, Store
 from sdrwatch.detection.types import (
     CharacterizationEvidence,
     CharacterizationSpan,
+    CrossSweepCandidateState,
+    CrossSweepObservation,
     DetectionCluster,
     RevisitTag,
     Segment,
@@ -46,6 +48,11 @@ class DetectionEngine:
         self.baseline_ctx = baseline_ctx
         self.min_hits = max(1, int(min_hits))
         self.min_windows = max(1, int(min_windows))
+        try:
+            raw_min_sweep_loops = int(getattr(args, "persistence_min_sweep_loops", 1) or 1)
+        except Exception:
+            raw_min_sweep_loops = 1
+        self.persistence_min_sweep_loops = max(1, raw_min_sweep_loops)
         self.max_gap_windows = max(1, int(max_gap_windows))
         merge_override = getattr(args, "cluster_merge_hz", None)
         merge_override_val: Optional[float]
@@ -93,6 +100,10 @@ class DetectionEngine:
             width_cap_val = 0.0
         self.max_detection_width_hz = max(0.0, width_cap_val)
         self.clusters: List[DetectionCluster] = []
+        self._cross_sweep_candidates: List[CrossSweepCandidateState] = []
+        self._cross_sweep_max_age_loops = max(5, self.persistence_min_sweep_loops * 3)
+        self._cross_sweep_max_candidates = max(32, int(getattr(args, "cross_sweep_max_candidates", 256) or 256))
+        self._current_sweep_loop_id = 1
         self._last_window_idx = -1
         self.spur_tolerance_hz = 5_000.0
         self.spur_margin_db = 4.0
@@ -170,12 +181,24 @@ class DetectionEngine:
             payload.setdefault("profile", self.profile_name)
         self.logger.log(event, **payload)
 
-    def ingest(self, window_idx: int, segments: List[Segment]) -> Tuple[int, int, int, int]:
+    def ingest(
+        self,
+        window_idx: int,
+        segments: List[Segment],
+        *,
+        sweep_loop_id: Optional[int] = None,
+    ) -> Tuple[int, int, int, int]:
         self._last_window_idx = max(self._last_window_idx, window_idx)
+        if sweep_loop_id is not None:
+            try:
+                self._current_sweep_loop_id = max(1, int(sweep_loop_id))
+            except Exception:
+                self._current_sweep_loop_id = 1
         accepted = 0
         spur_ignored = 0
         if not segments:
             self._prune_clusters(window_idx)
+            self._prune_cross_sweep_candidates(self._current_sweep_loop_id)
             emitted, new_emitted = self._drain_pending_emits()
             return accepted, spur_ignored, emitted, new_emitted
         timestamp = utc_now_str()
@@ -183,9 +206,10 @@ class DetectionEngine:
             if self._spur_should_ignore(seg):
                 spur_ignored += 1
                 continue
-            self._record_hit(window_idx, seg, timestamp)
+            self._record_hit(window_idx, seg, timestamp, self._current_sweep_loop_id)
             accepted += 1
         self._prune_clusters(window_idx)
+        self._prune_cross_sweep_candidates(self._current_sweep_loop_id)
         emitted, new_emitted = self._drain_pending_emits()
         return accepted, spur_ignored, emitted, new_emitted
 
@@ -193,7 +217,7 @@ class DetectionEngine:
         self._prune_clusters(self._last_window_idx if self._last_window_idx >= 0 else 0, force=True)
         return self._drain_pending_emits()
 
-    def _record_hit(self, window_idx: int, seg: Segment, timestamp: str):
+    def _record_hit(self, window_idx: int, seg: Segment, timestamp: str, sweep_loop_id: int):
         cluster = self._find_cluster(seg)
         if cluster is None:
             cluster = DetectionCluster(
@@ -205,6 +229,7 @@ class DetectionEngine:
                 last_window=window_idx,
                 hits=1,
                 windows={window_idx},
+                sweep_loop_ids={int(sweep_loop_id)},
                 best_seg=seg,
             )
             self.clusters.append(cluster)
@@ -215,6 +240,7 @@ class DetectionEngine:
             cluster.last_window = window_idx
             cluster.hits += 1
             cluster.windows.add(window_idx)
+            cluster.sweep_loop_ids.add(int(sweep_loop_id))
             if seg.snr_db >= cluster.best_seg.snr_db:
                 cluster.best_seg = seg
 
@@ -361,6 +387,8 @@ class DetectionEngine:
             return
         qualifies, reasons = self._cluster_gate_status(cluster)
         if not qualifies:
+            if self.persistence_min_sweep_loops > 1 and self._cluster_cross_sweep_eligible(cluster):
+                self._record_cross_sweep_observation(cluster)
             best_seg = cluster.best_seg
             self._log(
                 "cluster_reject",
@@ -378,7 +406,229 @@ class DetectionEngine:
                 reasons=reasons,
             )
             return
+        if self.persistence_min_sweep_loops > 1:
+            self._record_cross_sweep_observation(cluster)
+            cluster.emitted = True
+            return
         self._emit_detection(cluster)
+
+    def _cluster_cross_sweep_eligible(self, cluster: DetectionCluster) -> bool:
+        width_hz = float(cluster.f_high_hz - cluster.f_low_hz)
+        if width_hz < self.min_width_hz:
+            return False
+        return cluster.hits >= 1
+
+    def _record_cross_sweep_observation(self, cluster: DetectionCluster) -> None:
+        if self.persistence_min_sweep_loops <= 1:
+            return
+        sweep_loop_id = max(cluster.sweep_loop_ids) if cluster.sweep_loop_ids else self._current_sweep_loop_id
+        best_seg = cluster.best_seg
+        center_hz = self._cluster_center_hz(cluster)
+        raw_low = int(cluster.f_low_hz)
+        raw_high = int(cluster.f_high_hz)
+        match_low, match_high = self._shape_match_span(center_hz, raw_low, raw_high)
+        match_width = max(float(match_high - match_low), float(best_seg.bandwidth_hz), self.bin_hz)
+        observed_at = utc_now_str()
+        observation = CrossSweepObservation(
+            sweep_loop_id=int(sweep_loop_id),
+            window_idx=int(cluster.last_window),
+            center_hz=int(center_hz),
+            raw_low_hz=raw_low,
+            raw_high_hz=raw_high,
+            raw_bandwidth_hz=max(float(raw_high - raw_low), float(best_seg.bandwidth_hz), self.bin_hz),
+            match_low_hz=match_low,
+            match_high_hz=match_high,
+            match_bandwidth_hz=match_width,
+            measured_bandwidth_hz=max(float(raw_high - raw_low), float(best_seg.bandwidth_hz), self.bin_hz),
+            source_pass="coarse",
+            snr_db=float(best_seg.snr_db),
+            peak_db=float(best_seg.peak_db),
+            noise_db=float(best_seg.noise_db),
+            observed_at_utc=observed_at,
+        )
+        candidate = self._find_cross_sweep_candidate(observation)
+        if candidate is None:
+            candidate = CrossSweepCandidateState(
+                candidate_id=f"cs-{self.baseline_ctx.id}-{int(center_hz)}",
+                baseline_id=self.baseline_ctx.id,
+                first_observed_sweep_id=int(sweep_loop_id),
+                last_observed_sweep_id=int(sweep_loop_id),
+                observation_count=0,
+                observed_sweep_ids=set(),
+                stable_center_hz=int(center_hz),
+                match_low_hz=match_low,
+                match_high_hz=match_high,
+                match_bandwidth_hz=match_width,
+                measured_bandwidth_hz=observation.measured_bandwidth_hz,
+                last_raw_segment=best_seg,
+                last_observation=observation,
+            )
+            self._cross_sweep_candidates.append(candidate)
+            self._log(
+                "persistence_decision",
+                action="cross_sweep_no_match",
+                baseline_id=self.baseline_ctx.id,
+                candidate_id=candidate.candidate_id,
+                center_hz=int(center_hz),
+                reason="created candidate",
+            )
+
+        previous_loop_count = candidate.observation_loop_count
+        candidate.observation_count += 1
+        if int(sweep_loop_id) not in candidate.observed_sweep_ids:
+            candidate.observed_sweep_ids.add(int(sweep_loop_id))
+            candidate.last_observed_sweep_id = int(sweep_loop_id)
+            loop_count = candidate.observation_loop_count
+            if loop_count > 0:
+                candidate.stable_center_hz = int(
+                    round(
+                        (
+                            float(candidate.stable_center_hz * max(loop_count - 1, 0))
+                            + float(center_hz)
+                        )
+                        / float(loop_count)
+                    )
+                )
+        candidate.match_low_hz = match_low
+        candidate.match_high_hz = match_high
+        candidate.match_bandwidth_hz = match_width
+        candidate.measured_bandwidth_hz = observation.measured_bandwidth_hz
+        candidate.last_raw_segment = best_seg
+        candidate.last_observation = observation
+
+        action = "cross_sweep_match" if previous_loop_count > 0 else "cross_sweep_observe"
+        self._log(
+            "cross_sweep_observation",
+            baseline_id=self.baseline_ctx.id,
+            candidate_id=candidate.candidate_id,
+            action=action,
+            sweep_loop_id=int(sweep_loop_id),
+            window_idx=int(cluster.last_window),
+            center_hz=int(center_hz),
+            match_low_hz=match_low,
+            match_high_hz=match_high,
+            measured_bandwidth_hz=observation.measured_bandwidth_hz,
+            observation_count=candidate.observation_count,
+            observation_loop_count=candidate.observation_loop_count,
+            required_loop_count=self.persistence_min_sweep_loops,
+            source_pass="coarse",
+        )
+        self._log(
+            "persistence_decision",
+            action=("cross_sweep_match" if previous_loop_count > 0 else "cross_sweep_observe"),
+            baseline_id=self.baseline_ctx.id,
+            candidate_id=candidate.candidate_id,
+            center_hz=int(center_hz),
+            observation_count=candidate.observation_count,
+            observation_loop_count=candidate.observation_loop_count,
+            required_loop_count=self.persistence_min_sweep_loops,
+        )
+        if candidate.observation_loop_count >= self.persistence_min_sweep_loops:
+            self._promote_cross_sweep_candidate(candidate)
+
+    def _find_cross_sweep_candidate(
+        self,
+        observation: CrossSweepObservation,
+    ) -> Optional[CrossSweepCandidateState]:
+        for candidate in self._cross_sweep_candidates:
+            if candidate.promotion_ready:
+                continue
+            if self._cross_sweep_candidate_matches(candidate, observation):
+                return candidate
+        return None
+
+    def _cross_sweep_candidate_matches(
+        self,
+        candidate: CrossSweepCandidateState,
+        observation: CrossSweepObservation,
+    ) -> bool:
+        center_close = abs(int(observation.center_hz) - int(candidate.stable_center_hz)) <= self.center_match_hz
+        spans_overlap = not (
+            observation.match_high_hz < (candidate.match_low_hz - self.freq_merge_hz)
+            or observation.match_low_hz > (candidate.match_high_hz + self.freq_merge_hz)
+        )
+        if not (center_close or spans_overlap):
+            return False
+        previous_width = max(float(candidate.match_bandwidth_hz), self.bin_hz)
+        observed_width = max(float(observation.match_bandwidth_hz), self.bin_hz)
+        max_ratio = float(self.max_detection_width_ratio)
+        if previous_width > 0.0 and observed_width > previous_width * max_ratio:
+            return False
+        if observed_width > 0.0 and previous_width > observed_width * max_ratio:
+            return False
+        return True
+
+    def _promote_cross_sweep_candidate(self, candidate: CrossSweepCandidateState) -> None:
+        if candidate.promotion_ready:
+            return
+        candidate.promotion_ready = True
+        obs = candidate.last_observation
+        raw = candidate.last_raw_segment
+        timestamp = obs.observed_at_utc
+        cluster = DetectionCluster(
+            f_low_hz=int(raw.f_low_hz),
+            f_high_hz=int(raw.f_high_hz),
+            first_seen_ts=timestamp,
+            last_seen_ts=timestamp,
+            first_window=int(obs.window_idx),
+            last_window=int(obs.window_idx),
+            hits=max(candidate.observation_loop_count, candidate.observation_count),
+            windows=set(range(candidate.observation_loop_count)),
+            sweep_loop_ids=set(candidate.observed_sweep_ids),
+            best_seg=raw,
+            center_weight_sum=float(candidate.stable_center_hz),
+            center_weight_total=1.0,
+        )
+        self._log(
+            "persistence_decision",
+            action="cross_sweep_promote",
+            baseline_id=self.baseline_ctx.id,
+            candidate_id=candidate.candidate_id,
+            observation_count=candidate.observation_count,
+            observation_loop_count=candidate.observation_loop_count,
+            required_loop_count=self.persistence_min_sweep_loops,
+            center_hz=int(candidate.stable_center_hz),
+            match_width_hz=float(candidate.match_bandwidth_hz),
+        )
+        self._emit_detection(cluster)
+        self._cross_sweep_candidates = [
+            item for item in self._cross_sweep_candidates if item.candidate_id != candidate.candidate_id
+        ]
+
+    def _prune_cross_sweep_candidates(self, current_sweep_loop_id: int) -> None:
+        if self.persistence_min_sweep_loops <= 1:
+            return
+        kept: List[CrossSweepCandidateState] = []
+        for candidate in self._cross_sweep_candidates:
+            age = int(current_sweep_loop_id) - int(candidate.last_observed_sweep_id)
+            if age > self._cross_sweep_max_age_loops:
+                candidate.rejection_reason = "expired before required loop count"
+                self._log(
+                    "persistence_decision",
+                    action="cross_sweep_reject",
+                    baseline_id=self.baseline_ctx.id,
+                    candidate_id=candidate.candidate_id,
+                    reason=candidate.rejection_reason,
+                    observation_count=candidate.observation_count,
+                    observation_loop_count=candidate.observation_loop_count,
+                    required_loop_count=self.persistence_min_sweep_loops,
+                )
+                continue
+            kept.append(candidate)
+        kept.sort(key=lambda item: item.last_observed_sweep_id, reverse=True)
+        overflow = kept[self._cross_sweep_max_candidates :]
+        for candidate in overflow:
+            self._log(
+                "persistence_decision",
+                action="cross_sweep_reject",
+                baseline_id=self.baseline_ctx.id,
+                candidate_id=candidate.candidate_id,
+                reason="candidate limit exceeded",
+                observation_count=candidate.observation_count,
+                observation_loop_count=candidate.observation_loop_count,
+                required_loop_count=self.persistence_min_sweep_loops,
+            )
+        self._cross_sweep_candidates = kept[: self._cross_sweep_max_candidates]
 
     def _cluster_gate_status(self, cluster: DetectionCluster) -> Tuple[bool, List[str]]:
         reasons: List[str] = []

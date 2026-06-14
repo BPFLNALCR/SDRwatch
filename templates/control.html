@@ -287,12 +287,68 @@
                 <input id="max_detection_width_hz" class="input" type="number" value="" placeholder="none" min="0" autocomplete="off" title="Discard detections wider than this Hz value" />
               </div>
               <div class="field">
+                <label for="max_persist_width_hz">Max Persist Width (Hz)</label>
+                <input id="max_persist_width_hz" class="input" type="number" value="" placeholder="=max width" min="0" autocomplete="off" title="Mapped to scanner max width" />
+              </div>
+              <div class="field">
+                <label for="max_card_width_hz">Max Card Width (Hz)</label>
+                <input id="max_card_width_hz" class="input" type="number" value="" placeholder="=max width" min="0" autocomplete="off" title="Mapped to scanner max width" />
+              </div>
+              <div class="field">
                 <label for="max_detection_width_ratio">Max Width Ratio</label>
                 <input id="max_detection_width_ratio" class="input" type="number" step="0.1" value="3.0" min="0" autocomplete="off" title="Discard detections wider than this fraction of a sweep" />
               </div>
               <div class="field">
                 <label for="new_ema_occ">New Signal EMA Occ</label>
                 <input id="new_ema_occ" class="input" type="number" step="0.01" value="0.02" min="0" max="1" autocomplete="off" title="Initial occupancy estimate for new signals" />
+              </div>
+            </div>
+          </fieldset>
+
+          <!-- Characterization Span Settings -->
+          <fieldset class="border border-slate-700/50 rounded-lg p-3">
+            <legend class="text-sm font-medium text-cyan-400 px-2">Characterization Spans</legend>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+              <div class="field">
+                <label for="segment_center_mode">Segment Center</label>
+                <select id="segment_center_mode" class="input" autocomplete="off">
+                  <option value="">Default</option>
+                  <option value="midpoint">Midpoint</option>
+                  <option value="peak">Peak</option>
+                  <option value="centroid">Centroid</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="segment_centroid_span_hz">Centroid Span (Hz)</label>
+                <input id="segment_centroid_span_hz" class="input" type="number" value="" placeholder="auto" min="0" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="segment_centroid_drop_db">Centroid Drop (dB)</label>
+                <input id="segment_centroid_drop_db" class="input" type="number" step="0.5" value="" placeholder="auto" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="segment_centroid_floor_margin_db">Centroid Floor (dB)</label>
+                <input id="segment_centroid_floor_margin_db" class="input" type="number" step="0.5" value="" placeholder="auto" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="center_match_hz">Center Match (Hz)</label>
+                <input id="center_match_hz" class="input" type="number" value="" placeholder="auto" min="0" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="match_bandwidth_pad_hz">Match Pad (Hz)</label>
+                <input id="match_bandwidth_pad_hz" class="input" type="number" value="" placeholder="auto" min="0" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="min_match_bandwidth_hz">Min Match Width (Hz)</label>
+                <input id="min_match_bandwidth_hz" class="input" type="number" value="" placeholder="auto" min="0" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="display_bandwidth_pad_hz">Display Pad (Hz)</label>
+                <input id="display_bandwidth_pad_hz" class="input" type="number" value="" placeholder="auto" min="0" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="min_display_bandwidth_hz">Min Display Width (Hz)</label>
+                <input id="min_display_bandwidth_hz" class="input" type="number" value="" placeholder="auto" min="0" autocomplete="off" />
               </div>
             </div>
           </fieldset>
@@ -354,6 +410,10 @@
               <div class="field">
                 <label for="persistence_min_windows">Min Windows</label>
                 <input id="persistence_min_windows" class="input" type="number" value="1" min="1" autocomplete="off" title="Min windows before persistence eval" />
+              </div>
+              <div class="field">
+                <label for="persistence_min_sweep_loops">Min Sweep Loops</label>
+                <input id="persistence_min_sweep_loops" class="input" type="number" value="1" min="1" autocomplete="off" title="Min full sweep loops before persistence eval" />
               </div>
             </div>
           </fieldset>
@@ -656,13 +716,25 @@ const SAFE_SCAN_DEFAULTS = {
   cfar_alpha_db: '8',
   cluster_merge_hz: '',
   max_detection_width_hz: '',
+  max_persist_width_hz: '',
+  max_card_width_hz: '',
   max_detection_width_ratio: '3.0',
   new_ema_occ: '0.02',
+  segment_center_mode: '',
+  segment_centroid_span_hz: '',
+  segment_centroid_drop_db: '',
+  segment_centroid_floor_margin_db: '',
+  center_match_hz: '',
+  match_bandwidth_pad_hz: '',
+  min_match_bandwidth_hz: '',
+  display_bandwidth_pad_hz: '',
+  min_display_bandwidth_hz: '',
   persistence_mode: '',
   persistence_hit_ratio: '0.6',
   persistence_min_seconds: '10',
   persistence_min_hits: '1',
   persistence_min_windows: '1',
+  persistence_min_sweep_loops: '1',
   two_pass: false,
   revisit_fft: '',
   revisit_avg: '',
@@ -729,12 +801,24 @@ const SCAN_PRESETS = {
       cfar_alpha_db: '6',
       cluster_merge_hz: '12000',
       max_detection_width_hz: '270000',
+      max_persist_width_hz: '270000',
+      max_card_width_hz: '270000',
       max_detection_width_ratio: '2.5',
+      segment_center_mode: 'centroid',
+      segment_centroid_span_hz: '240000',
+      segment_centroid_drop_db: '20',
+      segment_centroid_floor_margin_db: '2',
+      center_match_hz: '60000',
+      match_bandwidth_pad_hz: '10000',
+      min_match_bandwidth_hz: '80000',
+      display_bandwidth_pad_hz: '30000',
+      min_display_bandwidth_hz: '200000',
       persistence_mode: '',
       persistence_hit_ratio: '0.25',
       persistence_min_seconds: '2',
       persistence_min_hits: '1',
       persistence_min_windows: '1',
+      persistence_min_sweep_loops: '1',
       two_pass: true,
       revisit_fft: '32768',
       revisit_avg: '4',
@@ -769,6 +853,7 @@ const SCAN_PRESETS = {
       persistence_min_seconds: '10',
       persistence_min_hits: '2',
       persistence_min_windows: '2',
+      persistence_min_sweep_loops: '2',
       two_pass: false
     }
   },
@@ -819,12 +904,24 @@ const PRESET_CONTROL_IDS = [
   'cfar_alpha_db',
   'cluster_merge_hz',
   'max_detection_width_hz',
+  'max_persist_width_hz',
+  'max_card_width_hz',
   'max_detection_width_ratio',
+  'segment_center_mode',
+  'segment_centroid_span_hz',
+  'segment_centroid_drop_db',
+  'segment_centroid_floor_margin_db',
+  'center_match_hz',
+  'match_bandwidth_pad_hz',
+  'min_match_bandwidth_hz',
+  'display_bandwidth_pad_hz',
+  'min_display_bandwidth_hz',
   'persistence_mode',
   'persistence_hit_ratio',
   'persistence_min_seconds',
   'persistence_min_hits',
   'persistence_min_windows',
+  'persistence_min_sweep_loops',
   'two_pass',
   'revisit_fft',
   'revisit_avg',
@@ -1432,11 +1529,46 @@ function buildScanJobPayload() {
   const maxDetectionWidthHz = getVal('max_detection_width_hz');
   if (maxDetectionWidthHz !== undefined) params.max_detection_width_hz = maxDetectionWidthHz;
 
+  const maxPersistWidthHz = getVal('max_persist_width_hz');
+  if (maxPersistWidthHz !== undefined) params.max_persist_width_hz = maxPersistWidthHz;
+
+  const maxCardWidthHz = getVal('max_card_width_hz');
+  if (maxCardWidthHz !== undefined) params.max_card_width_hz = maxCardWidthHz;
+
   const maxDetectionWidthRatio = getVal('max_detection_width_ratio');
   if (maxDetectionWidthRatio !== undefined) params.max_detection_width_ratio = maxDetectionWidthRatio;
 
   const newEmaOcc = getVal('new_ema_occ');
   if (newEmaOcc !== undefined) params.new_ema_occ = newEmaOcc;
+
+  const segmentCenterMode = getSelect('segment_center_mode');
+  if (segmentCenterMode) params.segment_center_mode = segmentCenterMode;
+
+  const segmentCentroidSpanHz = getVal('segment_centroid_span_hz');
+  if (segmentCentroidSpanHz !== undefined) params.segment_centroid_span_hz = segmentCentroidSpanHz;
+
+  const segmentCentroidDropDb = getVal('segment_centroid_drop_db');
+  if (segmentCentroidDropDb !== undefined) params.segment_centroid_drop_db = segmentCentroidDropDb;
+
+  const segmentCentroidFloorMarginDb = getVal('segment_centroid_floor_margin_db');
+  if (segmentCentroidFloorMarginDb !== undefined) {
+    params.segment_centroid_floor_margin_db = segmentCentroidFloorMarginDb;
+  }
+
+  const centerMatchHz = getVal('center_match_hz');
+  if (centerMatchHz !== undefined) params.center_match_hz = centerMatchHz;
+
+  const matchBandwidthPadHz = getVal('match_bandwidth_pad_hz');
+  if (matchBandwidthPadHz !== undefined) params.match_bandwidth_pad_hz = matchBandwidthPadHz;
+
+  const minMatchBandwidthHz = getVal('min_match_bandwidth_hz');
+  if (minMatchBandwidthHz !== undefined) params.min_match_bandwidth_hz = minMatchBandwidthHz;
+
+  const displayBandwidthPadHz = getVal('display_bandwidth_pad_hz');
+  if (displayBandwidthPadHz !== undefined) params.display_bandwidth_pad_hz = displayBandwidthPadHz;
+
+  const minDisplayBandwidthHz = getVal('min_display_bandwidth_hz');
+  if (minDisplayBandwidthHz !== undefined) params.min_display_bandwidth_hz = minDisplayBandwidthHz;
 
   const cfar = getSelect('cfar');
   if (cfar) params.cfar = cfar;
@@ -1469,6 +1601,9 @@ function buildScanJobPayload() {
 
   const persistenceMinWindows = getVal('persistence_min_windows', parseInt);
   if (persistenceMinWindows !== undefined) params.persistence_min_windows = persistenceMinWindows;
+
+  const persistenceMinSweepLoops = getVal('persistence_min_sweep_loops', parseInt);
+  if (persistenceMinSweepLoops !== undefined) params.persistence_min_sweep_loops = persistenceMinSweepLoops;
 
   if (getCheck('two_pass')) {
     params.two_pass = true;

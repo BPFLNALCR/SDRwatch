@@ -27,6 +27,7 @@ class ScanProfile:
     persistence_min_seconds: Optional[float] = None
     persistence_min_hits: Optional[int] = None
     persistence_min_windows: Optional[int] = None
+    persistence_min_sweep_loops: Optional[int] = None
     revisit_fft: Optional[int] = None
     revisit_avg: Optional[int] = None
     revisit_margin_hz: Optional[float] = None
@@ -93,6 +94,7 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             persistence_min_seconds=2.0,
             persistence_min_hits=1,
             persistence_min_windows=1,
+            persistence_min_sweep_loops=1,
             revisit_fft=32768,
             revisit_avg=4,
             revisit_margin_hz=200_000.0,
@@ -172,6 +174,7 @@ def serialize_profiles() -> Dict[str, Any]:
                 "persistence_min_seconds": prof.persistence_min_seconds,
                 "persistence_min_hits": prof.persistence_min_hits,
                 "persistence_min_windows": prof.persistence_min_windows,
+                "persistence_min_sweep_loops": prof.persistence_min_sweep_loops,
                 "revisit_fft": prof.revisit_fft,
                 "revisit_avg": prof.revisit_avg,
                 "revisit_margin_hz": prof.revisit_margin_hz,
@@ -192,6 +195,8 @@ def serialize_profiles() -> Dict[str, Any]:
                 "cluster_merge_hz": prof.cluster_merge_hz,
                 "max_detection_width_ratio": prof.max_detection_width_ratio,
                 "max_detection_width_hz": prof.max_detection_width_hz,
+                "max_persist_width_hz": prof.max_detection_width_hz,
+                "max_card_width_hz": prof.max_detection_width_hz,
                 "segment_center_mode": prof.segment_center_mode,
                 "segment_centroid_span_hz": prof.segment_centroid_span_hz,
                 "segment_centroid_drop_db": prof.segment_centroid_drop_db,
