@@ -1,7 +1,7 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current Spec Kit plan
-at specs/003-fm-detection-card-stability/plan.md.
+at specs/007-cross-sweep-persistence-and-telemetry/plan.md.
 
 Use docs/MERGE_REVIEW.md and docs/PROJECT_INVENTORY.md as consolidation and
 repository workflow context. The active development baseline is devControl.
