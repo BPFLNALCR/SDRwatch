@@ -33,6 +33,7 @@ class ScanLogger:
                 continue
         self.run_id = f"run-{int(time.time() * 1000)}-pid{os.getpid()}"
         self.current_sweep: Optional[int] = None
+        self.last_write_ms: Optional[float] = None
 
     @staticmethod
     def _ensure_parent(path: Path) -> None:
@@ -63,6 +64,7 @@ class ScanLogger:
         self.log("sweep_start", **metadata)
 
     def log(self, event: str, **fields: Any) -> None:
+        t0 = time.perf_counter()
         record = {
             "ts": utc_now_str(),
             "run_id": self.run_id,
@@ -79,6 +81,7 @@ class ScanLogger:
                 # Emit to stderr as last resort; avoid silent failure
                 print(f"[scan_logger] write failed to {target}: {exc}", file=sys.stderr)
                 continue
+        self.last_write_ms = (time.perf_counter() - t0) * 1000.0
 
     def emit_error(
         self,

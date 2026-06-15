@@ -301,6 +301,20 @@ def test_basic_controls_render_as_primary_scan_workflow(tmp_path: Path) -> None:
         assert f'id="{element_id}"' in html
 
 
+def test_multi_rtl_panel_does_not_replace_existing_scan_controls(tmp_path: Path) -> None:
+    html = _control_html(tmp_path)
+
+    for expected in (
+        '<option value="rtl_v4_discovery" selected>RTL-SDR v4 Discovery</option>',
+        '<option value="fm_validation">FM Validation</option>',
+        'id="diagnostics_mode"',
+        'id="device_key"',
+        "function buildScanJobPayload()",
+        "fetch('/api/jobs'",
+    ):
+        assert expected in html
+
+
 def test_api_jobs_preserves_basic_payload_and_diagnostics_mode(tmp_path: Path) -> None:
     app, fake = _app(tmp_path)
     response = app.test_client().post(

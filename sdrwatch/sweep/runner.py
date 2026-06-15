@@ -12,7 +12,7 @@ from sdrwatch.baseline.store import Store
 from sdrwatch.drivers.rtlsdr import RTLSDRSource
 from sdrwatch.io.bandplan import Bandplan
 from sdrwatch.sweep.sweeper import Sweeper
-from sdrwatch.util.detection_diagnostics import build_device_telemetry_snapshot
+from sdrwatch.util.detection_diagnostics import build_device_telemetry_snapshot, build_resource_telemetry_snapshot
 from sdrwatch.util.duration import parse_duration_to_seconds
 from sdrwatch.util.logging import get_logger
 from sdrwatch.util.scan_logger import ScanLogger
@@ -25,11 +25,28 @@ class ScannerRunner:
 
     def __init__(self, args):
         self.args = args
+        setattr(self.args, "_role_metadata", self._role_metadata())
         self.store = Store(args.db)
         self.bandplan = Bandplan(args.bandplan)
         self.logger = ScanLogger.from_db_path(args.db, extra_targets=self._extra_targets())
         self.src = None
         self.sweeper: Optional[Sweeper] = None
+
+    def _role_metadata(self) -> Dict[str, object]:
+        keys = (
+            "job_id",
+            "role_run_id",
+            "receiver_role",
+            "role_lane",
+            "source_task",
+            "device_identity",
+            "device_serial",
+            "device_index",
+            "identity_confidence",
+            "active_device_count",
+            "active_role_count",
+        )
+        return {key: getattr(self.args, key, None) for key in keys if getattr(self.args, key, None) is not None}
 
     def _extra_targets(self):
         targets = []
@@ -126,6 +143,9 @@ class ScannerRunner:
         telemetry_event = dict(telemetry)
         event_name = str(telemetry_event.pop("event", "device_telemetry"))
         self.logger.log(event_name, **telemetry_event)
+        resource_event = build_resource_telemetry_snapshot(self.args, pid=os.getpid())
+        resource_name = str(resource_event.pop("event", "resource_telemetry"))
+        self.logger.log(resource_name, **resource_event)
         self.sweeper = Sweeper(self.args, self.store, self.bandplan, baseline_ctx, self.logger)
 
         duration_s, start_time, sweeps_remaining = self._termination_policy()

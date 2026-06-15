@@ -518,6 +518,42 @@
 
   <!-- Sidebar -->
   <div class="space-y-4">
+    <!-- Hardware inventory and role-aware runs -->
+    <div class="card" id="multiRtlPanel">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-semibold">Receiver Hardware</h3>
+        <button type="button" class="btn text-xs" id="hardwareRefreshBtn">Refresh</button>
+      </div>
+      <div class="flex items-center justify-between text-sm mb-2">
+        <span class="text-slate-400">Capability tier</span>
+        <span id="hardwareTierPill" class="pill idle">unknown</span>
+      </div>
+      <div class="text-xs text-slate-400 mb-2">Detected receivers</div>
+      <div id="hardwareInventoryBody" class="space-y-2 text-sm">
+        <div class="text-slate-500">Loading hardware inventory...</div>
+      </div>
+      <div id="unsupportedHardwareBody" class="mt-3 text-xs text-slate-500"></div>
+
+      <div class="border-t border-slate-700/50 mt-4 pt-4">
+        <div class="flex items-center justify-between mb-3">
+          <h4 class="font-semibold text-sm">Manual roles</h4>
+          <button type="button" class="btn text-xs" id="startRoleRunBtn">Start assigned roles</button>
+        </div>
+        <div id="roleAssignmentContainer" class="space-y-2 text-sm">
+          <div class="text-slate-500">Loading role assignments...</div>
+        </div>
+        <div id="roleAssignmentStatus" class="text-xs text-slate-400 mt-2"></div>
+      </div>
+
+      <div class="border-t border-slate-700/50 mt-4 pt-4">
+        <h4 class="font-semibold text-sm mb-2">Role-aware runs</h4>
+        <div id="roleRunsContainer" class="space-y-2 text-sm">
+          <div class="text-slate-500">No role-aware runs loaded.</div>
+        </div>
+        <div id="roleRunStatus" class="text-xs text-slate-400 mt-2"></div>
+      </div>
+    </div>
+
     <!-- Friendly signals -->
     <div class="card">
       <div class="flex items-center justify-between mb-3">
@@ -653,7 +689,16 @@ let friendlySignals = [];
 let activeJob = null;
 let lastJobId = null;
 let commandLookupJobId = null;
+let hardwareInventory = null;
+let roleAssignments = [];
+let roleRuns = [];
 const BASELINE_STORAGE_KEY = 'SDRWATCH_ACTIVE_BASELINE_ID';
+const ROLE_LANES = [
+  { id: 'guard_primary', role: 'GUARD', displayName: 'Friendly Guard' },
+  { id: 'guard_secondary', role: 'GUARD', displayName: 'Watchlist Guard' },
+  { id: 'rover', role: 'ROVER', displayName: 'Rover' },
+  { id: 'reference', role: 'REFERENCE', displayName: 'Reference' }
+];
 
 // Category display info
 const CATEGORY_INFO = {
@@ -691,6 +736,15 @@ const durationInput = document.getElementById('duration_value');
 const scanPresetSelect = document.getElementById('scan_preset');
 const scanPresetDescription = document.getElementById('scan_preset_description');
 const log = document.getElementById('log');
+const hardwareTierPill = document.getElementById('hardwareTierPill');
+const hardwareInventoryBody = document.getElementById('hardwareInventoryBody');
+const unsupportedHardwareBody = document.getElementById('unsupportedHardwareBody');
+const hardwareRefreshBtn = document.getElementById('hardwareRefreshBtn');
+const roleAssignmentContainer = document.getElementById('roleAssignmentContainer');
+const roleAssignmentStatus = document.getElementById('roleAssignmentStatus');
+const startRoleRunBtn = document.getElementById('startRoleRunBtn');
+const roleRunsContainer = document.getElementById('roleRunsContainer');
+const roleRunStatus = document.getElementById('roleRunStatus');
 
 const SAFE_SCAN_DEFAULTS = {
   scan_preset: 'rtl_v4_discovery',
@@ -1075,6 +1129,253 @@ function formatFreq(hz) {
   return (hz / 1000).toFixed(1) + ' kHz';
 }
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[ch]));
+}
+
+function roleLaneMeta(lane) {
+  return ROLE_LANES.find(item => item.id === lane) || { id: lane, role: lane, displayName: lane };
+}
+
+function renderHardwareInventory() {
+  const capability = hardwareInventory?.capability || {};
+  const tier = capability.tier || 'unknown';
+  if (hardwareTierPill) {
+    hardwareTierPill.textContent = capability.label || `Tier ${tier}`;
+    hardwareTierPill.className = 'pill ' + (tier === '0' || tier === 'unknown' ? 'idle' : 'run');
+  }
+
+  const devices = hardwareInventory?.devices || [];
+  if (!hardwareInventoryBody) return;
+  if (!devices.length) {
+    hardwareInventoryBody.innerHTML = '<div class="text-slate-500">No runnable RTL-SDR receivers detected.</div>';
+  } else {
+    hardwareInventoryBody.innerHTML = devices.map(device => {
+      const warnings = (device.warnings || []).map(w => w.code || w.message).filter(Boolean);
+      const warningText = warnings.length ? warnings.join(', ') : '';
+      const busyText = device.busy ? `busy${device.active_job_id ? `: ${device.active_job_id}` : ''}` : 'unlocked';
+      const identity = device.device_identity || device.legacy_device_key || '';
+      const roleText = device.role_lane ? `${device.assigned_role || ''} ${device.role_lane}` : 'unassigned';
+      return `
+        <div class="rounded border border-slate-700/60 bg-slate-900/40 p-2">
+          <div class="flex items-center justify-between gap-2">
+            <div class="font-medium truncate">${escapeHtml(device.label || device.legacy_device_key || 'RTL-SDR')}</div>
+            <span class="text-xs text-slate-400">${escapeHtml(busyText)}</span>
+          </div>
+          <div class="text-xs text-slate-400">index ${escapeHtml(device.runtime_index)} · ${escapeHtml(identity)}</div>
+          <div class="text-xs text-slate-400">serial ${escapeHtml(device.serial || 'missing')} · ${escapeHtml(device.identity_confidence || 'unknown')}</div>
+          <div class="text-xs text-slate-400">role ${escapeHtml(roleText)}</div>
+          ${warningText ? `<div class="text-xs text-amber-300">warning: ${escapeHtml(warningText)}</div>` : ''}
+        </div>`;
+    }).join('');
+  }
+
+  const unsupported = hardwareInventory?.unsupported_hardware || [];
+  if (unsupportedHardwareBody) {
+    unsupportedHardwareBody.innerHTML = unsupported.map(item => {
+      const state = item.detected ? item.support_state : 'planned';
+      return `<div>${escapeHtml(item.hardware_kind)}: ${escapeHtml(state)} / not runnable</div>`;
+    }).join('');
+  }
+}
+
+function renderRoleAssignments() {
+  if (!roleAssignmentContainer) return;
+  const byLane = Object.fromEntries((roleAssignments || []).map(item => [item.role_lane, item]));
+  const devices = (hardwareInventory?.devices || []).filter(device => device.runnable);
+
+  roleAssignmentContainer.innerHTML = ROLE_LANES.map(lane => {
+    const assignment = byLane[lane.id];
+    const selectedIdentity = assignment?.device_identity || '';
+    const warningText = assignment?.warnings?.length
+      ? assignment.warnings.map(w => w.code || w.message).filter(Boolean).join(', ')
+      : '';
+    const options = [
+      '<option value="">Select receiver...</option>',
+      ...devices.map(device => {
+        const identity = device.device_identity || '';
+        const label = `${device.label || device.legacy_device_key} (${identity})`;
+        const selected = identity === selectedIdentity ? ' selected' : '';
+        return `<option value="${escapeHtml(identity)}"${selected}>${escapeHtml(label)}</option>`;
+      })
+    ].join('');
+    return `
+      <div class="rounded border border-slate-700/60 bg-slate-900/40 p-2">
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <div>
+            <div class="font-medium">${escapeHtml(lane.displayName)}</div>
+            <div class="text-xs text-slate-400">${escapeHtml(lane.role)}</div>
+          </div>
+          <button type="button" class="btn text-xs" onclick="clearRoleLane('${escapeHtml(lane.id)}')">Clear</button>
+        </div>
+        <select id="roleLane_${escapeHtml(lane.id)}" class="input text-sm" autocomplete="off">${options}</select>
+        <div class="flex gap-2 mt-2">
+          <button type="button" class="btn btn-primary text-xs" onclick="assignRoleLane('${escapeHtml(lane.id)}')">Assign</button>
+          <span class="text-xs text-slate-400">${assignment ? escapeHtml(assignment.device_identity) : 'not assigned'}</span>
+        </div>
+        ${warningText ? `<div class="text-xs text-amber-300 mt-1">warning: ${escapeHtml(warningText)}</div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+function renderRoleRuns() {
+  if (!roleRunsContainer) return;
+  if (!roleRuns.length) {
+    roleRunsContainer.innerHTML = '<div class="text-slate-500">No role-aware runs.</div>';
+    return;
+  }
+  const terminal = new Set(['finished', 'stopped', 'failed', 'error', 'cancelled']);
+  roleRunsContainer.innerHTML = roleRuns.map(run => {
+    const children = run.child_jobs || [];
+    const childHtml = children.map(child => `
+      <div class="text-xs text-slate-400">
+        ${escapeHtml(child.role_lane)} · ${escapeHtml(child.receiver_role)} · ${escapeHtml(child.device_key)} · ${escapeHtml(child.status)}
+        ${child.error_message ? `<span class="text-red-300"> ${escapeHtml(child.error_message)}</span>` : ''}
+      </div>`).join('');
+    const stopButton = terminal.has(run.status)
+      ? ''
+      : `<button type="button" class="btn text-xs" onclick="stopRoleRun('${escapeHtml(run.role_run_id)}')">Stop group</button>`;
+    return `
+      <div class="rounded border border-slate-700/60 bg-slate-900/40 p-2">
+        <div class="flex items-center justify-between gap-2">
+          <div class="font-medium truncate">${escapeHtml(run.role_run_id)}</div>
+          <span class="text-xs text-slate-400">${escapeHtml(run.status)}</span>
+        </div>
+        ${childHtml || '<div class="text-xs text-slate-500">No child jobs.</div>'}
+        <div class="mt-2">${stopButton}</div>
+      </div>`;
+  }).join('');
+}
+
+async function loadHardwareInventory() {
+  try {
+    const r = await fetch('/api/hardware/inventory', { headers: authHeaders(false) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data?.error || 'Failed to load hardware inventory');
+    hardwareInventory = data;
+    renderHardwareInventory();
+    renderRoleAssignments();
+  } catch (err) {
+    if (hardwareInventoryBody) hardwareInventoryBody.innerHTML = `<div class="text-red-400">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function loadRoleAssignments() {
+  try {
+    const r = await fetch('/api/role-assignments', { headers: authHeaders(false) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data?.error || 'Failed to load role assignments');
+    roleAssignments = data.assignments || [];
+    renderRoleAssignments();
+  } catch (err) {
+    setStatus(roleAssignmentStatus, err.message, true);
+  }
+}
+
+async function assignRoleLane(lane) {
+  const meta = roleLaneMeta(lane);
+  const select = getControl(`roleLane_${lane}`);
+  const deviceIdentity = select?.value?.trim();
+  if (!deviceIdentity) {
+    setStatus(roleAssignmentStatus, 'Select a receiver before assigning a role.', true);
+    return;
+  }
+  try {
+    const r = await fetch(`/api/role-assignments/${encodeURIComponent(lane)}`, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        device_identity: deviceIdentity,
+        role: meta.role,
+        acknowledge_identity_warning: true
+      })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data?.message || data?.error || 'Role assignment failed');
+    setStatus(roleAssignmentStatus, `${meta.displayName} assigned.`);
+    await loadRoleAssignments();
+    await loadHardwareInventory();
+  } catch (err) {
+    setStatus(roleAssignmentStatus, err.message, true);
+  }
+}
+
+async function clearRoleLane(lane) {
+  try {
+    const r = await fetch(`/api/role-assignments/${encodeURIComponent(lane)}`, {
+      method: 'DELETE',
+      headers: authHeaders(false)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data?.message || data?.error || 'Clear assignment failed');
+    setStatus(roleAssignmentStatus, `${roleLaneMeta(lane).displayName} cleared.`);
+    await loadRoleAssignments();
+    await loadHardwareInventory();
+  } catch (err) {
+    setStatus(roleAssignmentStatus, err.message, true);
+  }
+}
+
+async function loadRoleRuns() {
+  try {
+    const r = await fetch('/api/role-runs', { headers: authHeaders(false) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data?.error || 'Failed to load role-aware runs');
+    roleRuns = data.role_runs || [];
+    renderRoleRuns();
+  } catch (err) {
+    setStatus(roleRunStatus, err.message, true);
+  }
+}
+
+async function startAssignedRoleRun() {
+  if (!activeBaselineId) {
+    setStatus(roleRunStatus, 'Select a location before starting role-aware operation.', true);
+    return;
+  }
+  const lanes = (roleAssignments || []).map(item => item.role_lane).filter(Boolean);
+  if (!lanes.length) {
+    setStatus(roleRunStatus, 'Assign at least one receiver role first.', true);
+    return;
+  }
+  try {
+    const r = await fetch('/api/role-runs', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ baseline_id: activeBaselineId, role_lanes: lanes })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data?.error || data?.message || 'Role run start failed');
+    setStatus(roleRunStatus, `Started role run ${data.role_run?.role_run_id || ''}`.trim());
+    await loadRoleRuns();
+    await loadHardwareInventory();
+  } catch (err) {
+    setStatus(roleRunStatus, err.message, true);
+  }
+}
+
+async function stopRoleRun(roleRunId) {
+  try {
+    const r = await fetch(`/api/role-runs/${encodeURIComponent(roleRunId)}`, {
+      method: 'DELETE',
+      headers: authHeaders(false)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data?.error || data?.message || 'Role run stop failed');
+    setStatus(roleRunStatus, `Stopped role run ${roleRunId}.`);
+    await loadRoleRuns();
+    await loadHardwareInventory();
+  } catch (err) {
+    setStatus(roleRunStatus, err.message, true);
+  }
+}
+
 // Modal functions
 function showBaselineModal() {
   document.getElementById('baselineModal').classList.remove('hidden');
@@ -1344,6 +1645,12 @@ getControl('cfar_alpha_enabled')?.addEventListener('change', updateCfarAlphaMode
 resetDefaultsBtn?.addEventListener('click', resetScanDefaults);
 copySettingsBtn?.addEventListener('click', copyCurrentScanSettings);
 copyScannerCommandBtn?.addEventListener('click', copyGeneratedScannerCommand);
+hardwareRefreshBtn?.addEventListener('click', async () => {
+  await loadHardwareInventory();
+  await loadRoleAssignments();
+  await loadRoleRuns();
+});
+startRoleRunBtn?.addEventListener('click', startAssignedRoleRun);
 
 // Forms
 document.getElementById('baselineForm')?.addEventListener('submit', async (e) => {
@@ -1451,6 +1758,9 @@ async function loadDevices(){
   }catch(e){ console.error(e); }
 }
 loadDevices();
+loadHardwareInventory();
+loadRoleAssignments();
+loadRoleRuns();
 document.getElementById('refreshDevicesBtn')?.addEventListener('click', loadDevices);
 document.getElementById('device_key')?.addEventListener('change', updateStartButton);
 
@@ -1873,6 +2183,7 @@ async function refreshActiveState(){
 
 async function poll(){
   await refreshActiveState();
+  await loadRoleRuns();
   setTimeout(poll, 2000);
 }
 poll();

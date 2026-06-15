@@ -323,7 +323,21 @@ class Sweeper:
         spur_tracker = SpurCalibrationTracker() if args.spur_calibration else None
         bin_hz = float(args.samp_rate) / float(args.fft) if args.fft else float(args.samp_rate)
         stats_updater = BaselineStatsUpdater(store, baseline_ctx, sweep_bin_hz=bin_hz)
-        event_writer = BaselineEventWriter(store, baseline_ctx, logger)
+        event_writer = BaselineEventWriter(
+            store,
+            baseline_ctx,
+            logger,
+            provenance={
+                "receiver_role": getattr(args, "receiver_role", None),
+                "device_key": getattr(args, "device_key", None),
+                "device_serial": getattr(args, "device_serial", None),
+                "device_index": getattr(args, "device_index", None),
+                "job_id": getattr(args, "job_id", None),
+                "role_run_id": getattr(args, "role_run_id", None),
+                "source_profile": getattr(args, "profile", None),
+                "source_task": getattr(args, "source_task", None),
+            },
+        )
         segment_shape_kwargs = _segment_shape_kwargs_from_args(args)
         if args.spur_calibration:
             detection_engine: Optional[DetectionEngine] = None
@@ -362,19 +376,34 @@ class Sweeper:
                 args.avg,
             )
             for window in scheduler:
+                window_start_perf = time.perf_counter()
                 center = window.center_hz
                 window_idx = window.index
                 window_count = window_idx + 1
+                tune_start_perf = time.perf_counter()
                 src.tune(center)
+                tune_ms = (time.perf_counter() - tune_start_perf) * 1000.0
                 nsamps = int(args.fft * args.avg)
+                flush_start_perf = time.perf_counter()
                 _ = src.read(int(args.fft))
+                flush_ms = (time.perf_counter() - flush_start_perf) * 1000.0
+                read_start_perf = time.perf_counter()
                 samples = src.read(nsamps)
+                read_ms = (time.perf_counter() - read_start_perf) * 1000.0
+                try:
+                    samples_read = int(len(samples))
+                except Exception:
+                    samples_read = None
+                short_read = (samples_read < nsamps) if samples_read is not None else None
                 # Calculate dwell time: samples / sample_rate = seconds, * 1000 = ms
                 window_dwell_ms = (float(nsamps) / float(args.samp_rate)) * 1000.0
+                fft_start_perf = time.perf_counter()
                 baseband_f, psd_db = compute_psd_db(samples, args.samp_rate, args.fft, args.avg)
+                fft_ms = (time.perf_counter() - fft_start_perf) * 1000.0
                 rf_freqs = baseband_f + center
 
                 detection_diagnostics: Dict[str, Any] = {}
+                detect_start_perf = time.perf_counter()
                 segs, occ_mask_cfar, noise_per_bin_db = detect_segments(
                     rf_freqs,
                     psd_db,
@@ -390,6 +419,7 @@ class Sweeper:
                     diagnostics=detection_diagnostics if self.diagnostic_writer else None,
                     **segment_shape_kwargs,
                 )
+                detect_ms = (time.perf_counter() - detect_start_perf) * 1000.0
 
                 if logger:
                     widths = np.array([max(float(seg.bandwidth_hz), 0.0) for seg in segs], dtype=float)
@@ -417,6 +447,7 @@ class Sweeper:
                 promoted = 0
                 new_signals = 0
 
+                db_update_start_perf = time.perf_counter()
                 if is_anom:
                     if detection_engine:
                         accepted_hits, spur_ignored, promoted, new_signals = detection_engine.ingest(
@@ -441,7 +472,30 @@ class Sweeper:
                             segs,
                             sweep_loop_id=sweep_seq,
                         )
+                db_update_ms = (time.perf_counter() - db_update_start_perf) * 1000.0
                 if self.diagnostic_writer:
+                    window_tuning_params = self._sweep_params()
+                    timing = {
+                        "tune_ms": tune_ms,
+                        "flush_ms": flush_ms,
+                        "read_ms": read_ms,
+                        "fft_ms": fft_ms,
+                        "detect_ms": detect_ms,
+                        "db_update_ms": db_update_ms,
+                        "jsonl_ms": 0.0,
+                        "total_window_ms": (time.perf_counter() - window_start_perf) * 1000.0,
+                    }
+                    window_tuning_params.update(
+                        {
+                            "samples_requested": nsamps,
+                            "samples_read": samples_read,
+                            "short_read": short_read,
+                            "dropped_reads": None,
+                            "unavailable_fields": ["dropped_reads"],
+                            "timing": timing,
+                        }
+                    )
+                    jsonl_start_perf = time.perf_counter()
                     self.diagnostic_writer.write(
                         build_window_record(
                             sweep_id=sweep_seq,
@@ -451,7 +505,7 @@ class Sweeper:
                             window_high_hz=float(window.stop_hz),
                             profile=getattr(args, "profile", None),
                             baseline_id=getattr(baseline_ctx, "id", None),
-                            tuning_params=self._sweep_params(),
+                            tuning_params=window_tuning_params,
                             detection_diagnostics=detection_diagnostics,
                             accepted_hits=accepted_hits,
                             spur_ignored=spur_ignored,
@@ -461,6 +515,9 @@ class Sweeper:
                             emitted_segments=segs,
                         )
                     )
+                    jsonl_ms = (time.perf_counter() - jsonl_start_perf) * 1000.0
+                    timing["jsonl_ms"] = jsonl_ms
+                    timing["total_window_ms"] = (time.perf_counter() - window_start_perf) * 1000.0
                 total_segments += len(segs)
                 total_hits += accepted_hits
                 total_promoted += promoted

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from sdrwatch.baseline.model import BaselineContext
 from sdrwatch.baseline.store import Store
@@ -13,10 +13,17 @@ from sdrwatch.util.time import utc_now_str
 class BaselineEventWriter:
     """Persist scan update counters and emit structured logs."""
 
-    def __init__(self, store: Store, baseline_ctx: BaselineContext, logger: Optional[ScanLogger] = None) -> None:
+    def __init__(
+        self,
+        store: Store,
+        baseline_ctx: BaselineContext,
+        logger: Optional[ScanLogger] = None,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> None:
         self.store = store
         self.baseline_ctx = baseline_ctx
         self.logger = logger
+        self.provenance = dict(provenance or {})
 
     def record_scan_summary(
         self,
@@ -42,6 +49,14 @@ class BaselineEventWriter:
             num_confirmed=revisits_confirmed,
             num_false_positive=revisits_false_positive,
             duration_ms=duration_ms,
+            receiver_role=self.provenance.get("receiver_role"),
+            device_key=self.provenance.get("device_key"),
+            device_serial=self.provenance.get("device_serial"),
+            device_index=self.provenance.get("device_index"),
+            job_id=self.provenance.get("job_id"),
+            role_run_id=self.provenance.get("role_run_id"),
+            source_profile=self.provenance.get("source_profile"),
+            source_task=self.provenance.get("source_task"),
         )
         self.store.commit()
         try:

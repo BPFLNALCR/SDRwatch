@@ -176,6 +176,105 @@ def api_jobs_list():
         abort(502, description=str(exc))
 
 
+@bp.get("/api/hardware/inventory")
+def api_hardware_inventory():
+    """Return controller hardware inventory and capability tier."""
+    require_auth()
+    ctl = get_controller()
+    try:
+        return jsonify(ctl.hardware_inventory())
+    except Exception as exc:
+        return (
+            jsonify(
+                {
+                    "error": "controller_unavailable",
+                    "message": "Controller is unavailable; hardware inventory cannot be refreshed.",
+                    "detail": str(exc),
+                }
+            ),
+            502,
+        )
+
+
+@bp.get("/api/role-assignments")
+def api_role_assignments():
+    """List receiver role assignments through the controller."""
+    require_auth()
+    ctl = get_controller()
+    try:
+        return jsonify(ctl.list_role_assignments())
+    except Exception as exc:
+        abort(502, description=str(exc))
+
+
+@bp.put("/api/role-assignments/<role_lane>")
+def api_role_assignment_set(role_lane: str):
+    """Set a receiver role assignment through the controller."""
+    require_auth()
+    payload = request.get_json(force=True, silent=False) or {}
+    ctl = get_controller()
+    try:
+        return jsonify(ctl.set_role_assignment(role_lane, payload))
+    except Exception as exc:
+        abort(400, description=str(exc))
+
+
+@bp.delete("/api/role-assignments/<role_lane>")
+def api_role_assignment_delete(role_lane: str):
+    """Clear a receiver role assignment through the controller."""
+    require_auth()
+    ctl = get_controller()
+    try:
+        return jsonify(ctl.clear_role_assignment(role_lane))
+    except Exception as exc:
+        abort(400, description=str(exc))
+
+
+@bp.post("/api/role-runs")
+def api_role_run_start():
+    """Start a grouped role-aware run through the controller."""
+    require_auth()
+    payload = request.get_json(force=True, silent=False) or {}
+    ctl = get_controller()
+    try:
+        return (jsonify(ctl.start_role_run(payload)), 201)
+    except Exception as exc:
+        abort(400, description=str(exc))
+
+
+@bp.get("/api/role-runs")
+def api_role_runs():
+    """List grouped role-aware runs through the controller."""
+    require_auth()
+    ctl = get_controller()
+    try:
+        return jsonify(ctl.list_role_runs())
+    except Exception as exc:
+        abort(502, description=str(exc))
+
+
+@bp.get("/api/role-runs/<role_run_id>")
+def api_role_run_detail(role_run_id: str):
+    """Fetch a grouped role-aware run through the controller."""
+    require_auth()
+    ctl = get_controller()
+    try:
+        return jsonify(ctl.get_role_run(role_run_id))
+    except Exception as exc:
+        abort(404, description=str(exc))
+
+
+@bp.delete("/api/role-runs/<role_run_id>")
+def api_role_run_delete(role_run_id: str):
+    """Stop a grouped role-aware run through the controller."""
+    require_auth()
+    ctl = get_controller()
+    try:
+        return jsonify(ctl.stop_role_run(role_run_id))
+    except Exception as exc:
+        abort(400, description=str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Active job
 # ---------------------------------------------------------------------------

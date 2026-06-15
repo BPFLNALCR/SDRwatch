@@ -163,7 +163,12 @@ HTTP 400
 
 ### Partial Startup Failure
 
-HTTP 207 or HTTP 500 depending on existing error conventions.
+If at least one child job starts and another child fails during startup, the
+controller keeps the role run and returns a `role_run` with
+`status="degraded"` plus child-level errors. If no child jobs start, the
+controller returns the existing conventional error response for the triggering
+failure. Do not use HTTP 207 unless the project already has explicit tested
+support for it.
 
 ```json
 {

@@ -168,6 +168,14 @@ class Store:
         self._ensure_column("scan_updates", "num_confirmed", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("scan_updates", "num_false_positive", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("scan_updates", "duration_ms", "REAL")
+        self._ensure_column("scan_updates", "receiver_role", "TEXT")
+        self._ensure_column("scan_updates", "device_key", "TEXT")
+        self._ensure_column("scan_updates", "device_serial", "TEXT")
+        self._ensure_column("scan_updates", "device_index", "INTEGER")
+        self._ensure_column("scan_updates", "job_id", "TEXT")
+        self._ensure_column("scan_updates", "role_run_id", "TEXT")
+        self._ensure_column("scan_updates", "source_profile", "TEXT")
+        self._ensure_column("scan_updates", "source_task", "TEXT")
         self._ensure_column("baselines", "bandplan_path", "TEXT")
         self._ensure_column("baselines", "total_observed_ms", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("baseline_occupancy", "observed_ms", "INTEGER NOT NULL DEFAULT 0")
@@ -609,6 +617,14 @@ class Store:
         num_confirmed: int = 0,
         num_false_positive: int = 0,
         duration_ms: Optional[float] = None,
+        receiver_role: Optional[str] = None,
+        device_key: Optional[str] = None,
+        device_serial: Optional[str] = None,
+        device_index: Optional[int] = None,
+        job_id: Optional[str] = None,
+        role_run_id: Optional[str] = None,
+        source_profile: Optional[str] = None,
+        source_task: Optional[str] = None,
     ) -> None:
         self.con.execute(
             """
@@ -616,9 +632,11 @@ class Store:
                 baseline_id, timestamp_utc,
                 num_hits, num_segments, num_new_signals,
                 num_revisits, num_confirmed, num_false_positive,
-                duration_ms
+                duration_ms,
+                receiver_role, device_key, device_serial, device_index,
+                job_id, role_run_id, source_profile, source_task
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(baseline_id),
@@ -630,6 +648,14 @@ class Store:
                 int(num_confirmed),
                 int(num_false_positive),
                 float(duration_ms) if duration_ms is not None else None,
+                receiver_role,
+                device_key,
+                device_serial,
+                int(device_index) if device_index is not None else None,
+                job_id,
+                role_run_id,
+                source_profile,
+                source_task,
             ),
         )
 

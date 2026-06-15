@@ -27,12 +27,19 @@ The bundle is local and offline. When available, it includes:
 - Active baseline metadata
 - Recent `baseline_detections` rows
 - Recent `scan_updates` rows
+- Role-aware telemetry summaries when a role run or role-tagged scanner job produced diagnostics
 - Enabled monitoring zones
 - Known or friendly signals
 - `NOTES.md` for operator observations
 - `manifest.json` describing included, missing, and truncated evidence
 
 Large logs and diagnostic JSONL files are bounded by default. Check `manifest.json` to see which limits were applied.
+
+## Role-Aware Telemetry
+
+For multi-RTL GUARD/ROVER/REFERENCE runs, diagnostic JSONL and bundles should include receiver role, role lane, role-run ID, child job ID, source task/profile, device identity, runtime index, serial when available, backend, active device/role counts, sample accounting, timing fields, and available process resource metrics.
+
+Some platform fields, such as CPU load, RSS memory, or dropped-read counts, may be unavailable in a given environment. They should be represented as unavailable rather than inferred. Continuous raw IQ capture is not part of the default diagnostic workflow.
 
 ## Notes Template
 

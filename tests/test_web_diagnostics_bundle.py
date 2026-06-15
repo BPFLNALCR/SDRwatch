@@ -678,6 +678,55 @@ def test_notes_template_contains_required_prompts_and_problem_types(tmp_path: Pa
         buffer.close()
 
 
+def test_bundle_summarizes_role_aware_telemetry_fields(tmp_path: Path) -> None:
+    db_path = tmp_path / "sdrwatch.db"
+    log_path = tmp_path / "scanner.log"
+    diag_path = tmp_path / "role.diagnostic.jsonl"
+    _create_temp_db(db_path)
+    _write_text(log_path, ["log"])
+    _write_text(
+        diag_path,
+        [
+            json.dumps(
+                {
+                    "event": "detection_window",
+                    "job_id": "job-1",
+                    "role_run_id": "rr-1",
+                    "receiver_role": "GUARD",
+                    "role_lane": "guard_primary",
+                    "device_identity": "rtl:serial:S1",
+                    "device_key": "rtl:0",
+                    "device_serial": "S1",
+                    "timing": {"tune_ms": 1.0, "read_ms": 2.0, "total_window_ms": 3.0},
+                    "unavailable_fields": ["dropped_reads"],
+                }
+            ),
+            json.dumps(
+                {
+                    "event": "resource_telemetry",
+                    "job_id": "job-1",
+                    "role_run_id": "rr-1",
+                    "receiver_role": "GUARD",
+                    "pid": 1234,
+                    "rss_memory_bytes": None,
+                    "unavailable_fields": ["rss_memory_bytes"],
+                }
+            ),
+        ],
+    )
+
+    bundle = build_diagnostic_bundle(job=_job(tmp_path, diag_path, log_path), db_path=str(db_path))
+
+    role_summary = bundle.manifest["role_telemetry_summary"]
+    assert role_summary["roles"] == ["GUARD"]
+    assert role_summary["devices"] == ["rtl:serial:S1"]
+    assert role_summary["jobs"] == ["job-1"]
+    assert role_summary["role_run_ids"] == ["rr-1"]
+    assert role_summary["timing_fields"]["tune_ms"] == 1
+    assert role_summary["resource_telemetry_count"] == 1
+    assert "dropped_reads" in role_summary["unavailable_fields"]
+
+
 class FakeController:
     def __init__(self, job: Dict[str, Any], log_text: str = "controller log\n") -> None:
         self.job = job

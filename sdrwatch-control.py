@@ -60,7 +60,33 @@ _PROFILE_CACHE_TS: float = 0.0
 _PROFILE_CACHE_TTL = 30.0
 _DISCOVERY_MAX_EVENTS = 100
 _DISCOVERY_EVENTS: List[Dict[str, Any]] = []
+RUNNABLE_SCANNER_BACKENDS = ["rtlsdr_native"]
+UNSUPPORTED_HARDWARE_KINDS = {
+    "airspy": "Airspy scanner execution is planned/future and is not runnable in this build.",
+    "hackrf": "HackRF scanner execution is planned/future and is not runnable in this build.",
+    "soapy": "SoapySDR scanner execution is planned/future and is not runnable in this build.",
+}
+ROLE_LANES = {
+    "guard_primary": {"role": "GUARD", "display_name": "Friendly Guard", "source_task": "guard_window"},
+    "guard_secondary": {"role": "GUARD", "display_name": "Watchlist Guard", "source_task": "guard_window"},
+    "rover": {"role": "ROVER", "display_name": "Rover", "source_task": "rover_sweep"},
+    "reference": {"role": "REFERENCE", "display_name": "Reference", "source_task": "reference_window"},
+}
+CONTROLLER_SESSION_EPOCH = f"session-{uuid.uuid4().hex[:12]}"
 logger = get_logger(__name__)
+
+
+class UnsupportedBackendError(RuntimeError):
+    def __init__(self, payload: Dict[str, Any]) -> None:
+        self.payload = payload
+        super().__init__(str(payload.get("message") or payload.get("error") or "unsupported backend"))
+
+
+class RoleAssignmentError(RuntimeError):
+    def __init__(self, payload: Dict[str, Any], *, status_code: int = 400) -> None:
+        self.payload = payload
+        self.status_code = status_code
+        super().__init__(str(payload.get("message") or payload.get("error") or "role assignment error"))
 
 
 def _scanner_invocation(script_path: Optional[Path]) -> List[str]:
@@ -206,6 +232,10 @@ def short_uuid() -> str:
 
 def now_ts() -> float:
     return time.time()
+
+
+def _warning(code: str, message: str) -> Dict[str, str]:
+    return {"code": code, "message": message}
 
 
 def _truthy(value: Any) -> bool:
@@ -464,6 +494,18 @@ class Job:
     params: Dict[str, Any]
     exit_code: Optional[int] = None
     finished_ts: Optional[float] = None
+    role_run_id: Optional[str] = None
+    receiver_role: Optional[str] = None
+    role_lane: Optional[str] = None
+    source_task: Optional[str] = None
+    device_identity: Optional[str] = None
+    device_serial: Optional[str] = None
+    device_index: Optional[int] = None
+    identity_confidence: Optional[str] = None
+    active_device_count: Optional[int] = None
+    active_role_count: Optional[int] = None
+    last_update_ts: Optional[float] = None
+    error_message: Optional[str] = None
 
 
 class JobManager:
@@ -471,10 +513,37 @@ class JobManager:
         ensure_dirs()
         self.state = read_state()
         self.default_db_path = _default_db_path()
+        self.role_assignment_session_epoch = CONTROLLER_SESSION_EPOCH
+        self.role_assignments: Dict[str, Dict[str, Any]] = {}
+        for lane, assignment in dict(self.state.get("role_assignments") or {}).items():
+            if not isinstance(assignment, dict):
+                continue
+            if (
+                assignment.get("assignment_scope") == "session"
+                and assignment.get("session_epoch") != self.role_assignment_session_epoch
+            ):
+                continue
+            self.role_assignments[str(lane)] = assignment
+        self.role_runs: Dict[str, Dict[str, Any]] = dict(self.state.get("role_runs") or {})
         self.jobs: Dict[str, Job] = {}
         for jid, j in self.state.get("jobs", {}).items():
             if "baseline_id" not in j:
                 j["baseline_id"] = None
+            for key in (
+                "role_run_id",
+                "receiver_role",
+                "role_lane",
+                "source_task",
+                "device_identity",
+                "device_serial",
+                "device_index",
+                "identity_confidence",
+                "active_device_count",
+                "active_role_count",
+                "last_update_ts",
+                "error_message",
+            ):
+                j.setdefault(key, None)
             job = Job(**j)
             # Reconcile process liveness and cleanup locks at startup
             if job.pid and job.status == "running" and not pid_alive(job.pid):
@@ -482,12 +551,18 @@ class JobManager:
                 job.finished_ts = now_ts()
                 job.exit_code = job.exit_code if job.exit_code is not None else -1
                 self._release_device(job.device_key)
+                self._refresh_parent_role_run_for_job(job)
             self.jobs[jid] = job
         self._persist()
 
     # ---- persistence ----
     def _persist(self) -> None:
-        data = {"jobs": {jid: asdict(j) for jid, j in self.jobs.items()}}
+        data = {
+            "jobs": {jid: asdict(j) for jid, j in self.jobs.items()},
+            "role_assignments": self.role_assignments,
+            "role_runs": self.role_runs,
+            "role_assignment_session_epoch": self.role_assignment_session_epoch,
+        }
         write_state(data)
 
     # ---- device locking ----
@@ -498,34 +573,717 @@ class JobManager:
     def _is_job_running(self, job: Job) -> bool:
         return bool(job.pid and pid_alive(job.pid) and job.status == "running")
 
-    def _acquire_device(self, device_key: str, owner: str) -> None:
-        lp = self._lock_path(device_key)
-        if lp.exists():
+    def _unsupported_backend_payload(
+        self,
+        *,
+        requested_backend: str,
+        device_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "error": "unsupported_backend",
+            "message": "Scanner execution is available only for rtlsdr_native devices in this build.",
+            "requested_backend": requested_backend,
+            "supported_backends": list(RUNNABLE_SCANNER_BACKENDS),
+            "device_key": device_key,
+            "spawned": False,
+        }
+
+    def _validate_runnable_backend(self, device_key: str, args: Dict[str, Any]) -> None:
+        explicit_driver = str(args.get("driver", "")).strip() if args.get("driver") is not None else ""
+        if explicit_driver and explicit_driver != "rtlsdr_native":
+            raise UnsupportedBackendError(
+                self._unsupported_backend_payload(requested_backend=explicit_driver, device_key=device_key)
+            )
+        if not str(device_key).startswith("rtl:"):
+            requested = str(device_key).split(":", 1)[0] or "unknown"
+            raise UnsupportedBackendError(
+                self._unsupported_backend_payload(requested_backend=requested, device_key=device_key)
+            )
+
+    # ---- hardware inventory ----
+    def _runtime_index_for_device(self, device: Device) -> Optional[int]:
+        if device.extra.get("index") is not None:
             try:
-                existing_owner = lp.read_text(encoding="utf-8").strip()
-            except Exception:
-                existing_owner = ""
-            # If the lock is owned by a known job that isn't actually running, clear it.
-            if existing_owner and existing_owner in self.jobs:
-                job = self.jobs[existing_owner]
-                if not self._is_job_running(job):
-                    try:
-                        lp.unlink()
-                    except Exception:
-                        pass
-            # If still present and clearly stale (no job knows about it), clear
-            if lp.exists():
-                # Optional: if file is older than N minutes treat as stale
+                return int(device.extra.get("index"))
+            except (TypeError, ValueError):
+                return None
+        match = re.match(r"^rtl:(\d+)$", str(device.key))
+        if match:
+            return int(match.group(1))
+        return None
+
+    def _active_job_for_device(self, device_key: str) -> Optional[Job]:
+        for job in self.jobs.values():
+            if job.device_key == device_key and job.status == "running":
+                return job
+        return None
+
+    def _read_lock_payload(self, lock_path: Path) -> Dict[str, Any]:
+        try:
+            text = lock_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            text = ""
+        if not text:
+            return {}
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+        return {"owner": text, "job_id": text}
+
+    def _lock_owner_id(self, lock_path: Path) -> Optional[str]:
+        payload = self._read_lock_payload(lock_path)
+        owner = payload.get("job_id") or payload.get("owner")
+        return str(owner) if owner not in (None, "") else None
+
+    def _write_lock_owner(
+        self,
+        device_key: str,
+        owner: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        payload = dict(metadata or {})
+        payload.setdefault("owner", owner)
+        payload.setdefault("job_id", owner)
+        payload.setdefault("device_key", device_key)
+        payload.setdefault("claimed_ts", now_ts())
+        self._lock_path(device_key).write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    def _assignment_for_identity(self, identity: str, legacy_device_key: str) -> Optional[Dict[str, Any]]:
+        for assignment in self.role_assignments.values():
+            if assignment.get("device_identity") == identity or assignment.get("legacy_device_key") == legacy_device_key:
+                return assignment
+        return None
+
+    def _inventory_entry_for_rtl(
+        self,
+        device: Device,
+        *,
+        serial_counts: Dict[str, int],
+        generated_ts: float,
+    ) -> Dict[str, Any]:
+        runtime_index = self._runtime_index_for_device(device)
+        serial_raw = device.extra.get("serial")
+        serial = str(serial_raw).strip() if serial_raw not in (None, "") else None
+        warnings: List[Dict[str, str]] = []
+        if serial and serial_counts.get(serial, 0) == 1:
+            device_identity = f"rtl:serial:{serial}"
+            identity_confidence = "stable"
+            identity_scope = "persistent"
+        else:
+            idx_token = str(runtime_index) if runtime_index is not None else str(device.key).split(":", 1)[-1]
+            device_identity = f"rtl:index:{idx_token}"
+            identity_scope = "session"
+            if not serial:
+                identity_confidence = "index_only"
+                warnings.append(_warning("missing_serial", "Receiver serial is unavailable; identity is index-only."))
+            else:
+                identity_confidence = "ambiguous"
+                warnings.append(_warning("duplicate_serial", "Receiver serial is duplicated; identity is ambiguous."))
+            warnings.append(
+                _warning("index_only_identity", "Assignment can only bind to the runtime RTL index for this session.")
+            )
+
+        active_job = self._active_job_for_device(device.key)
+        lock_path = self._lock_path(device.key)
+        locked = lock_path.exists()
+        lock_owner = None
+        if locked:
+            lock_owner = self._lock_owner_id(lock_path)
+        assignment = self._assignment_for_identity(device_identity, device.key)
+        return {
+            "device_identity": device_identity,
+            "legacy_device_key": device.key,
+            "device_kind": "rtlsdr",
+            "label": device.label,
+            "runtime_index": runtime_index,
+            "serial": serial,
+            "identity_confidence": identity_confidence,
+            "identity_scope": identity_scope,
+            "warnings": warnings,
+            "detected": True,
+            "runnable": True,
+            "support_state": "runnable",
+            "runnable_backend": "rtlsdr_native",
+            "backend_status": "supported",
+            "busy": bool(active_job or locked),
+            "locked": locked,
+            "lock_owner": lock_owner,
+            "active_job_id": active_job.id if active_job else None,
+            "assigned_role": assignment.get("role") if assignment else None,
+            "role_lane": assignment.get("role_lane") if assignment else None,
+            "assignment_id": assignment.get("assignment_id") if assignment else None,
+            "last_seen_ts": generated_ts,
+        }
+
+    def _capability_for_count(self, count: int, generated_ts: float) -> Dict[str, Any]:
+        if count <= 0:
+            return {
+                "tier": "0",
+                "label": "Tier 0 - No runnable RTL",
+                "runnable_rtl_count": 0,
+                "max_role_count": 0,
+                "supported_roles": [],
+                "warnings": [_warning("no_runnable_rtl", "No runnable native RTL-SDR receiver is available.")],
+                "generated_ts": generated_ts,
+            }
+        if count == 1:
+            tier, label, max_roles, roles = "1", "Tier 1 - Basic RTL", 1, ["GUARD"]
+        elif count == 2:
+            tier, label, max_roles, roles = "2", "Tier 2 - Multi-RTL guard + rover", 2, ["GUARD", "ROVER"]
+        else:
+            tier, label, max_roles, roles = (
+                "2_plus",
+                "Tier 2+ - Multi-RTL guard + rover/reference",
+                min(count, 3),
+                ["GUARD", "ROVER", "REFERENCE"],
+            )
+        return {
+            "tier": tier,
+            "label": label,
+            "runnable_rtl_count": count,
+            "max_role_count": max_roles,
+            "supported_roles": roles,
+            "warnings": [],
+            "generated_ts": generated_ts,
+        }
+
+    def hardware_inventory(self) -> Dict[str, Any]:
+        generated_ts = now_ts()
+        discovered = discover_devices()
+        serial_counts: Dict[str, int] = {}
+        for device in discovered:
+            if device.kind != "rtlsdr":
+                continue
+            serial = device.extra.get("serial")
+            if serial not in (None, ""):
+                serial_text = str(serial).strip()
+                serial_counts[serial_text] = serial_counts.get(serial_text, 0) + 1
+
+        devices: List[Dict[str, Any]] = []
+        detected_unsupported: Dict[str, Dict[str, Any]] = {}
+        for device in discovered:
+            kind = str(device.kind or "unknown").lower()
+            if kind == "rtlsdr":
+                devices.append(
+                    self._inventory_entry_for_rtl(
+                        device,
+                        serial_counts=serial_counts,
+                        generated_ts=generated_ts,
+                    )
+                )
+                continue
+            if kind in UNSUPPORTED_HARDWARE_KINDS:
+                detected_unsupported[kind] = {
+                    "hardware_kind": kind,
+                    "detected": True,
+                    "support_state": "unsupported",
+                    "runnable": False,
+                    "runnable_backend": None,
+                    "message": UNSUPPORTED_HARDWARE_KINDS[kind],
+                }
+
+        unsupported = []
+        for kind, message in UNSUPPORTED_HARDWARE_KINDS.items():
+            unsupported.append(
+                detected_unsupported.get(
+                    kind,
+                    {
+                        "hardware_kind": kind,
+                        "detected": False,
+                        "support_state": "planned",
+                        "runnable": False,
+                        "runnable_backend": None,
+                        "message": message,
+                    },
+                )
+            )
+
+        return {
+            "capability": self._capability_for_count(len(devices), generated_ts),
+            "devices": devices,
+            "unsupported_hardware": unsupported,
+        }
+
+    # ---- role assignments ----
+    def list_role_assignments(self) -> Dict[str, Any]:
+        assignments = sorted(
+            self.role_assignments.values(),
+            key=lambda item: str(item.get("role_lane") or ""),
+        )
+        role_lanes = {
+            lane: {
+                "role": str(definition["role"]),
+                "display_name": str(definition["display_name"]),
+                "source_task": str(definition["source_task"]),
+            }
+            for lane, definition in ROLE_LANES.items()
+        }
+        return {
+            "assignments": assignments,
+            "role_lanes": role_lanes,
+            "supported_role_lanes": {lane: metadata["display_name"] for lane, metadata in role_lanes.items()},
+        }
+
+    def _role_assignment_error(
+        self,
+        error: str,
+        message: str,
+        *,
+        status_code: int = 400,
+        **extra: Any,
+    ) -> RoleAssignmentError:
+        payload = {"error": error, "message": message}
+        payload.update(extra)
+        return RoleAssignmentError(payload, status_code=status_code)
+
+    def _inventory_device_for_assignment(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        wanted_identity = payload.get("device_identity")
+        wanted_legacy = payload.get("legacy_device_key")
+        inventory = self.hardware_inventory()
+        for device in inventory.get("devices", []):
+            if wanted_identity and device.get("device_identity") == wanted_identity:
+                return device
+            if wanted_legacy and device.get("legacy_device_key") == wanted_legacy:
+                return device
+        raise self._role_assignment_error(
+            "unsupported_device",
+            "Only detected native RTL-SDR receivers are assignable to scanner roles in this feature.",
+            status_code=400,
+            support_state="unsupported",
+            runnable=False,
+        )
+
+    def _reject_duplicate_assignment(
+        self,
+        *,
+        role_lane: str,
+        device_identity: str,
+        legacy_device_key: str,
+        active_job_id: Optional[str],
+    ) -> None:
+        for existing_lane, assignment in self.role_assignments.items():
+            if existing_lane == role_lane:
+                continue
+            same_identity = assignment.get("device_identity") == device_identity
+            same_legacy = assignment.get("legacy_device_key") == legacy_device_key
+            if same_identity or same_legacy:
+                raise self._role_assignment_error(
+                    "duplicate_device_assignment",
+                    "Receiver is already assigned to an active role or running job.",
+                    status_code=409,
+                    device_identity=device_identity,
+                    active_job_id=active_job_id,
+                    role_run_id=assignment.get("role_run_id"),
+                    role_lane=existing_lane,
+                )
+        if active_job_id:
+            raise self._role_assignment_error(
+                "duplicate_device_assignment",
+                "Receiver is already assigned to an active role or running job.",
+                status_code=409,
+                device_identity=device_identity,
+                active_job_id=active_job_id,
+                role_run_id=None,
+                role_lane=role_lane,
+            )
+
+    def set_role_assignment(self, role_lane: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        lane = str(role_lane)
+        if lane not in ROLE_LANES:
+            raise self._role_assignment_error(
+                "invalid_role_lane",
+                f"Unsupported role lane: {lane}",
+                status_code=400,
+                supported_role_lanes=sorted(ROLE_LANES),
+            )
+        lane_def = ROLE_LANES[lane]
+        requested_role = str(payload.get("role") or lane_def["role"]).upper()
+        expected_role = str(lane_def["role"])
+        if requested_role != expected_role:
+            raise self._role_assignment_error(
+                "invalid_role",
+                f"Role lane {lane} requires role {expected_role}.",
+                status_code=400,
+                role_lane=lane,
+                expected_role=expected_role,
+                requested_role=requested_role,
+            )
+
+        device = self._inventory_device_for_assignment(payload)
+        if not device.get("runnable"):
+            raise self._role_assignment_error(
+                "unsupported_device",
+                "Only native RTL-SDR receivers are assignable to scanner roles in this feature.",
+                status_code=400,
+                support_state=device.get("support_state"),
+                runnable=False,
+            )
+
+        warning_codes = [w.get("code") for w in device.get("warnings", []) if isinstance(w, dict)]
+        if warning_codes and not _truthy(payload.get("acknowledge_identity_warning")):
+            raise self._role_assignment_error(
+                "identity_warning_requires_acknowledgement",
+                "Receiver identity is index-only or ambiguous; assignment is session-scoped unless reconfirmed.",
+                status_code=409,
+                warnings=warning_codes,
+            )
+
+        device_identity = str(device["device_identity"])
+        legacy_device_key = str(device["legacy_device_key"])
+        self._reject_duplicate_assignment(
+            role_lane=lane,
+            device_identity=device_identity,
+            legacy_device_key=legacy_device_key,
+            active_job_id=device.get("active_job_id"),
+        )
+
+        ts = now_ts()
+        existing = self.role_assignments.get(lane) or {}
+        scope = "persistent" if device.get("identity_confidence") == "stable" else "session"
+        task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
+        if not task:
+            task = {"source_task": lane_def["source_task"]}
+        assignment = {
+            "assignment_id": existing.get("assignment_id") or f"assign-{lane.replace('_', '-')}-{short_uuid()}",
+            "role": expected_role,
+            "role_lane": lane,
+            "display_name": lane_def["display_name"],
+            "device_identity": device_identity,
+            "legacy_device_key": legacy_device_key,
+            "serial": device.get("serial"),
+            "runtime_index": device.get("runtime_index"),
+            "identity_confidence": device.get("identity_confidence"),
+            "assignment_scope": scope,
+            "task": dict(task),
+            "assigned_ts": existing.get("assigned_ts") or ts,
+            "updated_ts": ts,
+            "assigned_by": payload.get("assigned_by"),
+            "warnings": device.get("warnings", []),
+            "session_epoch": self.role_assignment_session_epoch if scope == "session" else None,
+        }
+        self.role_assignments[lane] = assignment
+        self._persist()
+        return {"assignment": assignment}
+
+    def clear_role_assignment(self, role_lane: str) -> Dict[str, Any]:
+        lane = str(role_lane)
+        if lane not in ROLE_LANES:
+            raise self._role_assignment_error(
+                "invalid_role_lane",
+                f"Unsupported role lane: {lane}",
+                status_code=400,
+                supported_role_lanes=sorted(ROLE_LANES),
+            )
+        self.role_assignments.pop(lane, None)
+        self._persist()
+        return {"cleared": True, "role_lane": lane}
+
+    # ---- role-aware runs ----
+    def _resolve_assignment_device(self, assignment: Dict[str, Any]) -> Dict[str, Any]:
+        inventory = self.hardware_inventory()
+        wanted_identity = assignment.get("device_identity")
+        wanted_legacy = assignment.get("legacy_device_key")
+        for device in inventory.get("devices", []):
+            if wanted_identity and device.get("device_identity") == wanted_identity:
+                return device
+        if wanted_identity and str(wanted_identity).startswith("rtl:serial:"):
+            raise RuntimeError(f"assigned receiver is not currently detected: {wanted_identity}")
+        for device in inventory.get("devices", []):
+            if wanted_legacy and device.get("legacy_device_key") == wanted_legacy:
+                return device
+        raise RuntimeError(f"assigned receiver is not currently detected: {wanted_identity or wanted_legacy}")
+
+    def _role_task_params(
+        self,
+        *,
+        assignment: Dict[str, Any],
+        device: Dict[str, Any],
+        role_run_id: str,
+        active_device_count: int,
+        active_role_count: int,
+        baseline_params: Dict[str, Any],
+        override_task: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        params = dict(baseline_params or {})
+        task = dict(assignment.get("task") or {})
+        if override_task:
+            task.update(override_task)
+
+        for src_key, dest_key in (
+            ("start_hz", "start"),
+            ("stop_hz", "stop"),
+            ("step_hz", "step"),
+            ("sample_rate", "samp_rate"),
+        ):
+            if task.get(src_key) is not None:
+                params[dest_key] = task[src_key]
+        for key in ("profile", "fft", "avg", "samp_rate", "gain"):
+            if task.get(key) is not None:
+                params[key] = task[key]
+
+        source_task = str(task.get("source_task") or ROLE_LANES[assignment["role_lane"]]["source_task"])
+        if source_task in {"guard_window", "reference_window"} and params.get("step") is None:
+            start = float(params.get("start") or 0.0)
+            stop = float(params.get("stop") or start)
+            width = max(stop - start, 0.0)
+            params["step"] = int(width or float(params.get("samp_rate") or 2_400_000))
+
+        params.update(
+            {
+                "role_run_id": role_run_id,
+                "receiver_role": assignment.get("role"),
+                "role_lane": assignment.get("role_lane"),
+                "source_task": source_task,
+                "device_identity": device.get("device_identity"),
+                "device_serial": device.get("serial"),
+                "device_index": device.get("runtime_index"),
+                "identity_confidence": device.get("identity_confidence"),
+                "active_device_count": active_device_count,
+                "active_role_count": active_role_count,
+            }
+        )
+        return params
+
+    def _child_job_summary(self, job: Job) -> Dict[str, Any]:
+        return {
+            "job_id": job.id,
+            "receiver_role": job.receiver_role,
+            "role_lane": job.role_lane,
+            "device_identity": job.device_identity,
+            "device_key": job.device_key,
+            "status": job.status,
+            "error_message": job.error_message,
+        }
+
+    def _refresh_role_run(self, role_run_id: str) -> Dict[str, Any]:
+        if role_run_id not in self.role_runs:
+            raise KeyError(f"Role run {role_run_id} not found")
+        run = self.role_runs[role_run_id]
+        refreshed_children: List[Dict[str, Any]] = []
+        for child in run.get("child_jobs", []):
+            job_id = child.get("job_id")
+            job = self.jobs.get(str(job_id)) if job_id else None
+            if job is not None:
+                refreshed = self._child_job_summary(job)
+                if child.get("error_message") and not refreshed.get("error_message"):
+                    refreshed["error_message"] = child.get("error_message")
+            else:
+                refreshed = dict(child)
+            refreshed_children.append(refreshed)
+        run["child_jobs"] = refreshed_children
+
+        statuses = [str(child.get("status") or "") for child in refreshed_children]
+        terminal = {"finished", "stopped", "error", "failed", "cancelled"}
+        if run.get("status") == "stopping":
+            if statuses and all(status in terminal for status in statuses):
+                run["status"] = "finished"
+                run["finished_ts"] = run.get("finished_ts") or now_ts()
+        elif run.get("status") == "running":
+            if any(status != "running" for status in statuses):
+                run["status"] = "degraded"
+        elif run.get("status") == "degraded":
+            if statuses and all(status in terminal for status in statuses):
+                run["status"] = "failed"
+                run["finished_ts"] = run.get("finished_ts") or now_ts()
+        run["updated_ts"] = now_ts()
+        self._persist()
+        return run
+
+    def _refresh_parent_role_run_for_job(self, job: Job) -> None:
+        if not job.role_run_id:
+            return
+        try:
+            self._refresh_role_run(job.role_run_id)
+        except Exception:
+            logger.debug("failed to refresh role run %s", job.role_run_id, exc_info=True)
+
+    def list_role_runs(self) -> Dict[str, Any]:
+        runs = []
+        for role_run_id in list(self.role_runs):
+            try:
+                runs.append(self._refresh_role_run(role_run_id))
+            except KeyError:
+                continue
+        runs.sort(key=lambda item: float(item.get("started_ts") or 0.0), reverse=True)
+        return {"role_runs": runs}
+
+    def get_role_run(self, role_run_id: str) -> Dict[str, Any]:
+        return {"role_run": self._refresh_role_run(role_run_id)}
+
+    def start_role_run(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        baseline_id = payload.get("baseline_id")
+        if baseline_id is None:
+            raise ValueError("baseline_id is required")
+        lanes = [str(lane) for lane in (payload.get("role_lanes") or [])]
+        if not lanes:
+            lanes = sorted(self.role_assignments)
+        if not lanes:
+            raise ValueError("at least one role lane is required")
+        for lane in lanes:
+            if lane not in self.role_assignments:
+                raise ValueError(f"role lane is not assigned: {lane}")
+
+        role_run_id = f"rr-{short_uuid()}"
+        base_params = dict(payload.get("params") or {})
+        task_overrides = payload.get("tasks") if isinstance(payload.get("tasks"), dict) else {}
+        active_role_count = len(lanes)
+        active_device_count = len(lanes)
+        run = {
+            "role_run_id": role_run_id,
+            "status": "starting",
+            "capability_tier_at_start": self.hardware_inventory()["capability"]["tier"],
+            "started_ts": now_ts(),
+            "updated_ts": now_ts(),
+            "finished_ts": None,
+            "child_jobs": [],
+            "requested_roles": lanes,
+            "active_device_count": active_device_count,
+            "active_role_count": active_role_count,
+            "error": None,
+            "warnings": [],
+        }
+        self.role_runs[role_run_id] = run
+        self._persist()
+
+        resolved: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+        seen_receivers: set[str] = set()
+        for lane in lanes:
+            assignment = self.role_assignments[lane]
+            device = self._resolve_assignment_device(assignment)
+            receiver_key = str(device.get("device_identity") or device.get("legacy_device_key"))
+            if receiver_key in seen_receivers:
+                run["status"] = "failed"
+                run["error"] = "duplicate_device_assignment"
+                run["updated_ts"] = now_ts()
+                self._persist()
+                raise RuntimeError("Role run cannot start because the same physical receiver is requested twice.")
+            seen_receivers.add(receiver_key)
+            resolved.append((lane, assignment, device))
+
+        failed_children: List[Dict[str, Any]] = []
+        for lane, assignment, device in resolved:
+            params = self._role_task_params(
+                assignment=assignment,
+                device=device,
+                role_run_id=role_run_id,
+                active_device_count=active_device_count,
+                active_role_count=active_role_count,
+                baseline_params=base_params,
+                override_task=task_overrides.get(lane) if isinstance(task_overrides.get(lane), dict) else None,
+            )
+            try:
+                job = self.start_job(
+                    device_key=str(device["legacy_device_key"]),
+                    label=str(payload.get("label") or f"{lane}-{role_run_id}"),
+                    baseline_id=int(baseline_id),
+                    sdrwatch_args=params,
+                )
+                run["child_jobs"].append(self._child_job_summary(job))
+            except Exception as exc:
+                failed = {
+                    "job_id": None,
+                    "receiver_role": assignment.get("role"),
+                    "role_lane": lane,
+                    "device_identity": device.get("device_identity"),
+                    "device_key": device.get("legacy_device_key"),
+                    "status": "failed",
+                    "error_message": str(exc),
+                }
+                failed_children.append(failed)
+                run["child_jobs"].append(failed)
+
+        if failed_children and not any(child.get("job_id") for child in run["child_jobs"]):
+            run["status"] = "failed"
+            run["error"] = failed_children[0]["error_message"]
+            run["finished_ts"] = now_ts()
+            run["updated_ts"] = now_ts()
+            self._persist()
+            raise RuntimeError(str(run["error"]))
+        run["status"] = "degraded" if failed_children else "running"
+        if failed_children:
+            run["error"] = "One or more child jobs failed during startup."
+        run["updated_ts"] = now_ts()
+        self._persist()
+        return {"role_run": run}
+
+    def stop_role_run(self, role_run_id: str) -> Dict[str, Any]:
+        if role_run_id not in self.role_runs:
+            raise KeyError(f"Role run {role_run_id} not found")
+        run = self.role_runs[role_run_id]
+        run["status"] = "stopping"
+        run["updated_ts"] = now_ts()
+        self._persist()
+        for child in list(run.get("child_jobs", [])):
+            job_id = child.get("job_id")
+            if not job_id:
+                continue
+            job = self.jobs.get(str(job_id))
+            if job and job.status == "running":
+                self.stop_job(str(job_id))
+        refreshed = self._refresh_role_run(role_run_id)
+        if refreshed.get("status") == "stopping":
+            refreshed["status"] = "finished"
+            refreshed["finished_ts"] = refreshed.get("finished_ts") or now_ts()
+            refreshed["updated_ts"] = now_ts()
+            self._persist()
+        return {"role_run": refreshed}
+
+    def _clear_stale_lock_if_possible(self, lock_path: Path) -> bool:
+        if not lock_path.exists():
+            return True
+        existing_owner = self._lock_owner_id(lock_path)
+        if existing_owner and existing_owner in self.jobs:
+            job = self.jobs[existing_owner]
+            if not self._is_job_running(job):
                 try:
-                    mtime = lp.stat().st_mtime
-                    if (now_ts() - mtime) > 3600:  # 1 hour
-                        lp.unlink()
+                    lock_path.unlink()
+                    return True
                 except Exception:
-                    pass
-        if lp.exists():
-            raise RuntimeError(f"Device {device_key} is busy (lock present)")
-        with lp.open("w", encoding="utf-8") as f:
-            f.write(owner)
+                    return False
+        try:
+            mtime = lock_path.stat().st_mtime
+            if (now_ts() - mtime) > 3600:
+                lock_path.unlink()
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _acquire_device(
+        self,
+        device_key: str,
+        owner: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        lp = self._lock_path(device_key)
+        payload = dict(metadata or {})
+        payload.setdefault("owner", owner)
+        payload.setdefault("job_id", owner)
+        payload.setdefault("device_key", device_key)
+        payload.setdefault("claimed_ts", now_ts())
+        data = json.dumps(payload, sort_keys=True)
+        for _attempt in range(2):
+            try:
+                fd = os.open(str(lp), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if self._clear_stale_lock_if_possible(lp):
+                    continue
+                raise RuntimeError(f"Device {device_key} is busy (lock present)")
+            except OSError:
+                if lp.exists():
+                    if self._clear_stale_lock_if_possible(lp):
+                        continue
+                    raise RuntimeError(f"Device {device_key} is busy (lock present)")
+                raise
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            return
+        raise RuntimeError(f"Device {device_key} is busy (lock present)")
 
     def _release_device(self, device_key: str) -> None:
         lp = self._lock_path(device_key)
@@ -548,6 +1306,7 @@ class JobManager:
             job.status = "finished"
             job.finished_ts = now_ts()
             self._release_device(job.device_key)
+            self._refresh_parent_role_run_for_job(job)
             self._persist()
         return job
 
@@ -563,20 +1322,27 @@ class JobManager:
                 job.exit_code = rc
                 job.pid = None
                 job.finished_ts = now_ts()
-                job.status = "finished" if rc == 0 else "error"
             self._release_device(device_key)
+            if job:
+                job.status = "finished" if rc == 0 else "error"
+                self._refresh_parent_role_run_for_job(job)
             self._persist()
         t = threading.Thread(target=_watch, name=f"reaper-{job_id}", daemon=True)
         t.start()
 
     def start_job(self, *, device_key: str, label: str, baseline_id: int, sdrwatch_args: Dict[str, Any]) -> Job:
+        self._validate_runnable_backend(device_key, sdrwatch_args or {})
         try:
             baseline_id_int = int(baseline_id)
         except (TypeError, ValueError):
             raise ValueError("baseline_id must be an integer")
         project_dir, script_path = resolve_scanner_paths()
         # Refuse to start if the device is already locked (but clear stale locks first)
-        self._acquire_device(device_key, owner="pending")
+        self._acquire_device(
+            device_key,
+            owner="pending",
+            metadata={"device_key": device_key, "job_id": "pending"},
+        )
         try:
             # If we have discovery metadata for this device, attach it for downstream
             # Note: discovery may briefly probe the device, so we add a delay after
@@ -592,6 +1358,7 @@ class JobManager:
 
             jid = short_uuid()
             sdrwatch_args = normalize_diagnostic_params(jid, sdrwatch_args)
+            sdrwatch_args["job_id"] = jid
             log_path = str(LOGS_DIR / f"{jid}.log")
             cmd = self._build_cmd(
                 script_path=script_path,
@@ -599,9 +1366,20 @@ class JobManager:
                 baseline_id=baseline_id_int,
                 args=sdrwatch_args,
             )
-            # Update lock with owner id
-            with self._lock_path(device_key).open("w", encoding="utf-8") as f:
-                f.write(jid)
+            self._write_lock_owner(
+                device_key,
+                jid,
+                metadata={
+                    "job_id": jid,
+                    "device_key": device_key,
+                    "device_identity": sdrwatch_args.get("device_identity"),
+                    "device_serial": sdrwatch_args.get("device_serial"),
+                    "device_index": sdrwatch_args.get("device_index"),
+                    "receiver_role": sdrwatch_args.get("receiver_role"),
+                    "role_lane": sdrwatch_args.get("role_lane"),
+                    "role_run_id": sdrwatch_args.get("role_run_id"),
+                },
+            )
 
             with open(log_path, "w", encoding="utf-8") as logf:
                 popen_kwargs: Dict[str, Any] = {
@@ -624,6 +1402,17 @@ class JobManager:
                 cmd=cmd,
                 log_path=log_path,
                 params={k: v for k, v in sdrwatch_args.items() if k != "__discover_meta"},
+                role_run_id=sdrwatch_args.get("role_run_id"),
+                receiver_role=sdrwatch_args.get("receiver_role"),
+                role_lane=sdrwatch_args.get("role_lane"),
+                source_task=sdrwatch_args.get("source_task"),
+                device_identity=sdrwatch_args.get("device_identity"),
+                device_serial=sdrwatch_args.get("device_serial"),
+                device_index=sdrwatch_args.get("device_index"),
+                identity_confidence=sdrwatch_args.get("identity_confidence"),
+                active_device_count=sdrwatch_args.get("active_device_count"),
+                active_role_count=sdrwatch_args.get("active_role_count"),
+                last_update_ts=now_ts(),
             )
             self.jobs[jid] = job
             self._persist()
@@ -645,6 +1434,7 @@ class JobManager:
             job.status = "finished"
             job.finished_ts = now_ts()
             self._release_device(job.device_key)
+            self._refresh_parent_role_run_for_job(job)
             self._persist()
             return job
 
@@ -654,6 +1444,7 @@ class JobManager:
                 job.status = "finished"
                 job.finished_ts = now_ts()
                 self._release_device(job.device_key)
+                self._refresh_parent_role_run_for_job(job)
                 self._persist()
                 return job
             time.sleep(0.2)
@@ -665,6 +1456,7 @@ class JobManager:
         job.status = "finished"
         job.finished_ts = now_ts()
         self._release_device(job.device_key)
+        self._refresh_parent_role_run_for_job(job)
         self._persist()
         return job
 
@@ -768,6 +1560,24 @@ class JobManager:
             cmd += ["--diagnostic-jsonl", str(args["diagnostic_jsonl"])]
         if args.get("persistence_mode"):
             cmd += ["--persistence-mode", str(args["persistence_mode"])]
+
+        metadata_flags = {
+            "job_id": "--job-id",
+            "role_run_id": "--role-run-id",
+            "receiver_role": "--receiver-role",
+            "role_lane": "--role-lane",
+            "source_task": "--source-task",
+            "device_identity": "--device-identity",
+            "device_serial": "--device-serial",
+            "device_index": "--device-index",
+            "identity_confidence": "--identity-confidence",
+            "active_device_count": "--active-device-count",
+            "active_role_count": "--active-role-count",
+        }
+        for k, flag in metadata_flags.items():
+            v = args.get(k)
+            if v is not None:
+                cmd += [flag, str(v)]
 
         # CFAR mode is a simple string flag (off/os/ca)
         if args.get("cfar"):
@@ -878,6 +1688,57 @@ def make_app(manager: JobManager, token: Optional[str] = None):
         devs = [asdict(d) for d in discover_devices()]
         return jsonify(devs)
 
+    @app.get("/hardware/inventory")
+    def hardware_inventory():
+        return jsonify(manager.hardware_inventory())
+
+    @app.get("/role-assignments")
+    def role_assignments():
+        return jsonify(manager.list_role_assignments())
+
+    @app.put("/role-assignments/<role_lane>")
+    def role_assignment_set(role_lane: str):
+        payload = request.get_json(force=True) or {}
+        try:
+            return jsonify(manager.set_role_assignment(role_lane, payload))
+        except RoleAssignmentError as e:
+            return (jsonify(e.payload), e.status_code)
+
+    @app.delete("/role-assignments/<role_lane>")
+    def role_assignment_delete(role_lane: str):
+        try:
+            return jsonify(manager.clear_role_assignment(role_lane))
+        except RoleAssignmentError as e:
+            return (jsonify(e.payload), e.status_code)
+
+    @app.post("/role-runs")
+    def role_run_start():
+        payload = request.get_json(force=True) or {}
+        try:
+            return (jsonify(manager.start_role_run(payload)), 201)
+        except Exception as e:
+            return (jsonify({"error": str(e)}), 400)
+
+    @app.get("/role-runs")
+    def role_runs():
+        return jsonify(manager.list_role_runs())
+
+    @app.get("/role-runs/<role_run_id>")
+    def role_run_detail(role_run_id: str):
+        try:
+            return jsonify(manager.get_role_run(role_run_id))
+        except KeyError as e:
+            return (jsonify({"error": str(e)}), 404)
+
+    @app.delete("/role-runs/<role_run_id>")
+    def role_run_delete(role_run_id: str):
+        try:
+            return jsonify(manager.stop_role_run(role_run_id))
+        except KeyError as e:
+            return (jsonify({"error": str(e)}), 404)
+        except Exception as e:
+            return (jsonify({"error": str(e)}), 400)
+
     @app.get("/debug/discovery")
     def debug_discovery():
         limit = request.args.get("limit", default=50, type=int)
@@ -947,6 +1808,8 @@ def make_app(manager: JobManager, token: Optional[str] = None):
                 sdrwatch_args=params,
             )
             return jsonify(asdict(job))
+        except UnsupportedBackendError as e:
+            return (jsonify(e.payload), 400)
         except Exception as e:
             return (jsonify({"error": str(e)}), 400)
 

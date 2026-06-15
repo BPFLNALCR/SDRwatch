@@ -331,6 +331,57 @@ def _summarize_decision_tail(text: str) -> Tuple[Dict[str, Any], bool]:
     return summary, has_decision_evidence
 
 
+def _summarize_role_telemetry_tail(text: str) -> Dict[str, Any]:
+    roles: set[str] = set()
+    devices: set[str] = set()
+    jobs: set[str] = set()
+    role_run_ids: set[str] = set()
+    unavailable_fields: set[str] = set()
+    timing_fields: Dict[str, int] = {}
+    resource_count = 0
+    parse_errors = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            parse_errors += 1
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("receiver_role"):
+            roles.add(str(record["receiver_role"]))
+        if record.get("device_identity"):
+            devices.add(str(record["device_identity"]))
+        elif record.get("device_key"):
+            devices.add(str(record["device_key"]))
+        if record.get("job_id"):
+            jobs.add(str(record["job_id"]))
+        if record.get("role_run_id"):
+            role_run_ids.add(str(record["role_run_id"]))
+        for field in record.get("unavailable_fields") or []:
+            unavailable_fields.add(str(field))
+        timing = record.get("timing")
+        if isinstance(timing, dict):
+            for key, value in timing.items():
+                if value is not None:
+                    timing_fields[str(key)] = timing_fields.get(str(key), 0) + 1
+        if record.get("event") == "resource_telemetry":
+            resource_count += 1
+    return {
+        "roles": sorted(roles),
+        "devices": sorted(devices),
+        "jobs": sorted(jobs),
+        "role_run_ids": sorted(role_run_ids),
+        "timing_fields": dict(sorted(timing_fields.items())),
+        "resource_telemetry_count": resource_count,
+        "unavailable_fields": sorted(unavailable_fields),
+        "parse_errors": parse_errors,
+    }
+
+
 def _clean_job_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return {
         key: value
@@ -422,6 +473,9 @@ def _add_diagnostic_jsonl(
     summary, has_decision_evidence = _summarize_decision_tail(text)
     summary["truncated"] = bool(truncated)
     _add_json(zf, manifest, "diagnostics/decision-summary.json", summary)
+    role_summary = _summarize_role_telemetry_tail(text)
+    manifest.data["role_telemetry_summary"] = role_summary
+    _add_json(zf, manifest, "diagnostics/role-telemetry-summary.json", role_summary)
     job_level = _extract_job_level_diagnostics(text)
     characterization_summary = _summarize_characterization_tail(text, bounds.row_limit)
     if characterization_summary.get("truncated"):

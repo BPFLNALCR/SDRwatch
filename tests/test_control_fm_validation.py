@@ -148,3 +148,41 @@ def test_controller_command_passes_supported_characterization_revisit_and_persis
     for flag, value in expected_flags.items():
         assert cmd[cmd.index(flag) + 1] == value
     assert "--two-pass" in cmd
+
+
+def test_controller_command_passes_role_metadata_flags_without_backend_change() -> None:
+    cmd = build_scanner_cmd(
+        {
+            "start": 101_100_000,
+            "stop": 103_500_000,
+            "step": 2_400_000,
+            "receiver_role": "GUARD",
+            "role_lane": "guard_primary",
+            "role_run_id": "rr-1",
+            "job_id": "job-1",
+            "source_task": "guard_window",
+            "device_identity": "rtl:serial:S1",
+            "device_serial": "S1",
+            "device_index": 0,
+            "identity_confidence": "stable",
+            "active_device_count": 1,
+            "active_role_count": 1,
+        }
+    )
+
+    expected_flags = {
+        "--receiver-role": "GUARD",
+        "--role-lane": "guard_primary",
+        "--role-run-id": "rr-1",
+        "--job-id": "job-1",
+        "--source-task": "guard_window",
+        "--device-identity": "rtl:serial:S1",
+        "--device-serial": "S1",
+        "--device-index": "0",
+        "--identity-confidence": "stable",
+        "--active-device-count": "1",
+        "--active-role-count": "1",
+    }
+    for flag, value in expected_flags.items():
+        assert cmd[cmd.index(flag) + 1] == value
+    assert cmd[cmd.index("--driver") + 1] == "rtlsdr_native"

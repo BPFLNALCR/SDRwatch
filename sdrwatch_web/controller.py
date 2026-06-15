@@ -93,6 +93,38 @@ class ControllerClient:
         """List available SDR devices."""
         return self._req('GET', '/devices')
 
+    def hardware_inventory(self) -> Any:
+        """Fetch hardware inventory and runnable capability tier."""
+        return self._req('GET', '/hardware/inventory')
+
+    def list_role_assignments(self) -> Any:
+        """List manual receiver role assignments."""
+        return self._req('GET', '/role-assignments')
+
+    def set_role_assignment(self, role_lane: str, payload: Dict[str, Any]) -> Any:
+        """Set or replace a manual receiver role assignment."""
+        return self._req('PUT', f'/role-assignments/{role_lane}', body=payload)
+
+    def clear_role_assignment(self, role_lane: str) -> Any:
+        """Clear a manual receiver role assignment."""
+        return self._req('DELETE', f'/role-assignments/{role_lane}')
+
+    def start_role_run(self, payload: Dict[str, Any]) -> Any:
+        """Start a grouped role-aware run."""
+        return self._req('POST', '/role-runs', body=payload)
+
+    def list_role_runs(self) -> Any:
+        """List grouped role-aware runs."""
+        return self._req('GET', '/role-runs')
+
+    def get_role_run(self, role_run_id: str) -> Any:
+        """Fetch grouped role-aware run detail."""
+        return self._req('GET', f'/role-runs/{role_run_id}')
+
+    def stop_role_run(self, role_run_id: str) -> Any:
+        """Stop a grouped role-aware run."""
+        return self._req('DELETE', f'/role-runs/{role_run_id}')
+
     def discovery_debug(self, limit: int = 50) -> Any:
         """Fetch controller-side device discovery debug events."""
         params = {"limit": int(limit)}

@@ -3,8 +3,8 @@
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![CI](https://github.com/BPFLNALCR/sdr-watch/actions/workflows/ci.yml/badge.svg)
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%205-red)
-![SDR](https://img.shields.io/badge/SDR-RTL--SDR%20%7C%20SoapySDR-blue)
-![Planned SDRs](https://img.shields.io/badge/Planned-HackRF%2C%20Airspy%2C%20LimeSDR%2C%20USRP-yellow)
+![SDR](https://img.shields.io/badge/SDR-RTL--SDR%20Native-blue)
+![Planned SDRs](https://img.shields.io/badge/Planned-HackRF%2C%20Airspy%2C%20SoapySDR-yellow)
 ![WebUI](https://img.shields.io/badge/WebUI-Flask-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -22,16 +22,18 @@ SDR-Watch transforms a Raspberry Pi 5 and SDR dongle into a **persistent spectru
 
 **Current capabilities:**
 
-* ✅ Optimized for **RTL-SDR** devices via native driver or **SoapySDR** abstraction.
+* ✅ Optimized for **RTL-SDR** devices through the native `rtlsdr_native` scanner runner.
+* ✅ Hardware-aware multi-RTL inventory, manual GUARD/ROVER/REFERENCE role assignment, and grouped role-run status.
 * ✅ Runs on **Raspberry Pi 5** with **Raspberry Pi OS** (Trixie/Bookworm).
 * ✅ Full CLI tool and tactical web dashboard with signal management.
+* ℹ️ Airspy, HackRF, and SoapySDR scanner execution are planned/future or unsupported in this build; they are not runnable scanner backends.
 
 ---
 
 ## ✨ Features
 
 ### Core Scanning
-- **Wideband Sweeps**: Scan across frequency ranges using RTL-SDR (native or SoapySDR).
+- **Wideband Sweeps**: Scan across frequency ranges using native RTL-SDR (`rtlsdr_native`).
 - **Signal Detection**: CFAR-based detection with robust noise floor estimation (median + MAD).
 - **Baseline Tracking**: Long-term exponential moving average to separate normal vs. anomalous signals.
 - **Bandplan Mapping**: Map detections to FCC, CEPT, ITU-R, and other official allocations.
@@ -81,7 +83,7 @@ chmod +x install-sdrwatch.sh
 
 The installer will:
 
-- Install dependencies (RTL-SDR, SoapySDR, NumPy/SciPy, Flask, etc.).
+- Install dependencies (RTL-SDR, NumPy/SciPy, Flask, etc.).
 - Set up a Python venv with system packages.
 - Verify hardware (`rtl_test`).
 - Apply kernel blacklist + udev rules for RTL2832U dongles.
@@ -110,6 +112,21 @@ For detection-quality problems, use the GUI workflow:
 
 Diagnostic bundles are local zip files and do not require cloud services. They include bounded scanner logs, diagnostic JSONL evidence, job metadata, baseline context, selected monitoring zones, known signals, and a manifest noting any missing or truncated evidence.
 
+### Hardware-Aware Multi-RTL Mode
+
+The Control page exposes detected native RTL-SDR receivers, capability tier, identity warnings, manual role assignment, and role-aware run status.
+
+Capability tiers:
+
+| Tier | Meaning |
+| --- | --- |
+| Tier 0 | No runnable native RTL-SDR receiver is available. |
+| Tier 1 | One RTL can run existing single-device scanning or one GUARD window. |
+| Tier 2 | Two RTLs can run GUARD + ROVER concurrently when locks are available. |
+| Tier 2+ | Three or more RTLs can run two GUARD lanes plus REFERENCE or ROVER. |
+
+Manual roles are GUARD, ROVER, and REFERENCE. SDRwatch prefers unique serial-based identities; missing, duplicate, or index-only identities are shown with warnings and are treated as unstable across replug or restart. Role-aware operation favors metadata, PSD/event summaries, and diagnostic JSONL by default. Continuous raw IQ capture is not the default.
+
 ### Command Line
 
 The scanner command line remains available for backend smoke checks and advanced internal use. Normal operator workflows, including diagnostic capture, should use the web dashboard and controller job lifecycle.
@@ -120,14 +137,14 @@ Sweep the FM band once:
 
 ```bash
 python3 -m sdrwatch.cli --baseline-id 3 --start 88e6 --stop 108e6 --step 1.8e6 \
-  --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr --gain auto
+  --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr_native --gain auto
 ```
 
 Continuous monitoring across 30 MHz – 1.7 GHz:
 
 ```bash
 python3 -m sdrwatch.cli --baseline-id 3 --start 30e6 --stop 1700e6 --step 2.4e6 \
-  --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr \
+  --samp-rate 2.4e6 --fft 4096 --avg 8 --driver rtlsdr_native \
   --gain auto --loop --notify --db sdrwatch.db --jsonl events.jsonl
 ```
 
@@ -187,6 +204,14 @@ The controller exposes a REST API consumed by the web frontend or automation:
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/devices` | Enumerate SDRs (key, kind, label, metadata) |
+| `GET` | `/hardware/inventory` | Enumerate RTL hardware, capability tier, identity warnings, locks, and unsupported planned classes |
+| `GET` | `/role-assignments` | List manual receiver role assignments |
+| `PUT` | `/role-assignments/<role_lane>` | Assign a detected RTL to a role lane |
+| `DELETE` | `/role-assignments/<role_lane>` | Clear a role assignment |
+| `GET` | `/role-runs` | List grouped role-aware runs and child jobs |
+| `POST` | `/role-runs` | Start assigned role lanes as grouped child scanner jobs |
+| `GET` | `/role-runs/<id>` | Inspect grouped role-aware run status |
+| `DELETE` | `/role-runs/<id>` | Stop grouped role-aware run child jobs |
 | `GET` | `/jobs` | List jobs (status, params, timestamps) |
 | `POST` | `/jobs` | Start a job `{device_key, label, baseline_id, params}` |
 | `GET` | `/jobs/<id>` | Inspect a specific job |
@@ -274,7 +299,7 @@ sqlite3 -header -csv sdrwatch.db "SELECT * FROM baseline_detections;" > signals.
 
 ## 🛣️ Roadmap
 
-- [ ] Additional SDR support (HackRF, Airspy, LimeSDR, USRP via SoapySDR)
+- [ ] Additional non-RTL scanner support (HackRF, Airspy, LimeSDR, USRP, and SoapySDR abstraction)
 - [ ] Duty-cycle analysis for bursty signals
 - [ ] Multi-SDR coordination for distributed scanning
 - [ ] Enhanced charting and spectrum waterfall

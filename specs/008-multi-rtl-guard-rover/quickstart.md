@@ -114,6 +114,15 @@ Expected outcome:
 - Bottlenecks can be identified from metadata and diagnostics without continuous raw IQ capture.
 - Missing platform metrics are marked as unavailable rather than causing scan failure.
 
+## Provenance Boundary
+
+The first implementation keeps full per-window timing, sample accounting, resource
+telemetry, and receiver role/device/job provenance diagnostic-first in JSONL and
+diagnostic bundles. Controller role assignments, role runs, and child job
+metadata are durable in controller state. SQLite `scan_updates` has nullable
+role/device/job/source provenance columns for low-risk summary storage, while
+full detection-level observation/fusion provenance remains deferred.
+
 ## Documentation Check
 
 Review README and operator docs after implementation:
@@ -122,3 +131,10 @@ Review README and operator docs after implementation:
 - Airspy, HackRF, and Soapy are clearly marked planned/future or unsupported.
 - Capability tiers, role semantics, identity warnings, and Pi 5 resource expectations are documented.
 - No continuous raw IQ capture is described as the default.
+
+## Implementation Environment Notes
+
+- No-hardware automated validation and fake-controller HTTP `/control` smoke were run in the development environment.
+- In-app browser validation was attempted but could not complete because browser automation failed with a Windows sandbox permission error.
+- Raspberry Pi 5 one/two/three-RTL hardware acceptance was not run in this environment.
+- CPU load, RSS memory, and dropped-read telemetry should be treated as platform-dependent fields and verified during Pi 5 bundle capture.

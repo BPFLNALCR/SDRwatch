@@ -37,6 +37,37 @@ def _get_attr(source: Any, attr: str, default: Any = None) -> Any:
     return getattr(source, attr, default)
 
 
+_PROVENANCE_KEYS = (
+    "job_id",
+    "role_run_id",
+    "receiver_role",
+    "role_lane",
+    "source_task",
+    "device_identity",
+    "device_key",
+    "device_serial",
+    "device_index",
+    "identity_confidence",
+    "active_device_count",
+    "active_role_count",
+)
+
+
+def _provenance_fields(source: Any) -> Dict[str, Any]:
+    fields: Dict[str, Any] = {}
+    for key in _PROVENANCE_KEYS:
+        value = _get_attr(source, key)
+        if value not in (None, ""):
+            fields[key] = value
+    backend = _get_attr(source, "backend", _get_attr(source, "driver"))
+    if backend not in (None, ""):
+        fields["backend"] = backend
+    source_profile = _get_attr(source, "source_profile", _get_attr(source, "profile"))
+    if source_profile not in (None, ""):
+        fields["source_profile"] = source_profile
+    return fields
+
+
 def _clean_float(value: Any) -> Optional[float]:
     if value in (None, ""):
         return None
@@ -146,7 +177,46 @@ def build_device_telemetry_snapshot(
         selected_profile=selected_profile if selected_profile is not None else _get_attr(args, "profile"),
         unavailable_fields=unavailable_fields,
     )
-    return snapshot.to_record()
+    record = snapshot.to_record()
+    record.update(_provenance_fields(args))
+    if device_key not in (None, ""):
+        record["device_key"] = str(device_key)
+    if record.get("device_serial") is None and _get_attr(args, "device_serial") not in (None, ""):
+        record["device_serial"] = str(_get_attr(args, "device_serial"))
+    if record.get("device_index") is None and _get_attr(args, "device_index") not in (None, ""):
+        record["device_index"] = _clean_int(_get_attr(args, "device_index"))
+    return record
+
+
+def build_resource_telemetry_snapshot(args: Any, *, pid: Optional[int] = None) -> Dict[str, Any]:
+    unavailable_fields: list[str] = []
+    rss_memory_bytes = None
+    try:
+        import resource  # type: ignore
+
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        rss_memory_bytes = int(getattr(usage, "ru_maxrss", 0) or 0)
+        if rss_memory_bytes and rss_memory_bytes < 10_000_000:
+            rss_memory_bytes *= 1024
+    except Exception:
+        unavailable_fields.append("rss_memory_bytes")
+    cpu_load = None
+    try:
+        import os
+
+        cpu_load = float(os.getloadavg()[0])  # type: ignore[attr-defined]
+    except Exception:
+        unavailable_fields.append("cpu_load")
+    record = {
+        "event": "resource_telemetry",
+        "pid": int(pid) if pid is not None else None,
+        "sample_rate": _clean_int(_get_attr(args, "samp_rate", _get_attr(args, "sample_rate_hz"))),
+        "cpu_load": cpu_load,
+        "rss_memory_bytes": rss_memory_bytes,
+        "unavailable_fields": unavailable_fields,
+    }
+    record.update(_provenance_fields(args))
+    return record
 
 
 def _dict_attr(source: Any, attr: str) -> Dict[str, Any]:
@@ -172,7 +242,10 @@ def build_effective_parameter_manifest(
     max_persist_width = _clean_float(_get_attr(args, "max_persist_width_hz")) or max_width
     max_card_width = _clean_float(_get_attr(args, "max_card_width_hz")) or max_width
     manifest = {
+        **_provenance_fields(args),
         "job_id": job_id or _get_attr(args, "job_id"),
+        "runnable_backend": _get_attr(args, "driver"),
+        "source_profile": _get_attr(args, "profile"),
         "requested_profile": requested_profile,
         "applied_profile": applied_profile,
         "profile_applied": profile_applied,
@@ -372,7 +445,22 @@ def build_window_record(
     anomalous_power: bool,
     emitted_segments: list[Segment],
 ) -> Dict[str, Any]:
-    return {
+    timing = dict(tuning_params.get("timing") or {})
+    for key in (
+        "tune_ms",
+        "flush_ms",
+        "read_ms",
+        "fft_ms",
+        "detect_ms",
+        "db_update_ms",
+        "jsonl_ms",
+        "total_window_ms",
+    ):
+        timing.setdefault(key, None)
+    unavailable_fields = list(tuning_params.get("unavailable_fields") or [])
+    if tuning_params.get("dropped_reads") is None and "dropped_reads" not in unavailable_fields:
+        unavailable_fields.append("dropped_reads")
+    record = {
         "time_utc": utc_now_str(),
         "event": "detection_window",
         "sweep_id": sweep_id,
@@ -382,7 +470,20 @@ def build_window_record(
         "window_low_hz": float(window_low_hz),
         "window_high_hz": float(window_high_hz),
         "profile": profile,
+        "source_profile": tuning_params.get("source_profile") or profile,
         "tuning_params": tuning_params,
+        "sample_rate": tuning_params.get("sample_rate")
+        or tuning_params.get("samp_rate")
+        or tuning_params.get("samp_rate_hz"),
+        "fft": tuning_params.get("fft"),
+        "avg": tuning_params.get("avg"),
+        "num_segments": int(len(emitted_segments)),
+        "samples_requested": tuning_params.get("samples_requested"),
+        "samples_read": tuning_params.get("samples_read"),
+        "short_read": tuning_params.get("short_read"),
+        "dropped_reads": tuning_params.get("dropped_reads"),
+        "timing": timing,
+        "unavailable_fields": unavailable_fields,
         "threshold_info": detection_diagnostics.get("threshold_info", {}),
         "bins_above_threshold": int(detection_diagnostics.get("bins_above_threshold", 0) or 0),
         "raw_candidate_segment_count": int(
@@ -398,6 +499,8 @@ def build_window_record(
         "anomalous_power": bool(anomalous_power),
         "segments": detection_diagnostics.get("segments", [segment_to_dict(seg) for seg in emitted_segments]),
     }
+    record.update(_provenance_fields(tuning_params))
+    return record
 
 
 class DetectionDiagnosticWriter:
