@@ -1,336 +1,216 @@
-# Tasks: Hardware-Aware Multi-RTL Guard/Rover Mode
+# Tasks: Profile-Governed Signal Identity Span and Revisit Authority
 
 **Input**: Design documents from `specs/008-multi-rtl-guard-rover/`
 
-**Prerequisites**: [plan.md](./plan.md), [spec.md](./spec.md), [research.md](./research.md), [data-model.md](./data-model.md), [contracts/](./contracts/), [quickstart.md](./quickstart.md)
+**Prerequisites**: [plan.md](./plan.md), [spec.md](./spec.md), [research.md](./research.md), [data-model.md](./data-model.md), [contracts/signal-span-policy-contract.md](./contracts/signal-span-policy-contract.md), [quickstart.md](./quickstart.md)
 
-**Tests**: Required. This feature must use no-hardware fake-device/fake-process tests before or alongside implementation, plus regression checks for existing `/api/jobs`, FM Broadcast, cross-sweep persistence, diagnostic JSONL, and web/controller behavior.
+**Tests**: Required. The specification and plan require no-hardware tests before or alongside implementation, plus regression coverage for cross-sweep persistence, effective-parameter/profile export, Slice 1 multi-RTL inventory/backend gating, and legacy `/api/jobs` compatibility. Operator acceptance remains web GUI -> controller job lifecycle -> scanner backend; scanner CLI checks are backend smoke only.
 
-**Organization**: Tasks follow the plan's slice order. Story labels map to spec user stories: [US1] inventory/capability, [US2] one-RTL GUARD, [US3] two-RTL GUARD+ROVER, [US4] three-RTL two-GUARD plus REFERENCE/ROVER, [US5] benchmark telemetry.
+**Organization**: Tasks are grouped by the current span-policy user stories. This task list replaces the stale hardware-aware multi-RTL task list; do not continue from the old multi-RTL role-run slices.
 
-**Branch Hygiene**: Feature artifacts were created on `007-cross-sweep-persistence-and-telemetry`. Before implementation code starts, create or switch to stacked branch `008-multi-rtl-guard-rover` from the current branch tip. Do not create a new spec and do not move this feature directory.
-
-**Feature Boundary**: Runnable scanner execution remains RTL-only via `rtlsdr_native`. Airspy, HackRF, SoapySDR, and other non-RTL hardware may appear only as unsupported/planned classes and must not become runnable scanner choices.
+**Feature Boundary**: This is a generic profile-policy update. Do not add FM-specific tuning, 88-108 MHz special cases, new multi-RTL role assignment or grouped role-run work, Airspy/HackRF/Soapy runtime support, UI redesign, signal fusion schema, database migration, continuous IQ capture, Rust DSP rewrite, or broad detector threshold retuning from the live FM canary.
 
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Parallelizable only when the task touches different files and does not depend on an incomplete behavior.
-- **[Story]**: Required for user-story slice tasks.
+- **[Story]**: Required for user-story phases.
 - All descriptions include concrete file paths.
 
 ---
 
-## Phase 1: Setup and Branch Hygiene
+## Phase 1: Setup and Artifact Alignment
 
-**Purpose**: Prepare the implementation branch and confirm Spec Kit artifacts without changing runtime behavior.
+**Purpose**: Confirm the current Spec Kit artifacts and prepare focused no-hardware fixtures before runtime edits.
 
-- [X] T001 Create or switch to stacked branch `008-multi-rtl-guard-rover` from repository root `C:\Users\User\SDRwatch`
-- [X] T002 Verify `.specify/feature.json` points to `specs/008-multi-rtl-guard-rover` in `C:\Users\User\SDRwatch\.specify\feature.json`
-- [X] T003 Verify `AGENTS.md` points to `specs/008-multi-rtl-guard-rover/plan.md` in `C:\Users\User\SDRwatch\AGENTS.md`
-- [X] T004 Record the partial role-run startup convention in `specs/008-multi-rtl-guard-rover/contracts/role-run-contract.md`: if at least one child starts and another fails, status is `degraded` with child errors; if no child starts, return a conventional error; do not use HTTP 207 unless existing project tests already establish it
-- [X] T005 [P] Add `tests/helpers_multi_rtl.py` with fake RTL devices, duplicate serial fixtures, missing serial fixtures, fake lock owner helpers, and fake process/reaper stubs
-- [X] T006 [P] Add `tests/test_multi_rtl_branch_hygiene.py` to assert the feature directory and plan references remain `specs/008-multi-rtl-guard-rover`
+- [ ] T001 Review the aligned span-policy artifacts in `specs/008-multi-rtl-guard-rover/spec.md`, `specs/008-multi-rtl-guard-rover/plan.md`, `specs/008-multi-rtl-guard-rover/data-model.md`, `specs/008-multi-rtl-guard-rover/contracts/signal-span-policy-contract.md`, and `specs/008-multi-rtl-guard-rover/quickstart.md` before editing runtime code
+- [ ] T002 Verify `.specify/feature.json` points to `specs/008-multi-rtl-guard-rover` and do not restore stale multi-RTL task content in `specs/008-multi-rtl-guard-rover/tasks.md`
+- [ ] T003 [P] Create focused shared fixtures for broad continuous, narrowband, discovery, and guard/event policy scenarios in `tests/test_signal_span_policy.py`
+- [ ] T004 [P] Inventory existing span and revisit touchpoints in `sdrwatch/detection/engine.py`, `sdrwatch/baseline/persistence.py`, `sdrwatch/detection/types.py`, `sdrwatch/sweep/sweeper.py`, and `sdrwatch/util/detection_diagnostics.py`
 
-**Checkpoint**: Branch and Spec Kit artifact hygiene are explicit before code implementation begins.
+**Checkpoint**: Current artifacts and test fixture locations are confirmed before implementation.
 
 ---
 
-## Phase 2: Foundational Controller State and Test Fixtures
+## Phase 2: Foundational Policy Plumbing
 
-**Purpose**: Add shared no-hardware fixtures and backward-compatible controller state support that every slice depends on.
+**Purpose**: Add the shared policy representation and effective-parameter plumbing that all user stories depend on.
 
-- [X] T007 [P] Add no-hardware controller import helpers for `sdrwatch-control.py` in `tests/helpers_control.py` without changing existing helper behavior
-- [X] T008 Add controller state migration tests for missing `role_assignments`, `role_runs`, and session marker keys in `tests/test_multi_rtl_state.py`
-- [X] T009 Add child job metadata serialization tests for `receiver_role`, `role_lane`, `role_run_id`, `source_task`, `device_identity`, `device_serial`, `device_index`, `identity_confidence`, `active_device_count`, and `active_role_count` in `tests/test_multi_rtl_state.py`
-- [X] T010 Implement backward-compatible default `role_assignments`, `role_runs`, and session marker loading in `sdrwatch-control.py`
-- [X] T011 Add additive role-aware fields to the controller `Job` representation and persistence serialization in `sdrwatch-control.py`
-- [X] T012 Add state persistence helpers for role assignments, role runs, and role-aware child job metadata in `sdrwatch-control.py`
-- [X] T013 Run foundational state tests with `python -m pytest -q tests/test_multi_rtl_state.py tests/test_control_diagnostics_mode.py`
+**Critical**: No story implementation should rely on profile-name branches such as `profile == "fm_broadcast"` in generic detection or persistence code.
 
-**Checkpoint**: Controller state can read older files, persist new role metadata, and keep existing diagnostics-mode state behavior.
+- [ ] T005 Add a `SignalSpanPolicy` dataclass and `resolve_signal_span_policy(args)` helper in `sdrwatch/detection/span_policy.py`
+- [ ] T006 Extend `ScanProfile` with optional span-policy fields and profile dictionary serialization in `sdrwatch/io/profiles.py`
+- [ ] T007 Add scanner CLI arguments, default normalization, and profile application for span-policy fields in `sdrwatch/cli.py`
+- [ ] T008 Add controller pass-through mappings for new span-policy params without changing the `/api/jobs` payload shape in `sdrwatch-control.py`
+- [ ] T009 Wire the resolved `SignalSpanPolicy` into detection and persistence construction in `sdrwatch/detection/engine.py` and `sdrwatch/baseline/persistence.py`
+- [ ] T010 Expose the derived policy under `signal_span_policy` or additive `span_controls` fields in `sdrwatch/util/detection_diagnostics.py` and `sdrwatch/sweep/sweeper.py`
+
+**Checkpoint**: Policy fields can flow from profile/operator params to scanner internals and effective parameters without changing database schema or API shape.
 
 ---
 
-## Phase 3: Slice 1 - Inventory, Capability Tier, Backend Gating (US1)
+## Phase 3: User Story 1 - Preserve Honest Raw Evidence While Showing Policy-Shaped Identity (Priority: P1) MVP
 
-**Goal**: The operator can see detected RTL hardware, runnable capability tier, busy state, and unsupported hardware status without enabling unsupported backends.
+**Goal**: Raw detector/revisit fragments remain honest and tiny when appropriate, while identity/match, persisted/card, and display spans are separately policy-shaped.
 
-**Independent Test**: Fake zero/one/two/three RTL inventories produce Tier 0/Tier 1/Tier 2/Tier 2+ through controller and web inventory surfaces; unsupported starts are rejected before spawn.
+**Independent Test**: A no-hardware broad-profile fixture emits a tiny raw segment and proves raw width remains tiny while identity, persisted/card, and display spans obey their own policy floors.
 
 ### Tests First
 
-- [X] T014 [US1] Add zero/one/two/three RTL inventory tier tests in `tests/test_multi_rtl_inventory.py`
-- [X] T015 [US1] Add missing serial, duplicate serial, and index-only warning inventory tests in `tests/test_multi_rtl_inventory.py`
-- [X] T016 [US1] Add unsupported Airspy/HackRF/Soapy inventory class tests with `runnable=false` in `tests/test_multi_rtl_inventory.py`
-- [X] T017 [P] [US1] Add backend gating tests that reject `hackrf:`, `airspy:`, and `soapy:` starts before `subprocess.Popen` in `tests/test_multi_rtl_backend_gating.py`
-- [X] T018 [US1] Add controller route contract tests for `GET /hardware/inventory` and legacy `/devices` compatibility in `tests/test_multi_rtl_inventory.py`
-- [X] T019 [P] [US1] Add web proxy tests for `GET /api/hardware/inventory` and existing `/ctl/devices` compatibility in `tests/test_multi_rtl_web_api.py`
+- [ ] T011 [P] [US1] Add failing policy-default tests for `min_identity_bandwidth_hz` and `min_persist_bandwidth_hz` deriving from `min_match_bandwidth_hz` in `tests/test_signal_span_policy.py`
+- [ ] T012 [P] [US1] Add a tiny raw detector fragment test proving `raw_fragment_bandwidth_hz` remains tiny while `identity_match_bandwidth_hz` is floored in `tests/test_fm_characterization_persistence.py`
+- [ ] T013 [P] [US1] Add a persistence EMA test proving `persisted_card_bandwidth_hz` cannot shrink below `min_persist_bandwidth_hz` in `tests/test_extent_hysteresis.py`
+- [ ] T014 [P] [US1] Add a display-span independence test proving `display_bandwidth_hz` follows `min_display_bandwidth_hz` and is not reported as measured occupied bandwidth in `tests/test_fm_characterization_diagnostics.py`
+- [ ] T015 [P] [US1] Add a scan-edge clipping test with `baseline_clipped` and `clip_reason` diagnostics in `tests/test_signal_span_policy.py`
 
 ### Implementation
 
-- [X] T020 [US1] Implement hardware inventory entry construction with label, runtime index, serial, identity fields, runnable backend, busy/locked state, active job ID, assigned role, and warnings in `sdrwatch-control.py`
-- [X] T021 [US1] Implement capability tier derivation for Tier 0, Tier 1, Tier 2, and Tier 2+ in `sdrwatch-control.py`
-- [X] T022 [US1] Add unsupported/planned hardware class reporting with `runnable=false` and no runnable backend in `sdrwatch-control.py`
-- [X] T023 [US1] Add explicit pre-spawn backend gating for unsupported device keys and backends in `sdrwatch-control.py`
-- [X] T024 [US1] Add controller route `GET /hardware/inventory` in `sdrwatch-control.py`
-- [X] T025 [US1] Preserve legacy `/devices` response compatibility while allowing additive inventory fields in `sdrwatch-control.py`
-- [X] T026 [US1] Add inventory and capability wrapper methods in `sdrwatch_web/controller.py`
-- [X] T027 [US1] Add web proxy route `GET /api/hardware/inventory` in `sdrwatch_web/blueprints/api_jobs.py`
-- [X] T028 [US1] Add token-auth coverage for the web inventory proxy in `tests/test_multi_rtl_web_api.py`
+- [ ] T016 [US1] Add additive raw-fragment aliases and bandwidth interpretation fields to `CharacterizationEvidence` serialization in `sdrwatch/detection/types.py`
+- [ ] T017 [US1] Apply `min_identity_bandwidth_hz` and `min_match_bandwidth_hz` when deriving identity/match spans in `sdrwatch/detection/engine.py`
+- [ ] T018 [US1] Emit `identity_match_bandwidth_hz`, `width_floor_applied_hz`, and `bandwidth_interpretation` in characterization records from `sdrwatch/detection/engine.py`
+- [ ] T019 [US1] Apply `min_persist_bandwidth_hz` before and after persistence width EMA blending in `sdrwatch/baseline/persistence.py`
+- [ ] T020 [US1] Clamp final persisted/card spans with `min_persist_bandwidth_hz` and `max_persist_bandwidth_hz` before store insert/update in `sdrwatch/baseline/persistence.py`
+- [ ] T021 [US1] Emit `persisted_card_bandwidth_hz`, `persist_width_floor_applied_hz`, `baseline_clipped`, and `clip_reason` diagnostics from `sdrwatch/baseline/persistence.py`
+- [ ] T022 [US1] Preserve display span shaping as operator-facing presentation and prevent display width from replacing measured occupied bandwidth in `sdrwatch/detection/engine.py`
 
-### Slice 1 Acceptance and Regression
+### Validation
 
-- [X] T029 [US1] Run `python -m pytest -q tests/test_multi_rtl_inventory.py tests/test_multi_rtl_backend_gating.py tests/test_multi_rtl_web_api.py`
-- [X] T030 [US1] Run existing compatibility checks `python -m pytest -q tests/test_control_page_scan_settings.py tests/test_web_diagnostics_bundle.py`
-- [X] T031 [US1] Confirm unsupported Airspy/HackRF/Soapy scanner starts report `spawned=false` in `tests/test_multi_rtl_backend_gating.py`
+- [ ] T023 [US1] Run `python -m pytest -q tests/test_signal_span_policy.py tests/test_extent_hysteresis.py tests/test_fm_characterization_persistence.py tests/test_fm_characterization_diagnostics.py --basetemp .test-tmp\\span-policy-us1` from repository root `C:\Users\User\SDRwatch`
+
+**Checkpoint**: US1 is independently testable and demonstrates the core MVP behavior.
 
 ---
 
-## Phase 4: Slice 2 - Stable Identity, Warnings, Role Assignment State (US1, US2)
+## Phase 4: User Story 2 - Gate Revisit Authority Separately from Confirmation (Priority: P1)
 
-**Goal**: The operator can manually assign GUARD, ROVER, or REFERENCE roles to runnable RTLs using stable serial identity where possible, with clear warnings for unstable identity.
+**Goal**: Revisit evidence can confirm presence without automatically moving center or updating identity/persisted width.
 
-**Independent Test**: Role assignment set/list/clear works through controller and web APIs, duplicate active assignment is rejected, serial assignments persist, and index-only assignments are session-scoped.
+**Independent Test**: Tiny, far-offset, and fragmented revisit fixtures record confirmation evidence but are blocked from identity updates when policy gates fail.
 
 ### Tests First
 
-- [X] T032 [US1] Add serial-first identity resolution tests for unique serials in `tests/test_multi_rtl_identity.py`
-- [X] T033 [US1] Add missing serial, duplicate serial, and index-only identity warning tests in `tests/test_multi_rtl_identity.py`
-- [X] T034 [US2] Add role assignment set/list/clear controller tests for GUARD, ROVER, and REFERENCE in `tests/test_multi_rtl_roles.py`
-- [X] T035 [P] [US2] Add role assignment web proxy tests for `GET`, `PUT`, and `DELETE /api/role-assignments/{role_lane}` in `tests/test_multi_rtl_web_api.py`
-- [X] T036 [US2] Add persistence tests proving stable serial assignments survive restart and index-only assignments are invalidated or require reconfirmation after restart in `tests/test_multi_rtl_roles.py`
-- [X] T037 [US2] Add duplicate active assignment rejection tests in `tests/test_multi_rtl_roles.py`
+- [ ] T024 [P] [US2] Add a tiny revisit test that expects `revisit_authority=confirmation_only` when bandwidth is below `min_revisit_bandwidth_for_identity_update_hz` in `tests/test_fm_characterization_persistence.py`
+- [ ] T025 [P] [US2] Add a large center-delta revisit test that prevents stable center movement when `max_revisit_center_delta_for_identity_update_hz` is exceeded in `tests/test_fm_characterization_persistence.py`
+- [ ] T026 [P] [US2] Add a fragmented revisit policy test that records confirmation-only evidence for ambiguous revisit fragments in `tests/test_signal_span_policy.py`
+- [ ] T027 [P] [US2] Add revisit authority diagnostic assertions for `identity_update_allowed`, `confirmation_recorded`, `revisit_bandwidth_policy_result`, and `revisit_center_policy_result` in `tests/test_fm_characterization_diagnostics.py`
 
 ### Implementation
 
-- [X] T038 [US1] Implement `rtl:serial:<serial>` stable identity and `rtl:index:<index>` unstable fallback generation in `sdrwatch-control.py`
-- [X] T039 [US1] Implement duplicate serial and missing serial warning generation in `sdrwatch-control.py`
-- [X] T040 [US2] Implement controller role assignment set/list/clear helpers with `role_assignments` state in `sdrwatch-control.py`
-- [X] T041 [US2] Implement assignment scope rules for persistent stable serial assignments and session-scoped index-only assignments in `sdrwatch-control.py`
-- [X] T042 [US2] Add controller routes `GET /role-assignments`, `PUT /role-assignments/{role_lane}`, and `DELETE /role-assignments/{role_lane}` in `sdrwatch-control.py`
-- [X] T043 [US2] Add web client wrappers for role assignment list/set/clear in `sdrwatch_web/controller.py`
-- [X] T044 [US2] Add web proxy routes `GET /api/role-assignments`, `PUT /api/role-assignments/{role_lane}`, and `DELETE /api/role-assignments/{role_lane}` in `sdrwatch_web/blueprints/api_jobs.py`
-- [X] T045 [US2] Add duplicate active assignment and identity-warning error payload handling in `sdrwatch-control.py`
+- [ ] T028 [US2] Add a `RevisitAuthorityDecision` representation or helper functions in `sdrwatch/detection/span_policy.py`
+- [ ] T029 [US2] Gate revisit center movement, width update, and shrink authority in `BaselinePersistence.apply_revisit_confirmation` in `sdrwatch/baseline/persistence.py`
+- [ ] T030 [US2] Allow confirmation-only revisits to clear missing state and record evidence without changing identity center or persisted/card width in `sdrwatch/baseline/persistence.py`
+- [ ] T031 [US2] Update `DetectionEngine.apply_revisit_confirmation` to attach revisit authority decisions to emitted characterization evidence in `sdrwatch/detection/engine.py`
+- [ ] T032 [US2] Add revisit authority fields to revisit result logging in `sdrwatch/sweep/sweeper.py`
+- [ ] T033 [US2] Replace the `profile == "fm_broadcast"` center smoothing branch with `center_smoothing_enabled` or `center_stability_mode` policy in `sdrwatch/baseline/persistence.py`
 
-### Slice 2 Acceptance and Regression
+### Validation
 
-- [X] T046 [US2] Run `python -m pytest -q tests/test_multi_rtl_identity.py tests/test_multi_rtl_roles.py tests/test_multi_rtl_web_api.py`
-- [X] T047 [US2] Run existing job payload regression `python -m pytest -q tests/test_control_page_scan_settings.py tests/test_web_diagnostics_bundle.py`
-- [X] T048 [US2] Confirm existing `/api/jobs` request shape remains `{device_key, label, baseline_id, params}` in `tests/test_control_page_scan_settings.py`
+- [ ] T034 [US2] Run `python -m pytest -q tests/test_signal_span_policy.py tests/test_fm_characterization_persistence.py tests/test_fm_characterization_diagnostics.py --basetemp .test-tmp\\span-policy-us2` from repository root `C:\Users\User\SDRwatch`
+
+**Checkpoint**: US2 is independently testable and revisit confirmation no longer implies identity update authority.
 
 ---
 
-## Phase 5: Slice 3 - Lock/Lifecycle Hardening and Concurrency Tests (US2, US3)
+## Phase 5: User Story 3 - Support Profile-Neutral Width Policies (Priority: P2)
 
-**Goal**: Concurrent requests cannot claim the same physical receiver twice, and existing stale-lock cleanup, startup reconciliation, process reaping, and stop behavior remain intact.
+**Goal**: Broad continuous, narrowband, unknown discovery, and guard/event profiles can express different span and revisit policies without FM-specific generic logic.
 
-**Independent Test**: Fake-process tests prove same-device concurrent starts race safely, distinct-device starts can proceed, stale locks are cleaned, reaping releases locks, and stop status stays accurate.
+**Independent Test**: Multiple profile fixtures prove broad profiles may have larger floors while narrowband and discovery profiles remain narrow or unset.
 
 ### Tests First
 
-- [X] T049 [US2] Add atomic lock acquisition tests for concurrent same-device starts in `tests/test_multi_rtl_lifecycle.py`
-- [X] T050 [US3] Add distinct-device concurrent start tests for `rtl:0` and `rtl:1` in `tests/test_multi_rtl_lifecycle.py`
-- [X] T051 [US2] Add stale lock cleanup tests for known and unknown owners in `tests/test_multi_rtl_lifecycle.py`
-- [X] T052 [US2] Add startup reconciliation tests for dead persisted job PIDs in `tests/test_multi_rtl_lifecycle.py`
-- [X] T053 [US2] Add process reaper tests proving lock release and terminal status updates in `tests/test_multi_rtl_lifecycle.py`
-- [X] T054 [US2] Add stop-job tests preventing misleading status drift after reaper completion in `tests/test_multi_rtl_lifecycle.py`
+- [ ] T035 [P] [US3] Add profile serialization and CLI profile application tests for new policy fields in `tests/test_fm_validation_profile.py`
+- [ ] T036 [P] [US3] Add narrowband profile tests proving small identity, persist, display, and revisit gates remain small in `tests/test_non_fm_width_scope.py`
+- [ ] T037 [P] [US3] Add unknown discovery tests proving unset floors do not inherit broad display or persist widths in `tests/test_non_fm_width_scope.py`
+- [ ] T038 [P] [US3] Add guard/event policy tests proving fast candidate evidence does not automatically imply stable baseline-card identity in `tests/test_signal_span_policy.py`
+- [ ] T039 [P] [US3] Add controller pass-through tests for policy params while preserving `/api/jobs` shape in `tests/test_control_fm_validation.py`
 
 ### Implementation
 
-- [X] T055 [US2] Replace check-then-write device lock claiming with atomic create/claim behavior in `sdrwatch-control.py`
-- [X] T056 [US2] Preserve stale-lock cleanup semantics while using atomic lock acquisition in `sdrwatch-control.py`
-- [X] T057 [US2] Preserve startup reconciliation release behavior for role-aware and legacy jobs in `sdrwatch-control.py`
-- [X] T058 [US2] Preserve process reaper lock release and terminal status update behavior for role-aware and legacy jobs in `sdrwatch-control.py`
-- [X] T059 [US2] Preserve stop-job terminate/kill behavior while preventing role-aware group status drift in `sdrwatch-control.py`
-- [X] T060 [US2] Add lock owner metadata for `device_identity`, runtime `device_key`, `job_id`, and `role_run_id` in `sdrwatch-control.py`
+- [ ] T040 [US3] Configure broad continuous policy values as profile data, not generic branches, in `sdrwatch/io/profiles.py`
+- [ ] T041 [US3] Ensure narrowband and discovery profiles keep small or unset span-policy values in `sdrwatch/io/profiles.py`
+- [ ] T042 [US3] Ensure `python -m sdrwatch.cli --list-profiles` and profile dictionaries expose new policy fields without removing existing fields in `sdrwatch/io/profiles.py`
+- [ ] T043 [US3] Pass new policy params through existing controller command construction while preserving legacy `/api/jobs` compatibility in `sdrwatch-control.py`
+- [ ] T044 [US3] Preserve web proxy compatibility for `/api/jobs` and existing job status responses in `sdrwatch_web/blueprints/api_jobs.py`
 
-### Slice 3 Acceptance and Regression
+### Validation
 
-- [X] T061 [US2] Run `python -m pytest -q tests/test_multi_rtl_lifecycle.py`
-- [X] T062 [US2] Run existing single-job lifecycle regressions `python -m pytest -q tests/test_control_diagnostics_mode.py tests/test_web_diagnostics_bundle.py`
-- [X] T063 [US2] Confirm failed pre-spawn starts release or never acquire locks in `tests/test_multi_rtl_lifecycle.py`
+- [ ] T045 [US3] Run `python -m pytest -q tests/test_fm_validation_profile.py tests/test_non_fm_width_scope.py tests/test_control_fm_validation.py tests/test_legacy_job_compatibility.py --basetemp .test-tmp\\span-policy-us3` from repository root `C:\Users\User\SDRwatch`
+
+**Checkpoint**: US3 is independently testable and proves this feature is profile-neutral.
 
 ---
 
-## Phase 6: Slice 4 - One-Device GUARD Role Path (US2)
+## Phase 6: User Story 4 - Preserve Close-Signal Separation (Priority: P2)
 
-**Goal**: With one runnable RTL, the operator can assign GUARD and start one guarded narrow-window job without changing existing scanner detection behavior.
+**Goal**: Width floors stabilize identity and persisted cards without over-merging close but distinct signals.
 
-**Independent Test**: A GUARD role run starts one child job with role metadata, narrow-window scanner parameters, lock ownership, diagnostics path, and clean stop/release behavior.
+**Independent Test**: Close-signal fixtures remain separate under active center/cluster policy even when a broad identity or persist floor exists.
 
 ### Tests First
 
-- [X] T064 [US2] Add one-device GUARD role-run start tests in `tests/test_multi_rtl_guard.py`
-- [X] T065 [US2] Add GUARD narrow-window parameter mapping tests in `tests/test_multi_rtl_guard.py`
-- [X] T066 [US2] Add child job metadata tests for one GUARD job in `tests/test_multi_rtl_guard.py`
-- [X] T067 [P] [US2] Add scanner metadata flag passthrough tests in `tests/test_control_fm_validation.py`
-- [X] T068 [US2] Add FM Broadcast and cross-sweep non-regression selection tests for GUARD metadata-only changes in `tests/test_multi_rtl_guard.py`
+- [ ] T046 [P] [US4] Add a close-signal regression proving broad policy floors do not merge separable cards in `tests/test_fm_persistence_stability.py`
+- [ ] T047 [P] [US4] Add a raw-cluster test proving raw candidate extents are not widened before close-signal matching in `tests/test_signal_span_policy.py`
+- [ ] T048 [P] [US4] Add a width-ratio and max-width cap regression for nearby candidates in `tests/test_cross_sweep_persistence.py`
+- [ ] T049 [P] [US4] Add a detector diagnostics regression for two nearby signals split by valley while policy floors are configured in `tests/test_detection_diagnostics.py`
 
 ### Implementation
 
-- [X] T069 [US2] Add optional scanner metadata arguments for role/job/source-task provenance in `sdrwatch/cli.py`
-- [X] T070 [US2] Pass role/job/source-task metadata through runner setup without changing source selection in `sdrwatch/sweep/runner.py`
-- [X] T071 [US2] Add role-aware child job command construction for GUARD narrow-window tasks in `sdrwatch-control.py`
-- [X] T072 [US2] Add single-role-run start path for one GUARD child job in `sdrwatch-control.py`
-- [X] T073 [US2] Ensure GUARD child jobs still use `rtlsdr_native` and reject unsupported backends before spawn in `sdrwatch-control.py`
-- [X] T074 [US2] Include GUARD role metadata in job status responses in `sdrwatch-control.py`
+- [ ] T050 [US4] Keep `cluster_merge_hz`, `center_match_hz`, and raw segment overlap decisions policy-free before identity span shaping in `sdrwatch/detection/engine.py`
+- [ ] T051 [US4] Apply identity floors only after raw candidate and cluster formation in `sdrwatch/detection/engine.py`
+- [ ] T052 [US4] Preserve width-ratio rejection and max width cap behavior while applying persist floors in `sdrwatch/baseline/persistence.py`
+- [ ] T053 [US4] Ensure `max_persist_bandwidth_hz` caps persisted/card width without widening live raw cluster extents in `sdrwatch/baseline/persistence.py`
 
-### Slice 4 Acceptance and Regression
+### Validation
 
-- [X] T075 [US2] Run `python -m pytest -q tests/test_multi_rtl_guard.py tests/test_control_fm_validation.py`
-- [X] T076 [US2] Run FM and cross-sweep regressions `python -m pytest -q tests/test_cross_sweep_persistence.py tests/test_effective_parameter_manifest.py tests/test_device_telemetry.py`
-- [X] T077 [US2] Confirm scanner source selection remains native RTL only in `sdrwatch/sweep/runner.py`
+- [ ] T054 [US4] Run `python -m pytest -q tests/test_fm_persistence_stability.py tests/test_cross_sweep_persistence.py tests/test_detection_diagnostics.py tests/test_signal_span_policy.py --basetemp .test-tmp\\span-policy-us4` from repository root `C:\Users\User\SDRwatch`
+
+**Checkpoint**: US4 is independently testable and proves width floors are not over-merge rules.
 
 ---
 
-## Phase 7: Slice 5 - Two-Device GUARD + ROVER Grouped Run (US3)
+## Phase 7: User Story 5 - Audit Effective Policy and Diagnostics End-to-End (Priority: P3)
 
-**Goal**: With two runnable RTLs, the operator can start GUARD and ROVER child jobs concurrently through one grouped role run.
+**Goal**: Effective parameters, diagnostic JSONL, and diagnostic bundles expose the active signal span policy and explain bandwidth/revisit decisions while preserving old fields.
 
-**Independent Test**: A grouped role run starts one GUARD and one ROVER child job on distinct physical receivers, stops both cleanly, and reports degraded status when a child fails.
+**Independent Test**: A normal single-device RTL diagnostic fixture shows requested/applied profile agreement, null role-run fields, active signal span policy, bandwidth interpretation, and revisit authority decisions.
 
 ### Tests First
 
-- [X] T078 [US3] Add role-run contract tests for `POST /role-runs`, `GET /role-runs`, `GET /role-runs/{role_run_id}`, and `DELETE /role-runs/{role_run_id}` in `tests/test_multi_rtl_role_runs.py`
-- [X] T079 [P] [US3] Add web proxy tests for `POST /api/role-runs`, `GET /api/role-runs`, `GET /api/role-runs/{role_run_id}`, and `DELETE /api/role-runs/{role_run_id}` in `tests/test_multi_rtl_web_api.py`
-- [X] T080 [US3] Add GUARD+ROVER grouped start tests with two distinct serial identities in `tests/test_multi_rtl_role_runs.py`
-- [X] T081 [US3] Add serial refresh-before-start tests resolving `rtl:serial:<serial>` assignments to current runtime indexes in `tests/test_multi_rtl_role_runs.py`
-- [X] T082 [US3] Add rejected-start tests for missing serial, duplicated serial, ambiguous identity, and unreconfirmed index-only assignment after restart in `tests/test_multi_rtl_role_runs.py`
-- [X] T083 [US3] Add partial startup tests: one child started plus one failed becomes `degraded`; no child started returns conventional error in `tests/test_multi_rtl_role_runs.py`
-- [X] T084 [US3] Add grouped stop tests proving both child jobs are stopped and locks released in `tests/test_multi_rtl_role_runs.py`
-- [X] T085 [US3] Add child-direct-stop tests proving parent role-run status becomes degraded or terminal in `tests/test_multi_rtl_role_runs.py`
+- [ ] T055 [P] [US5] Add effective-parameter manifest tests for `signal_span_policy` or additive `span_controls` fields in `tests/test_effective_parameter_manifest.py`
+- [ ] T056 [P] [US5] Add characterization diagnostic tests for raw, measured, identity, persisted/card, display, and bandwidth interpretation fields in `tests/test_fm_characterization_diagnostics.py`
+- [ ] T057 [P] [US5] Add diagnostic bundle summary tests for signal span policy and revisit authority fields in `tests/test_web_diagnostics_bundle.py`
+- [ ] T058 [P] [US5] Add legacy single-device diagnostic tests proving role-run fields remain null while policy fields are present in `tests/test_legacy_job_compatibility.py`
+- [ ] T059 [P] [US5] Add effective-parameter fallback precedence tests proving scanner-owned profile audit data remains authoritative in `tests/test_effective_parameter_manifest.py`
 
 ### Implementation
 
-- [X] T086 [US3] Implement role-run state creation, list, detail, status refresh, and terminal-state helpers in `sdrwatch-control.py`
-- [X] T087 [US3] Implement refresh-inventory-before-role-run-start and serial-to-current-index resolution in `sdrwatch-control.py`
-- [X] T088 [US3] Acquire receiver locks only after current physical receiver resolution in `sdrwatch-control.py`
-- [X] T089 [US3] Implement GUARD+ROVER child job startup with distinct physical receiver validation in `sdrwatch-control.py`
-- [X] T090 [US3] Implement partial startup convention with `degraded` role-run status and child-level errors in `sdrwatch-control.py`
-- [X] T091 [US3] Implement grouped stop that stops all non-terminal child jobs and releases locks in `sdrwatch-control.py`
-- [X] T092 [US3] Update child job stop/reaper paths to refresh parent role-run health in `sdrwatch-control.py`
-- [X] T093 [US3] Add controller routes `POST /role-runs`, `GET /role-runs`, `GET /role-runs/{role_run_id}`, and `DELETE /role-runs/{role_run_id}` in `sdrwatch-control.py`
-- [X] T094 [US3] Add web client wrappers for role-run start/list/detail/stop in `sdrwatch_web/controller.py`
-- [X] T095 [US3] Add web proxy routes for `/api/role-runs` and `/api/role-runs/{role_run_id}` in `sdrwatch_web/blueprints/api_jobs.py`
+- [ ] T060 [US5] Extend `build_effective_parameter_manifest` with the derived signal span policy and compatibility aliases in `sdrwatch/util/detection_diagnostics.py`
+- [ ] T061 [US5] Preserve old characterization field names while adding raw/identity/persist/display aliases in `sdrwatch/detection/types.py`
+- [ ] T062 [US5] Add revisit authority decision fields to characterization and revisit records in `sdrwatch/detection/types.py`
+- [ ] T063 [US5] Update diagnostic bundle summarization for signal span policy, bandwidth interpretation, and revisit authority in `sdrwatch_web/diagnostics.py`
+- [ ] T064 [US5] Ensure normal single-device RTL scans continue exporting `driver/backend`, `device_key`, requested/applied profile, and null role-run metadata in `sdrwatch/util/detection_diagnostics.py`
 
-### Slice 5 Acceptance and Regression
+### Validation
 
-- [X] T096 [US3] Run `python -m pytest -q tests/test_multi_rtl_role_runs.py tests/test_multi_rtl_lifecycle.py tests/test_multi_rtl_web_api.py`
-- [X] T097 [US3] Run existing job API regressions `python -m pytest -q tests/test_control_page_scan_settings.py tests/test_web_diagnostics_bundle.py`
-- [X] T098 [US3] Confirm `/api/jobs/active` compatibility remains intact while role-run UI uses role-run status in `sdrwatch_web/blueprints/api_jobs.py`
+- [ ] T065 [US5] Run `python -m pytest -q tests/test_effective_parameter_manifest.py tests/test_fm_characterization_diagnostics.py tests/test_web_diagnostics_bundle.py tests/test_legacy_job_compatibility.py --basetemp .test-tmp\\span-policy-us5` from repository root `C:\Users\User\SDRwatch`
+
+**Checkpoint**: US5 is independently testable and diagnostics clearly explain span policy decisions.
 
 ---
 
-## Phase 8: Slice 6 - Telemetry and Provenance Expansion (US5)
+## Final Phase: Regression, Documentation, and Acceptance Readiness
 
-**Goal**: Diagnostic JSONL and bundles include role/device/job/task provenance, per-window timing, sample accounting, resource telemetry, and explicit unavailable fields.
+**Purpose**: Prove the focused update stays inside scope and preserve existing behavior.
 
-**Independent Test**: Fake scanner and bundle tests show role-aware diagnostic records are sufficient to benchmark one, two, and three RTL jobs without continuous raw IQ capture.
-
-### Tests First
-
-- [X] T099 [US5] Add diagnostic record tests for common role/device/job/task provenance fields in `tests/test_multi_rtl_telemetry.py`
-- [X] T100 [US5] Add timing field tests for `tune_ms`, `flush_ms`, `read_ms`, `fft_ms`, `detect_ms`, `db_update_ms`, `jsonl_ms`, and `total_window_ms` in `tests/test_multi_rtl_telemetry.py`
-- [X] T101 [US5] Add sample accounting tests for `samples_requested`, `samples_read`, `short_read`, `dropped_reads`, and `unavailable_fields` in `tests/test_multi_rtl_telemetry.py`
-- [X] T102 [US5] Add resource telemetry tests for `pid`, CPU load, RSS memory, active device count, and active role count in `tests/test_multi_rtl_telemetry.py`
-- [X] T103 [P] [US5] Add diagnostic bundle summary tests for roles, devices, jobs, role-run IDs, timing availability, resource availability, and missing fields in `tests/test_web_diagnostics_bundle.py`
-- [X] T104 [P] [US5] Add additive scan-update provenance migration tests in `tests/test_multi_rtl_persistence.py`
-
-### Implementation
-
-- [X] T105 [US5] Extend `build_device_telemetry_snapshot` with role/device/job/run provenance in `sdrwatch/util/detection_diagnostics.py`
-- [X] T106 [US5] Extend `build_effective_parameter_manifest` with source task, receiver role, role lane, role-run ID, stable identity, serial, runtime index, and runnable backend in `sdrwatch/util/detection_diagnostics.py`
-- [X] T107 [US5] Extend `build_window_record` with role/device/job/task provenance, sample accounting, timing fields, and unavailable field handling in `sdrwatch/util/detection_diagnostics.py`
-- [X] T108 [US5] Measure logger/jsonl write timing without changing JSONL semantics in `sdrwatch/util/scan_logger.py`
-- [X] T109 [US5] Add tune, flush, read, FFT, detect, DB update, logger, and total window timing collection in `sdrwatch/sweep/sweeper.py`
-- [X] T110 [US5] Add sample requested/read and short-read representation in `sdrwatch/sweep/sweeper.py`
-- [X] T111 [US5] Add process/resource telemetry records with unavailable field handling in `sdrwatch/sweep/runner.py`
-- [X] T112 [US5] Update diagnostic bundle summaries for role/device/job/timing/resource fields in `sdrwatch_web/diagnostics.py`
-- [X] T113 [US5] Add nullable scan update provenance columns only in `sdrwatch/baseline/store.py`: `receiver_role`, `device_key`, `device_serial`, `device_index`, `job_id`, `role_run_id`, `source_profile`, and `source_task`
-- [X] T114 [US5] Populate scan update provenance from scanner args when available without changing baseline detection matching in `sdrwatch/baseline/events.py` and `sdrwatch/sweep/sweeper.py`
-- [X] T115 [US5] Document any provenance that remains diagnostic-only in `specs/008-multi-rtl-guard-rover/quickstart.md`
-
-### Slice 6 Acceptance and Regression
-
-- [X] T116 [US5] Run `python -m pytest -q tests/test_multi_rtl_telemetry.py tests/test_multi_rtl_persistence.py tests/test_web_diagnostics_bundle.py`
-- [X] T117 [US5] Run diagnostic regressions `python -m pytest -q tests/test_device_telemetry.py tests/test_effective_parameter_manifest.py tests/test_cross_sweep_persistence.py`
-- [X] T118 [US5] Confirm no continuous raw IQ capture paths were added in `sdrwatch/sweep/runner.py`, `sdrwatch/sweep/sweeper.py`, and `README.md`
-
----
-
-## Phase 9: Slice 7 - Three-Device Two-GUARD plus REFERENCE/ROVER Support (US4)
-
-**Goal**: With three runnable RTLs, the operator can run friendly GUARD, watchlist GUARD, and REFERENCE or ROVER with one physical receiver per child job.
-
-**Independent Test**: Three fake RTL devices can be assigned to two GUARD lanes and one REFERENCE/ROVER lane, started as a role run, stopped cleanly, and inspected with role-specific diagnostics.
-
-### Tests First
-
-- [X] T119 [US4] Add three-RTL capability and role lane tests for `guard_primary`, `guard_secondary`, and `reference` in `tests/test_multi_rtl_three_device.py`
-- [X] T120 [US4] Add two-GUARD plus ROVER start tests in `tests/test_multi_rtl_three_device.py`
-- [X] T121 [US4] Add two-GUARD plus REFERENCE start tests in `tests/test_multi_rtl_three_device.py`
-- [X] T122 [US4] Add duplicate physical receiver rejection tests across three role lanes in `tests/test_multi_rtl_three_device.py`
-- [X] T123 [US4] Add REFERENCE narrow-window telemetry tests in `tests/test_multi_rtl_three_device.py`
-
-### Implementation
-
-- [X] T124 [US4] Add `guard_secondary`, `reference`, and tier `2_plus` role lane support in `sdrwatch-control.py`
-- [X] T125 [US4] Add friendly GUARD and watchlist GUARD display metadata in controller inventory and role assignment responses in `sdrwatch-control.py`
-- [X] T126 [US4] Implement three-child role-run validation requiring distinct physical receivers in `sdrwatch-control.py`
-- [X] T127 [US4] Implement REFERENCE task mapping as a parked narrow-window job with contextual telemetry only in `sdrwatch-control.py`
-- [X] T128 [US4] Ensure REFERENCE does not trigger automatic environmental correction or signal fusion in `sdrwatch/sweep/runner.py`
-
-### Slice 7 Acceptance and Regression
-
-- [X] T129 [US4] Run `python -m pytest -q tests/test_multi_rtl_three_device.py tests/test_multi_rtl_role_runs.py`
-- [X] T130 [US4] Run role and telemetry regressions `python -m pytest -q tests/test_multi_rtl_roles.py tests/test_multi_rtl_telemetry.py`
-- [X] T131 [US4] Confirm Airspy/HackRF/Soapy remain non-runnable in three-device inventory tests in `tests/test_multi_rtl_inventory.py`
-
----
-
-## Phase 10: Slice 8 - Minimal UI, Documentation, and Regression Hardening (US1, US2, US3, US4, US5)
-
-**Goal**: Add the compact operator UI and docs needed for multi-RTL role operation while preserving Discovery, FM Validation, diagnostics, and current single-device workflows.
-
-**Independent Test**: The control page shows inventory/tier, identity warnings, role assignment controls, role-run status, child job visibility, and grouped stop without breaking existing scan controls.
-
-### Tests First
-
-- [X] T132 [US1] Add control-page inventory/tier rendering tests in `tests/test_multi_rtl_ui.py`
-- [X] T133 [US2] Add control-page identity warning and role assignment control tests in `tests/test_multi_rtl_ui.py`
-- [X] T134 [US3] Add role-run status, child job visibility, and grouped stop UI tests in `tests/test_multi_rtl_ui.py`
-- [X] T135 [P] [US1] Add regression tests proving Discovery, FM Validation, diagnostics mode, and existing device selector still work in `tests/test_control_page_scan_settings.py`
-
-### Implementation
-
-- [X] T136 [US1] Add compact hardware inventory and capability tier display in `templates/control.html`
-- [X] T137 [US2] Add identity warning display and manual GUARD/ROVER/REFERENCE assignment controls in `templates/control.html`
-- [X] T138 [US3] Add role-run status, child job visibility, degraded/error display, and grouped stop controls in `templates/control.html`
-- [X] T139 [US3] Replace single-active-job assumptions only where role-run status and grouped stop require it in `templates/control.html`
-- [X] T140 [US1] Preserve existing scan controls, Discovery preset, FM Validation preset, diagnostics mode, and diagnostic bundle export in `templates/control.html`
-- [X] T141 [P] Update README hardware support claims to state scanner execution is currently RTL-native only and Airspy/HackRF/Soapy are planned or unsupported in `README.md`
-- [X] T142 [P] Add operator documentation for capability tiers, manual roles, identity warnings, Pi 5 resource expectations, and no continuous raw IQ default in `docs/MULTI_RTL_GUARD_ROVER.md`
-- [X] T143 [P] Update diagnostic capture documentation with role-aware bundle expectations in `docs/DIAGNOSTIC_CAPTURE.md`
-
-### Slice 8 Acceptance and Regression
-
-- [X] T144 [US1] Run `python -m pytest -q tests/test_multi_rtl_ui.py tests/test_control_page_scan_settings.py`
-- [X] T145 [US3] Run web/controller regression suite `python -m pytest -q tests/test_web_diagnostics_bundle.py tests/test_multi_rtl_web_api.py tests/test_multi_rtl_role_runs.py`
-- [ ] T146 [US2] Confirm manual browser workflow from `specs/008-multi-rtl-guard-rover/quickstart.md` can be performed with fake or real controller inventory
-
----
-
-## Final Phase: Full Validation and Release Readiness
-
-**Purpose**: Prove the whole feature remains inside scope and document any hardware acceptance gaps.
-
-- [X] T147 Run focused feature suite `python -m pytest -q tests/test_multi_rtl_inventory.py tests/test_multi_rtl_identity.py tests/test_multi_rtl_roles.py tests/test_multi_rtl_lifecycle.py tests/test_multi_rtl_guard.py tests/test_multi_rtl_role_runs.py tests/test_multi_rtl_telemetry.py tests/test_multi_rtl_persistence.py tests/test_multi_rtl_three_device.py tests/test_multi_rtl_ui.py tests/test_multi_rtl_web_api.py`
-- [X] T148 Run existing regression suite `python -m pytest -q tests/test_cross_sweep_persistence.py tests/test_device_telemetry.py tests/test_effective_parameter_manifest.py tests/test_control_fm_validation.py tests/test_control_page_scan_settings.py tests/test_web_diagnostics_bundle.py`
-- [X] T149 Run scanner backend smoke `python -m sdrwatch.cli --list-profiles` and confirm CLI defaults remain native RTL-centered
-- [X] T150 Run repository drift check for unsupported runtime claims with `rg -n "Soapy|HackRF|Airspy|rtlsdr|rtlsdr_native" README.md docs install-sdrwatch.sh sdrwatch-control.py sdrwatch`
-- [ ] T151 Follow the no-hardware and controller/web smoke sections in `specs/008-multi-rtl-guard-rover/quickstart.md`
-- [ ] T152 On Raspberry Pi 5, follow the one-RTL, two-RTL, and three-RTL acceptance sections in `specs/008-multi-rtl-guard-rover/quickstart.md` and save diagnostic bundle references in `docs/MULTI_RTL_GUARD_ROVER.md`
-- [X] T153 Document any unavailable hardware telemetry, skipped Pi 5 hardware run, or remaining diagnostic-only provenance in `specs/008-multi-rtl-guard-rover/quickstart.md`
+- [ ] T066 [P] Update signal span policy diagnostic documentation in `docs/DIAGNOSTIC_CAPTURE.md`
+- [ ] T067 [P] Update implementation notes or validation outcomes for the focused span-policy update in `specs/008-multi-rtl-guard-rover/quickstart.md`
+- [ ] T068 Run focused no-hardware validation from `specs/008-multi-rtl-guard-rover/quickstart.md` with `python -m pytest -q tests/test_signal_span_policy.py tests/test_extent_hysteresis.py tests/test_fm_characterization_persistence.py tests/test_non_fm_width_scope.py --basetemp .test-tmp\\span-policy-focused`
+- [ ] T069 Run profile, controller, and diagnostics contract validation from `specs/008-multi-rtl-guard-rover/quickstart.md` with `python -m pytest -q tests/test_fm_validation_profile.py tests/test_effective_parameter_manifest.py tests/test_control_fm_validation.py tests/test_fm_characterization_diagnostics.py tests/test_web_diagnostics_bundle.py --basetemp .test-tmp\\span-policy-contracts`
+- [ ] T070 Run existing regression suites from `specs/008-multi-rtl-guard-rover/quickstart.md` with `python -m pytest -q tests/test_cross_sweep_persistence.py tests/test_device_telemetry.py tests/test_multi_rtl_inventory.py tests/test_multi_rtl_backend_gating.py tests/test_multi_rtl_guard.py tests/test_multi_rtl_telemetry.py tests/test_legacy_job_compatibility.py --basetemp .test-tmp\\span-policy-regression`
+- [ ] T071 Run scanner backend smoke `python -m sdrwatch.cli --list-profiles` from repository root `C:\Users\User\SDRwatch` and confirm this remains a backend smoke check, not operator acceptance
+- [ ] T072 Follow the no-hardware web/controller validation path in `specs/008-multi-rtl-guard-rover/quickstart.md` and keep `/api/jobs` compatibility visible through `tests/test_control_fm_validation.py` and `tests/test_legacy_job_compatibility.py`
+- [ ] T073 On Raspberry Pi 5, run the optional single-device RTL canary through the web GUI/controller path described in `specs/008-multi-rtl-guard-rover/quickstart.md`; if hardware is unavailable, record the unrun hardware acceptance gap in `specs/008-multi-rtl-guard-rover/quickstart.md`
+- [ ] T074 Verify no database migration, UI redesign, FM-specific branch, new multi-RTL role-run work, or non-RTL runnable backend was added by reviewing `sdrwatch/baseline/store.py`, `templates/control.html`, `sdrwatch/baseline/persistence.py`, `sdrwatch/detection/engine.py`, `sdrwatch-control.py`, and `sdrwatch/sweep/runner.py`
 
 ---
 
@@ -338,58 +218,58 @@
 
 ### Phase Dependencies
 
-- **Phase 1 Setup**: No dependencies.
-- **Phase 2 Foundational**: Depends on Phase 1 and blocks all implementation slices.
-- **Slice 1 Inventory/Capability**: Depends on Phase 2.
-- **Slice 2 Identity/Role Assignment**: Depends on Slice 1 inventory and capability.
-- **Slice 3 Lock/Lifecycle**: Depends on Slice 2 role assignment state.
-- **Slice 4 One-Device GUARD**: Depends on Slice 3 atomic locking and role assignment.
-- **Slice 5 Two-Device GUARD+ROVER**: Depends on Slice 4 child job metadata and Slice 3 atomic locking.
-- **Slice 6 Telemetry/Provenance**: Depends on Slice 4 metadata plumbing; can run before Slice 5 UI work but should not precede child job metadata.
-- **Slice 7 Three-Device Roles**: Depends on Slice 5 grouped role runs and Slice 6 reference telemetry.
-- **Slice 8 UI/Docs**: Depends on controller/web APIs from Slices 1, 2, 5, 6, and 7.
-- **Final Validation**: Depends on all selected slices.
+- **Setup (Phase 1)**: No dependencies.
+- **Foundational Policy Plumbing (Phase 2)**: Depends on Phase 1 and blocks all user stories.
+- **US1 Raw Evidence and Policy-Shaped Spans (Phase 3)**: Depends on Phase 2 and is the MVP.
+- **US2 Revisit Authority (Phase 4)**: Depends on Phase 2 and can proceed after US1 policy semantics exist.
+- **US3 Profile-Neutral Width Policies (Phase 5)**: Depends on Phase 2 and can proceed in parallel with US4 after US1's core policy behavior is stable.
+- **US4 Close-Signal Separation (Phase 6)**: Depends on US1 span enforcement and should run before final regression.
+- **US5 Effective Policy and Diagnostics (Phase 7)**: Depends on policy fields and story-level decision fields from US1/US2.
+- **Final Validation**: Depends on all selected user stories.
 
 ### User Story Dependencies
 
-- **US1 Inventory/capability**: MVP starting point after foundation.
-- **US2 One-RTL GUARD**: Depends on US1 inventory and role assignment.
-- **US3 Two-RTL GUARD+ROVER**: Depends on US2 child job and lock behavior.
-- **US5 Telemetry**: Depends on role/job metadata from US2, then supports US3 and US4 benchmarking.
-- **US4 Three-RTL roles**: Depends on grouped role runs and telemetry.
+- **US1 (P1)**: First implementation slice and suggested MVP.
+- **US2 (P1)**: Can start after foundational policy plumbing; uses the same policy object and persistence paths as US1.
+- **US3 (P2)**: Can start after foundational profile/CLI/controller plumbing; should not depend on FM-specific values.
+- **US4 (P2)**: Depends on US1 span enforcement because it verifies floors are applied at the right semantic boundary.
+- **US5 (P3)**: Depends on US1/US2 diagnostic data but can add manifest tests early.
 
-### Within Each Slice
+### Within Each User Story
 
-- Write tests first and confirm they fail before implementation.
-- Implement controller behavior before web proxy behavior.
-- Implement web proxy behavior before control-page UI.
-- Implement scanner metadata plumbing without changing detection thresholds, FM profile behavior, cross-sweep promotion logic, or source selection semantics.
-- Run slice-specific acceptance tests before moving to the next slice.
+- Write or update tests first and confirm they fail before implementation.
+- Add model/policy helpers before services that consume them.
+- Apply detection policy before persistence card enforcement.
+- Apply revisit gates before diagnostic summaries that explain them.
+- Run each story's validation command before moving to the next story.
 
 ---
 
 ## Parallel Opportunities
 
-- T005 and T006 can run in parallel after T001-T004 because they touch different test files.
-- T014-T019 can run in parallel because they define independent Slice 1 tests.
-- T032-T037 can run in parallel because they define independent identity, role, and web proxy tests.
-- T099-T104 can run in parallel because telemetry, bundle, and persistence tests touch distinct files or isolated sections.
-- T141-T143 can run in parallel because they touch distinct documentation files.
+- T003 and T004 can run in parallel because they touch test scaffolding and inspection notes separately.
+- T011-T015 can run in parallel because they add US1 tests in separate files.
+- T024-T027 can run in parallel because they add independent revisit tests.
+- T035-T039 can run in parallel because profile, non-FM, guard/event, and controller pass-through tests are separate.
+- T046-T049 can run in parallel because close-signal tests touch separate test modules.
+- T055-T059 can run in parallel because diagnostics and effective-parameter tests touch separate files or independent sections.
+- T066 and T067 can run in parallel because they update distinct documentation files.
 
-## Parallel Example: Slice 1
+## Parallel Example: User Story 1
 
 ```text
-Task: "T014 [US1] Add zero/one/two/three RTL inventory tier tests in tests/test_multi_rtl_inventory.py"
-Task: "T017 [US1] Add backend gating tests that reject unsupported starts in tests/test_multi_rtl_backend_gating.py"
-Task: "T019 [US1] Add web proxy tests for GET /api/hardware/inventory in tests/test_multi_rtl_web_api.py"
+Task: "T011 [US1] Add policy-default tests in tests/test_signal_span_policy.py"
+Task: "T012 [US1] Add tiny raw detector fragment test in tests/test_fm_characterization_persistence.py"
+Task: "T013 [US1] Add persistence EMA floor test in tests/test_extent_hysteresis.py"
+Task: "T014 [US1] Add display-span independence test in tests/test_fm_characterization_diagnostics.py"
 ```
 
-## Parallel Example: Slice 6
+## Parallel Example: User Story 3
 
 ```text
-Task: "T099 [US5] Add diagnostic record provenance tests in tests/test_multi_rtl_telemetry.py"
-Task: "T103 [US5] Add diagnostic bundle summary tests in tests/test_web_diagnostics_bundle.py"
-Task: "T104 [US5] Add additive scan-update provenance migration tests in tests/test_multi_rtl_persistence.py"
+Task: "T035 [US3] Add profile serialization and CLI profile application tests in tests/test_fm_validation_profile.py"
+Task: "T036 [US3] Add narrowband profile tests in tests/test_non_fm_width_scope.py"
+Task: "T039 [US3] Add controller pass-through tests in tests/test_control_fm_validation.py"
 ```
 
 ---
@@ -399,26 +279,25 @@ Task: "T104 [US5] Add additive scan-update provenance migration tests in tests/t
 ### MVP First
 
 1. Complete Phase 1 and Phase 2.
-2. Complete Slice 1 inventory, capability tier, and backend gating.
-3. Complete Slice 2 identity and manual role assignment state.
-4. Complete Slice 3 lock/lifecycle hardening.
-5. Complete Slice 4 one-device GUARD path.
-6. Stop and validate one-RTL behavior through web/controller workflow before adding grouped multi-device starts.
+2. Complete Phase 3 (US1) to preserve raw evidence and enforce identity/persist/display semantics.
+3. Stop and validate US1 independently with the focused no-hardware tests.
 
 ### Incremental Delivery
 
-1. Deliver inventory and honest capability reporting.
-2. Add manual role assignments and stable identity warnings.
-3. Harden locks and lifecycle.
-4. Add one-RTL GUARD.
-5. Add two-RTL GUARD+ROVER.
-6. Add benchmark telemetry/provenance.
-7. Add three-RTL role lanes.
-8. Add compact UI/docs polish and run full regression.
+1. Deliver policy plumbing and effective-parameter visibility.
+2. Deliver US1 raw/identity/persist/display span separation.
+3. Deliver US2 revisit authority gating.
+4. Deliver US3 profile-neutral examples and compatibility plumbing.
+5. Deliver US4 close-signal separation protections.
+6. Deliver US5 diagnostic bundle and audit clarity.
+7. Run final no-hardware regression, backend smoke, and optional Pi 5 web/controller canary.
 
 ### Scope Guardrails
 
-- Do not enable Airspy, HackRF, Soapy, or other non-RTL scanner execution.
-- Do not change detection thresholds, FM Broadcast profile behavior, cross-sweep promotion logic, or source selection semantics except for metadata plumbing.
-- Do not add signal tracks, observations, fusion tables, destructive migrations, continuous raw IQ capture, automatic role assignment, scheduler optimization, high-band hazard monitoring, or a Rust DSP rewrite.
-- Keep provenance diagnostic-first; add nullable scan update provenance only as the separate low-risk Slice 6 task.
+- Do not hard-code FM Broadcast, 88-108 MHz, or universal 200 kHz behavior in generic code.
+- Do not widen raw detector segments or live cluster extents before candidate formation.
+- Do not change detector thresholds solely from the FM canary.
+- Do not change `/api/jobs` top-level shape.
+- Do not add database migrations.
+- Do not undo Slice 1 multi-RTL inventory, capability reporting, backend gating, or legacy single-device compatibility.
+- Leave unrun browser or Pi 5 hardware acceptance explicitly open in `specs/008-multi-rtl-guard-rover/quickstart.md`.
