@@ -1,14 +1,14 @@
-# Specification Quality Checklist: Hardware-Aware Multi-RTL Guard/Rover Mode
+# Specification Quality Checklist: Profile-Governed Signal Identity Span and Revisit Authority
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
-**Created**: 2026-06-14
+**Created**: 2026-06-19
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality
 
-- [x] No implementation details (languages, frameworks, APIs)
-- [x] Focused on user value and business needs
-- [x] Written for non-technical stakeholders
+- [x] No implementation details beyond required diagnostic/profile contract names
+- [x] Focused on operator and maintainer value
+- [x] Written for stakeholders while preserving required SDRwatch terminology
 - [x] All mandatory sections completed
 
 ## Requirement Completeness
@@ -16,7 +16,7 @@
 - [x] No [NEEDS CLARIFICATION] markers remain
 - [x] Requirements are testable and unambiguous
 - [x] Success criteria are measurable
-- [x] Success criteria are technology-agnostic (no implementation details)
+- [x] Success criteria are technology-agnostic except where existing product contracts are explicit constraints
 - [x] All acceptance scenarios are defined
 - [x] Edge cases are identified
 - [x] Scope is clearly bounded
@@ -27,10 +27,11 @@
 - [x] All functional requirements have clear acceptance criteria
 - [x] User scenarios cover primary flows
 - [x] Feature meets measurable outcomes defined in Success Criteria
-- [x] No implementation details leak into specification
+- [x] No implementation tasks are embedded in the specification
 
 ## Notes
 
-- Validation passed on 2026-06-14.
-- Backend and existing job-contract concepts are retained only where they are product constraints supplied by the feature request; the specification avoids code paths, file ownership, and implementation design.
-- User-supplied open questions were resolved as assumptions: stable-serial assignments may persist, index-only assignments are warning/session-scoped, grouped role runs are additive, REFERENCE is a minimal telemetry role, and full signal fusion is deferred.
+- Validation passed on 2026-06-19 for the revised span-policy specification.
+- Existing diagnostic field names, effective-parameter fields, and `/api/jobs` compatibility are product contract constraints supplied by the feature request; they are retained to keep acceptance testable.
+- `tasks.md` in this directory is stale and still describes the earlier multi-RTL task list. Regenerate tasks with `/speckit-tasks` before implementation.
+- No code changes were made in this specification pass.
