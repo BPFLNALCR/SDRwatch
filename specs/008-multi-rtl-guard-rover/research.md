@@ -1,98 +1,79 @@
-# Phase 0 Research: Hardware-Aware Multi-RTL Guard/Rover Mode
+# Research: Profile-Governed Signal Identity Span and Revisit Authority
 
-## Decision: Keep the Feature RTL-Only and Native-Runner-Only
+## Decision 1: Use an internal SignalSpanPolicy derived from profiles and args
 
-**Rationale**: The current scanner runner and CLI accept `rtlsdr_native` as the only runnable backend. The first multi-receiver feature should make that truth explicit instead of exposing planned hardware as runnable. This preserves working FM behavior and avoids introducing untested hardware paths.
+**Decision**: Add optional profile fields and derive a small internal `SignalSpanPolicy` in detection/persistence code.
 
-**Alternatives considered**:
-
-- Enable HackRF, Airspy, or Soapy because docs mention them: rejected because actual runner support is not present for this feature.
-- Introduce a hardware abstraction first: rejected as too broad and likely to delay useful multi-RTL operation.
-
-## Decision: Use Serial-First Receiver Identity with Index Fallback Warnings
-
-**Rationale**: RTL device indexes can change across unplug, reboot, or enumeration order. Unique serial values are the best available stable identity. Missing or duplicate serials must be visible to the operator and must not be treated as durable identity.
+**Rationale**: The current system already has scanner profile plumbing, controller pass-through, effective-parameter export, match/display span shaping, and width-decision diagnostics. A derived policy object lets the implementation reuse those paths instead of adding a schema rewrite or a separate profile engine.
 
 **Alternatives considered**:
 
-- Continue using `rtl:<index>` as the primary identity: rejected because it cannot reliably distinguish multiple RTLs over time.
-- Require every RTL to have a unique serial before use: rejected for first implementation because index-only operation is still useful when clearly session-scoped and warned.
+- Hard-code FM Broadcast behavior: rejected because FM Broadcast is only the live canary.
+- Add database columns for each width concept: rejected for this slice because the problem is runtime policy enforcement and diagnostics, not durable schema.
+- Rewrite the detector to estimate true occupied bandwidth: rejected because RTL-SDR PSD fragments are valid raw evidence but not always true occupied bandwidth.
 
-## Decision: Store Role Assignments in Controller State First
+## Decision 2: Keep raw detector/revisit fragments policy-free
 
-**Rationale**: The controller already owns device discovery, lock files, job state, and scanner process lifecycle. Role assignment is control-plane state, not RF detection evidence. Controller state can support stable serial assignments, session-scoped index assignments, and startup reconciliation without a broad database migration.
+**Decision**: Preserve `detect_segments()` output as raw fragment evidence and apply policy only when deriving identity/match, persisted/card, and display spans.
 
-**Alternatives considered**:
-
-- Store role assignments only in browser state: rejected because the controller must enforce duplicate assignment and job locks.
-- Add a new database table first: deferred because existing controller JSON state is a smaller additive path.
-
-## Decision: Introduce Role-Run Grouping as an Additive Orchestration Layer
-
-**Rationale**: GUARD+ROVER and two-GUARD+REFERENCE runs are one operator action with multiple child jobs. A group ID gives the UI and diagnostics a stable way to show overall health, stop all children, and report degraded status. Individual child jobs remain normal jobs for compatibility.
+**Rationale**: The raw detector is allowed to emit tiny thresholded fragments. Widening raw clusters too early risks merging close signals and hiding useful narrowband detections.
 
 **Alternatives considered**:
 
-- Represent grouping only through job metadata: rejected because stop/status workflows become ambiguous when multiple child jobs must be handled as one operator run.
-- Replace the job lifecycle with a scheduler: rejected as out of scope.
+- Increase detector thresholds or minimum bins globally: rejected because it suppresses evidence and does not solve semantic confusion.
+- Inflate every segment width before clustering: rejected because it increases over-merge risk.
 
-## Decision: Harden Device Locks Before Multi-Job Starts
+## Decision 3: Default identity and persist floors from match policy
 
-**Rationale**: The existing file lock behavior is adequate for single-device workflows but can race under concurrent same-device starts. Multi-RTL role operation depends on preventing duplicate assignment of the same physical receiver.
+**Decision**: If `min_identity_bandwidth_hz` or `min_persist_bandwidth_hz` is unset, default each to `min_match_bandwidth_hz`; if no match floor exists, preserve existing narrow discovery behavior.
 
-**Alternatives considered**:
-
-- Rely on UI disable states only: rejected because concurrent HTTP requests or multiple browser sessions can bypass UI timing.
-- Defer locking hardening: rejected because it is prerequisite safety for grouped starts.
-
-## Decision: Map GUARD and REFERENCE to Narrow Existing Scanner Runs
-
-**Rationale**: The existing scanner loop already supports configured frequency ranges, repeated loops, detection, baselines, cross-sweep persistence, and diagnostics. A GUARD or REFERENCE role can be represented as a narrow parked task without rewriting DSP or scheduler logic.
+**Rationale**: Current profiles already use `min_match_bandwidth_hz` to express persistence/matching intent. Reusing it as the default identity/persist floor is the smallest compatible step.
 
 **Alternatives considered**:
 
-- Build a new fixed-frequency scanner path: deferred because it risks duplication and regression.
-- Implement automatic scheduler optimization now: rejected as a non-goal.
+- Default persist floor to display floor: rejected because display width is operator presentation, not persistence identity.
+- Default all profiles to a broad floor: rejected because narrowband and discovery profiles must remain narrow.
 
-## Decision: Preserve ROVER as Existing Sequential Sweep
+## Decision 4: Revisit confirmation is separate from revisit identity authority
 
-**Rationale**: The rover role is naturally the current sequential tune/read/FFT/detect loop over lower-priority ranges. Reusing it preserves current detection behavior and lets this feature focus on hardware awareness and orchestration.
+**Decision**: Revisit evidence can confirm presence even when it is too narrow or too offset to update identity center or persisted width.
 
-**Alternatives considered**:
-
-- Implement a new opportunistic scheduler: rejected as a later optimization after telemetry exists.
-
-## Decision: Make Provenance Diagnostic-First, with Minimal Durable Columns
-
-**Rationale**: Diagnostic JSONL is already the richest evidence path and can record per-window fields without reshaping baseline persistence. Durable provenance is still useful for scan updates and job records, but full detection observation/fusion tables are deferred.
+**Rationale**: The observed bug is not that revisit detects fragments; it is that narrow or offset revisit fragments can become strong identity evidence. Separating confirmation from identity update keeps useful revisit evidence while preventing unstable cards.
 
 **Alternatives considered**:
 
-- Add full signal track and observation tables now: rejected as a major schema rewrite and outside the first implementation.
-- Store no durable provenance: rejected because future debugging and benchmark comparisons need at least job/run/device context.
+- Reject narrow revisit detections entirely: rejected because they can still prove presence.
+- Allow all revisit matches to update center/width: rejected because that is the current failure mode.
 
-## Decision: Add Per-Window Timing and Resource Telemetry Before Optimization
+## Decision 5: Replace profile-name checks with policy flags
 
-**Rationale**: Pi 5 multi-RTL performance risk spans USB, CPU, memory, and file I/O. Timing/resource fields let maintainers identify bottlenecks before adding scheduler or DSP optimization.
+**Decision**: Move existing center smoothing behavior behind a profile-derived policy field such as `center_smoothing_enabled` or `center_stability_mode`.
 
-**Alternatives considered**:
-
-- Optimize sample rates or DSP first: rejected because bottlenecks are not yet measured.
-- Record raw IQ from every receiver: rejected due CPU/USB/I/O risk and explicit feature boundary.
-
-## Decision: Add Minimal UI Surfaces Instead of a Broad Redesign
-
-**Rationale**: The current control page is already the operator entrypoint. A compact inventory/tier/role-run section can support the feature while preserving Discovery, FM Validation, diagnostics mode, and current job start workflows.
+**Rationale**: `BaselinePersistence._center_smoothing_enabled()` currently checks `profile == "fm_broadcast"`. That is exactly the kind of profile-specific branch the update should remove from generic persistence code.
 
 **Alternatives considered**:
 
-- Build a separate multi-receiver dashboard: deferred as too broad for the first implementation.
-- Keep multi-RTL control API-only: rejected because operator-facing features must be usable through the web UI.
+- Leave the FM-specific check in place: rejected because this plan is profile-neutral.
+- Disable smoothing globally: rejected because broad continuous profiles still need bounded center stability.
 
-## Decision: Correct Documentation Drift as Part of the Feature
+## Decision 6: Keep `/api/jobs` stable
 
-**Rationale**: The current README can be read as claiming Soapy scanner execution is available. This feature depends on honest backend capability reporting, so docs must match runtime support.
+**Decision**: New policy fields flow through existing job `params` and scanner CLI args. Do not change the `/api/jobs` top-level payload.
+
+**Rationale**: Existing controller/web tests and operator workflows depend on the stable payload shape `{device_key, label, baseline_id, params}`.
 
 **Alternatives considered**:
 
-- Leave docs until non-RTL support is added: rejected because it would keep misleading operator expectations in place.
+- Add new top-level API fields: rejected as unnecessary contract churn.
+- Make policy scanner-only: rejected because operator-facing GUI/controller runs must be able to apply and audit the policy.
+
+## Decision 7: Event detection and baseline learning remain configurable modes
+
+**Decision**: Do not globally tighten `persistence_min_hits`, `persistence_min_windows`, or `persistence_min_sweep_loops`. Instead, document and later formalize mode/profile distinction for event/first-light, baseline-learning, guard, and characterization behavior.
+
+**Rationale**: The live canary can use 1/1/1 for first-light/event behavior, while baseline-learning can require recurrence. A global stricter persistence change would regress discovery and guard workflows.
+
+**Alternatives considered**:
+
+- Force stricter persistence globally: rejected because it changes workflow semantics beyond this span policy fix.
+- Leave modes undocumented: rejected because it would keep event and baseline-learning behavior ambiguous.

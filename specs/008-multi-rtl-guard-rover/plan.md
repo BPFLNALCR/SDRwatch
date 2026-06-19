@@ -1,363 +1,401 @@
-# Implementation Plan: Hardware-Aware Multi-RTL Guard/Rover Mode
+# Implementation Plan: Profile-Governed Signal Identity Span and Revisit Authority
 
-**Branch**: `007-cross-sweep-persistence-and-telemetry` | **Date**: 2026-06-14 | **Spec**: [spec.md](./spec.md)
+**Branch**: `008-multi-rtl-guard-rover` | **Date**: 2026-06-19 | **Spec**: [spec.md](./spec.md)
 
-**Input**: Feature specification from `specs/008-multi-rtl-guard-rover/spec.md`
+**Input**: Focused technical planning request for a small, generic update that makes signal identity span, persisted card span, operator display span, and revisit authority obey profile-defined policy.
 
-**Branch Hygiene Note**: The feature directory is intentionally `specs/008-multi-rtl-guard-rover` while the current checkout remains on `007-cross-sweep-persistence-and-telemetry`. Before implementation, create or switch to a stacked branch named `008-multi-rtl-guard-rover` from the current branch so this hardware-aware feature does not blur with the already-completed cross-sweep work.
+**Spec Alignment Note**: `spec.md` and `tasks.md` in this directory still describe the earlier hardware-aware multi-RTL slice. This plan, `research.md`, `data-model.md`, `quickstart.md`, and `contracts/signal-span-policy-contract.md` capture the current focused span-policy planning request. Before running a future task-generation pass from this directory, reconcile or regenerate the spec/tasks so implementation work is not mixed with stale multi-RTL tasking.
 
-## Summary
+## A. Executive Summary
 
-Implement an RTL-only hardware-aware watch mode that lets the operator see receiver inventory and capability tier, manually assign detected RTL-SDR receivers to GUARD, ROVER, or REFERENCE roles, and start role-aware jobs through the existing controller/web lifecycle. The design preserves current native RTL-SDR scanner execution, FM broadcast behavior, cross-sweep persistence, diagnostics, and the existing single-job `/api/jobs` contract while adding inventory, role assignment, grouped role-run status, provenance, and benchmark telemetry.
+The root design problem is width semantics leaking across layers. SDRwatch correctly captures tiny thresholded FFT fragments as raw evidence, but parts of the current detection, characterization, persistence, and revisit pipeline can still let that tiny fragment width act like the signal's identity width or persisted card width. That creates narrow duplicate cards, split tracks, unstable centers/spans, and misleading "occupied bandwidth" interpretation.
 
-The implementation approach is additive: controller-owned inventory/role state and atomic receiver reservations first, scanner job metadata and diagnostic provenance second, then minimal control-page UI updates. Airspy, HackRF, Soapy, automatic scheduling, full signal fusion, continuous raw IQ capture, and broad schema rewrites remain out of scope.
+The fix should be profile-policy enforcement, not FM Broadcast tuning. FM Broadcast is only the live RF canary. The update must stay generic and profile-driven so broad continuous signals, narrowband watchlist signals, unknown discovery, and guard/event workflows can each express different floors and revisit authority without hard-coded 88-108 MHz behavior or `profile == fm_broadcast` branches in generic persistence logic.
 
-## Technical Context
+The lowest-risk approach is to formalize a derived internal `SignalSpanPolicy` from existing and new optional profile fields. Keep raw detector output unchanged. Apply policy at the points where raw evidence becomes identity/match span, persisted/card span, display span, and revisit authority. Preserve backward-compatible diagnostic fields while adding clearer names and decision records.
 
-**Language/Version**: Python 3 project; no committed project version pin on this branch.
-
-**Primary Dependencies**: Flask web app, server-rendered Jinja templates, controller HTTP API, scanner modules under `sdrwatch/`, NumPy-based DSP, native RTL-SDR driver integration, SQLite baseline store, diagnostic JSONL and bundle export.
-
-**Storage**: Existing SQLite baseline tables plus controller `state.json`, controller lock files, controller job logs, diagnostic JSONL, and diagnostic bundle exports. This feature uses controller JSON state for role assignments and role runs, diagnostic JSONL for first-line provenance, and only additive SQLite columns where planning shows durable provenance is needed.
-
-**Testing**: Pytest no-hardware tests first with fake device discovery, fake processes, fake locks, and diagnostics fixtures; web/controller route tests for operator workflow; hardware acceptance on Raspberry Pi 5 with one, two, and three RTL-SDR receivers remains required before full field confidence.
-
-**Target Platform**: Raspberry Pi 5 with 4 GB RAM, 1 TB NVMe, active cooling, finite USB/CPU/RAM/I/O capacity, and local offline operation.
-
-**Project Type**: Local web dashboard plus controller service plus internal scanner backend.
-
-**Operator Workflow Surface**: SDRwatch operator-facing features MUST use the web UI and controller job lifecycle. Treat scanner CLI work as internal backend tooling unless the feature is explicitly scanner-only.
-
-**Performance Goals**: Keep single-device FM broadcast behavior stable; support two to three concurrent RTL jobs conservatively; expose timing/resource telemetry sufficient to compare one, two, and three receiver runs on Pi 5; avoid unbounded diagnostic, capture, or database growth.
-
-**Constraints**: RTL-only runnable scanner support via `rtlsdr_native`; no Airspy/HackRF/Soapy scanner execution; no continuous raw IQ capture; no Rust DSP rewrite; no full signal fusion; no broad database rewrite; preserve `/api/jobs` compatibility and existing diagnostic JSONL usefulness.
-
-**Scale/Scope**: One local watch node with zero to three primary RTL receivers for this feature, while inventory and tiering tolerate three or more detected RTLs. Concurrent child jobs are bounded by assigned roles, locks, and explicit operator action.
+This planning pass does not implement code. It intentionally excludes FM-specific hard-coding, new multi-RTL role assignment work, Airspy/HackRF/Soapy runtime support, UI redesign, signal fusion schema work, Rust DSP rewrites, continuous IQ capture, and broad detector threshold retuning based only on the FM canary.
 
 ## Constitution Check
 
-*GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
+- **I. Raspberry Pi First Reliability**: PASS. The plan keeps the scanner local, avoids raw IQ capture, and uses bounded diagnostics plus no-hardware and Pi 5 canary validation.
+- **II. Minimal Local Stack**: PASS. The plan stays in Python, Flask/controller pass-through, SQLite persistence, and JSONL diagnostics. No new framework or service is introduced.
+- **III. Stable Interfaces and Clean Layering**: PASS. The web UI/controller job lifecycle remains the operator workflow. The scanner CLI remains an internal backend surface. `/api/jobs` stays compatible.
+- **IV. Adapter-Based Hardware and Honest RF Claims**: PASS. The plan does not expand runnable hardware. It separates raw evidence, measured values, profile context, and display/persisted policy decisions.
+- **V. Migration-Safe, Verifiable Change**: PASS. No database migration is required. New fields are optional, derived, and diagnostics-first. Existing tests remain in scope.
+- **Operator Acceptance Gate**: PASS. Hardware acceptance is through browser -> controller -> scanner diagnostic bundle. CLI checks are backend smoke only.
 
-- **I. Raspberry Pi First Reliability**: PASS. The plan targets Pi 5, keeps defaults conservative, avoids continuous IQ capture, and requires resource telemetry plus real-device validation.
-- **II. Minimal Local Stack**: PASS. The feature stays inside existing Python, Flask/Jinja, SQLite, controller JSON state, and diagnostic files. No new frontend framework, cloud service, or infrastructure is introduced.
-- **III. Stable Interfaces and Clean Layering**: PASS. The web UI remains the operator surface, the controller owns discovery, locks, role state, and process spawning, and the scanner owns DSP/detection/persistence. `/api/jobs` remains compatible.
-- **IV. Adapter-Based Hardware and Honest RF Claims**: PASS. Runnable support is explicitly native RTL only. Unsupported hardware can appear only as planned/not runnable, and role/provenance metadata avoids unsupported emitter claims.
-- **V. Migration-Safe, Verifiable Change**: PASS. The plan uses additive state and columns only, documents diagnostic-only provenance where applicable, and requires no-hardware tests plus web/controller and hardware validation.
-- **Operator Acceptance Gate**: PASS. Validation flows are browser -> web API -> controller -> scanner. CLI checks are limited to backend smoke and regression checks.
+## B. Code-Path Map
 
-## Project Structure
+| Width/center concept | Current source/file/function | Current meaning | Problem | Planned policy owner | Planned fix |
+| --- | --- | --- | --- | --- | --- |
+| Raw detector segment width/center | `sdrwatch/dsp/detection.py::detect_segments`; `Segment` in `sdrwatch/detection/types.py` | Contiguous or estimated thresholded PSD fragment with center from midpoint, peak, or centroid mode | Can be hundreds of Hz to a few kHz and is valid raw evidence, but too narrow to act as identity/card width for broad profiles | Raw detector remains policy-free | Preserve raw output. Rename/alias diagnostics as `raw_fragment_*` so small width is not interpreted as card identity. |
+| Cluster extent and center | `sdrwatch/detection/engine.py::_record_hit`, `_cluster_center_hz`, `_segments_overlap`, `_cluster_gate_status` | Aggregates raw segments within a sweep window sequence, with power-weighted center and raw cluster low/high | Cluster low/high can still be fragment-shaped or split nearby evidence before policy shaping | `DetectionEngine` plus derived `SignalSpanPolicy` | Keep cluster extents tight for neighbor separation. Derive identity/match span from policy after clustering, not by widening the live cluster. |
+| Measured characterization occupied bandwidth | `DetectionEngine._emit_detection`, `DetectionEngine.apply_revisit_confirmation`, `CharacterizationEvidence` | Existing `measured_span` and `measured_bandwidth_hz` record raw/coarse or revisit measured width | The field can read like true occupied bandwidth even when it is only a thresholded fragment | Diagnostics contract owned by detection/util layer | Preserve old fields. Add interpretation fields and clearer aliases: `measured_occupied_bandwidth_hz` only with `bandwidth_interpretation`, and `raw_fragment_bandwidth_hz` for raw evidence. |
+| Match/identity span | `DetectionEngine._shape_span`, `_shape_match_span` | Adds match padding, applies `min_match_bandwidth_hz`, applies `max_detection_width_hz`, clips to baseline | This is the closest current identity span, but it is not explicitly named as identity policy and does not expose a separate identity floor | `SignalSpanPolicy` derived from profile/effective args | Add internal `min_identity_bandwidth_hz`, defaulting to `min_match_bandwidth_hz`. Continue to use `_shape_match_span` but log `identity_match_bandwidth_hz` and policy floor application. |
+| Display span | `DetectionEngine._shape_display_span`; emitted `display_span` | Operator-facing span shaped by display padding and `min_display_bandwidth_hz` | Generally correct, but summaries can still be confused with measured bandwidth | `SignalSpanPolicy.display` | Keep display separate. Add diagnostics that explicitly state display width was policy-shaped. Never use display span as measured occupied bandwidth. |
+| Persistence width EMA input | `sdrwatch/baseline/persistence.py::_upsert_detection`, `_blend_width_ema` | Blends previous stored width with current cluster width and clamps to `min_detection_width_hz`/`max_detection_width_hz` | The EMA floor is currently detector-bin/min-width based, not profile persist policy based, so persisted rows can converge below profile intent | `BaselinePersistence` using `SignalSpanPolicy.persist` | Replace/augment EMA floor with `min_persist_bandwidth_hz`, defaulting to `min_match_bandwidth_hz`. Keep max width cap. Log `persist_width_floor_applied_hz`. |
+| Final persisted/card span | `BaselinePersistence._upsert_detection`, `apply_revisit_confirmation`, `_enforce_persisted_span_invariant`; `Store.insert_baseline_detection`, `Store.update_baseline_detection` | SQLite `baseline_detections.f_low_hz/f_high_hz/f_center_hz` used by cards and baseline persistence | Stored span can shrink through EMA or revisit update and become narrower than active profile intent | `BaselinePersistence` | Add a persist-span clamp before store insert/update and after hysteresis, with documented scan-edge clipping. Store rows remain current schema. |
+| Revisit target and selected segment | `sdrwatch/sweep/sweeper.py::_run_revisit_pass`, `_select_revisit_segment` | Finds a matching revisit segment around queued target and calls `apply_revisit_confirmation` | Any tiny or offset sub-peak can confirm and then update center/width | `SignalSpanPolicy.revisit` in `BaselinePersistence`/`DetectionEngine` | Revisit can confirm presence separately from identity updates. Gate center and width authority before changing stable center or persisted span. |
+| Revisit center smoothing | `BaselinePersistence._center_smoothing_enabled` | Current generic persistence code enables smoothing only when `profile == "fm_broadcast"` | This is the existing profile-specific branch that should become policy configuration | `SignalSpanPolicy.center` | Replace with a policy flag such as `center_smoothing_enabled` or `center_stability_mode`, populated by profile defaults. |
+| Effective parameter export | `sdrwatch/util/detection_diagnostics.py::build_effective_parameter_manifest`; `Sweeper._sweep_params` | Emits applied profile, persistence, revisit, and `span_controls` | New policy floors/gates would be invisible without manifest additions | Diagnostics manifest | Add policy fields under `span_controls` or `signal_span_policy`, preserving current keys. |
+| Profile definitions and pass-through | `sdrwatch/io/profiles.py`, `sdrwatch/cli.py::_apply_scan_profile`, `sdrwatch-control.py::_build_cmd` | Profiles set scanner args; controller maps `/api/jobs` params to scanner CLI flags | Current profile has match/display floors but no explicit identity/persist/revisit authority policy | Profile definitions plus internal policy object | Add optional profile/CLI fields. Controller passes them through inside existing `params` without changing `/api/jobs`. |
 
-### Documentation (this feature)
+## C. Proposed Signal Identity/Span Policy
+
+### Policy Owner
+
+Use a small internal policy object rather than a broad schema rewrite:
+
+- Add optional fields to `ScanProfile` in `sdrwatch/io/profiles.py`.
+- Add scanner CLI args only for fields that need operator/controller override.
+- Derive an internal `SignalSpanPolicy` from `args` inside detection/persistence code.
+- Export derived values through effective parameters and diagnostic decisions.
+- Do not add SQLite columns for this slice.
+
+This gives profiles a durable contract while keeping enforcement close to the code that already shapes spans and updates persistence.
+
+### Candidate Fields
+
+Existing fields to keep:
+
+- `min_match_bandwidth_hz`
+- `match_bandwidth_pad_hz`
+- `min_display_bandwidth_hz`
+- `display_bandwidth_pad_hz`
+- `center_match_hz`
+- `max_detection_width_hz`
+- `max_persist_width_hz` and `max_card_width_hz` as compatibility aliases
+- `revisit_span_limit_hz`
+
+New optional fields:
+
+- `min_identity_bandwidth_hz`
+- `min_persist_bandwidth_hz`
+- `max_persist_bandwidth_hz` as internal resolved value, derived from existing max aliases unless explicitly added later
+- `allow_revisit_to_shrink_identity`
+- `allow_revisit_to_move_center`
+- `min_revisit_bandwidth_for_identity_update_hz`
+- `max_revisit_center_delta_for_identity_update_hz`
+- `fragmented_revisit_policy`
+- `raw_fragment_interpretation`
+- `center_smoothing_enabled` or `center_stability_mode`
+
+### Defaults
+
+- `min_identity_bandwidth_hz`: if unset, use `min_match_bandwidth_hz`; if that is unset, use 0 or bin width to preserve discovery behavior.
+- `min_persist_bandwidth_hz`: if unset, use `min_match_bandwidth_hz`; if that is unset, use `min_identity_bandwidth_hz`; if both are unset, preserve existing `min_detection_width_hz` behavior.
+- `max_persist_bandwidth_hz`: use `max_persist_width_hz`, then `max_card_width_hz`, then `max_detection_width_hz`, then unlimited.
+- `min_display_bandwidth_hz`: keep existing behavior.
+- `min_revisit_bandwidth_for_identity_update_hz`: if unset and `min_identity_bandwidth_hz > 0`, use `min_identity_bandwidth_hz`; otherwise no bandwidth gate.
+- `max_revisit_center_delta_for_identity_update_hz`: if unset and `center_match_hz` is set, use `center_match_hz`; otherwise no additional delta gate.
+- `allow_revisit_to_shrink_identity`: default false when an identity floor exists; otherwise preserve current behavior.
+- `allow_revisit_to_move_center`: default true only within the center delta gate.
+- `fragmented_revisit_policy`: default `confirmation_only`.
+- `raw_fragment_interpretation`: default `threshold_fragment`.
+- `center_smoothing_enabled`: default false, with broad continuous profiles enabling it via profile configuration.
+
+### Span Formulas
+
+The implementation should keep raw evidence intact and apply policy only at semantic transitions:
 
 ```text
-specs/008-multi-rtl-guard-rover/
-|-- spec.md
-|-- plan.md
-|-- research.md
-|-- data-model.md
-|-- quickstart.md
-|-- checklists/
-|   `-- requirements.md
-|-- contracts/
-|   |-- hardware-inventory-contract.md
-|   |-- role-assignment-contract.md
-|   |-- role-run-contract.md
-|   |-- job-status-additions-contract.md
-|   `-- diagnostic-telemetry-contract.md
-`-- tasks.md
+raw_fragment_bandwidth_hz = detector/revisit segment width
+
+measured_occupied_bandwidth_hz = raw/coarse/revisit measurement, with explicit interpretation
+
+identity_match_bandwidth_hz =
+  clamp(max(raw_or_measured_width + match_padding, min_identity_bandwidth_hz, min_match_bandwidth_hz),
+        lower=min_identity_bandwidth_hz,
+        upper=max_persist_bandwidth_hz when configured)
+
+persisted_card_bandwidth_hz =
+  clamp(width_ema_input_or_existing_card_width,
+        lower=min_persist_bandwidth_hz,
+        upper=max_persist_bandwidth_hz)
+
+display_bandwidth_hz =
+  max(display_shaped_width, min_display_bandwidth_hz)
 ```
 
-### Source Code (repository root)
+The exact enforcement should reuse existing `_shape_span()` and `_blend_width_ema()` paths where possible. Do not widen live cluster extents used for raw neighbor separation.
+
+### Profile Examples
+
+| Profile family | Example policy | Expected behavior |
+| --- | --- | --- |
+| Broad continuous canary | FM Broadcast canary may use `min_identity_bandwidth_hz=80000`, `min_persist_bandwidth_hz=80000`, `min_display_bandwidth_hz=200000`, `max_persist_bandwidth_hz=270000`, `min_revisit_bandwidth_for_identity_update_hz=80000`, `max_revisit_center_delta_for_identity_update_hz=60000`, `center_smoothing_enabled=true` | Raw/revisit fragments can remain tiny, but identity and persisted cards do not shrink below policy floor except scan-edge clipping. Display remains broad. |
+| Narrowband voice/watchlist | Example values might be `min_identity_bandwidth_hz=6000-12500`, `min_persist_bandwidth_hz=6000-25000`, `min_display_bandwidth_hz=12500-25000`, low revisit bandwidth floor, tighter center delta | Narrowband cards stay narrow and are not forced into FM-like widths. |
+| Unknown discovery | `min_identity_bandwidth_hz` unset, `min_persist_bandwidth_hz` unset, `min_display_bandwidth_hz` unset or low, raw interpretation `raw_uncertain` | Preserve raw measurements and low-confidence discovery. Do not inherit 200 kHz display behavior. |
+| Guard/event mode | Fast event mode can use low persistence gates and emit candidate events; baseline-learning mode can require recurrence | Guard can report fast candidates without immediately declaring stable baseline cards. Baseline learning can use stricter recurrence without globally changing first-light behavior. |
+
+### Effective Parameters and Backward Compatibility
+
+Add a `signal_span_policy` section or extend `span_controls` in `effective_parameters` with:
+
+- `min_identity_bandwidth_hz`
+- `min_persist_bandwidth_hz`
+- `max_persist_bandwidth_hz`
+- `min_revisit_bandwidth_for_identity_update_hz`
+- `max_revisit_center_delta_for_identity_update_hz`
+- `allow_revisit_to_shrink_identity`
+- `allow_revisit_to_move_center`
+- `fragmented_revisit_policy`
+- `raw_fragment_interpretation`
+- `center_smoothing_enabled`
+
+Keep all existing fields and aliases. Existing diagnostic readers should still understand `raw_bandwidth_hz`, `measured_bandwidth_hz`, `match_bandwidth_hz`, and `display_bandwidth_hz`.
+
+## D. Revisit Authority Plan
+
+Revisit needs two separate outcomes:
+
+- **Confirmation-only**: the revisit found energy consistent enough to mark a detection present, clear missing state, increase confirmation evidence, and record diagnostics, but it cannot move identity center or shrink/expand persisted width.
+- **Identity update**: the revisit may update stable center, identity/match span, and persisted/card width because it passes profile gates.
+
+### Gates
+
+For every revisit confirmation:
+
+1. Compute `revisit_center_delta_hz = abs(revisit_center_hz - current_stable_or_persisted_center_hz)`.
+2. Compute `revisit_bandwidth_hz` from raw revisit segment.
+3. If `max_revisit_center_delta_for_identity_update_hz` is configured and delta exceeds it, mark identity update rejected for center delta.
+4. If `min_revisit_bandwidth_for_identity_update_hz` is configured and revisit width is below it, mark identity update rejected for bandwidth floor.
+5. If multiple revisit segments are fragmented or ambiguous, prefer `confirmation_only` unless policy explicitly allows fragmented identity update.
+6. If `allow_revisit_to_shrink_identity` is false, do not let a narrower revisit segment reduce identity or persisted width below the current policy floor.
+7. If `allow_revisit_to_move_center` is false or the delta gate fails, preserve current stable center.
+
+### Diagnostics
+
+Emit a revisit authority decision on every revisit confirmation:
+
+- `revisit_authority`: `identity_update`, `confirmation_only`, `rejected_for_center_delta`, `rejected_for_bandwidth_floor`, `fragmented_or_ambiguous`
+- `identity_update_allowed`
+- `revisit_center_delta_hz`
+- `revisit_bandwidth_hz`
+- `min_revisit_bandwidth_for_identity_update_hz`
+- `max_revisit_center_delta_for_identity_update_hz`
+- `revisit_bandwidth_policy_result`
+- `revisit_center_policy_result`
+- `confirmation_recorded`
+
+Existing `revisit_apply` and `characterization_record` events should remain, with additive fields.
+
+## E. Persistence/Card Span Plan
+
+### Persist Width Floor
+
+`BaselinePersistence._blend_width_ema()` should use a policy persist floor rather than only `min_detection_width_hz`:
 
 ```text
-sdrwatch-control.py
-  Extend controller device discovery into hardware inventory, capability tier,
-  serial/index identity warnings, role assignment state, role-run orchestration,
-  atomic receiver lock acquisition, stale-lock cleanup, process reaping, and
-  pre-spawn backend gating.
-
-sdrwatch/cli.py
-  Preserve `rtlsdr_native` as the only runnable scanner backend. Add only
-  scanner metadata flags needed for role/job provenance if they can remain
-  backward-compatible.
-
-sdrwatch/sweep/runner.py
-  Preserve native RTL source selection. Pass role/job/source-task provenance
-  and active-role metadata to scanner telemetry without enabling other hardware.
-
-sdrwatch/sweep/sweeper.py
-  Keep existing sequential tune/read/FFT/detect/baseline/event loop. Add
-  per-window timing, sample-count, short-read representation, and role/task
-  provenance in diagnostics. Use existing narrow sweep configuration for GUARD
-  and REFERENCE parked windows.
-
-sdrwatch/util/detection_diagnostics.py
-  Extend device telemetry, effective-parameter, and detection-window records
-  with device identity, receiver role, role-run/job metadata, timing, samples,
-  and resource fields with explicit unavailable markers.
-
-sdrwatch/util/scan_logger.py
-  Preserve JSONL behavior while measuring logger/jsonl write cost where feasible.
-
-sdrwatch/baseline/store.py
-  Add migration-safe nullable provenance columns where durable storage is chosen,
-  especially scan update provenance. Avoid broad signal-track/observation schema
-  work.
-
-sdrwatch/baseline/persistence.py
-  Preserve cross-sweep and FM persistence behavior. Carry provenance into
-  persistence calls only where needed for additive storage and diagnostics.
-
-sdrwatch_web/controller.py
-  Add client wrappers for inventory, capability tier, role assignment, and
-  role-run endpoints while preserving existing job wrappers.
-
-sdrwatch_web/blueprints/api_jobs.py
-  Preserve existing `/api/jobs` routes. Add minimal web API proxies for hardware
-  inventory, role assignments, and role runs. Adjust active-job helpers so
-  multi-job status does not collapse to one misleading active job.
-
-sdrwatch_web/diagnostics.py
-  Include new role/device/resource/timing fields in diagnostic bundle summaries
-  and manifests without requiring log scraping.
-
-templates/control.html
-  Add a compact inventory/tier/role-assignment surface and role-aware job status.
-  Remove single-active-job assumptions only where required for multi-RTL role
-  operation. Avoid a broad UI redesign.
-
-README.md and operator docs
-  Correct current hardware support claims, document RTL-native-only scanner
-  execution, capability tiers, role semantics, identity warnings, Pi 5 resource
-  expectations, and no continuous raw IQ capture default.
-
-tests/
-  Add focused no-hardware tests for inventory, tiering, identity warnings,
-  backend gating, role assignment, atomic locks, grouped role runs, telemetry,
-  persistence provenance, and web/controller regressions. Keep existing FM and
-  cross-sweep tests passing.
+effective_min_persist_width =
+  max(bin_hz, min_detection_width_hz, min_persist_bandwidth_hz when configured)
 ```
 
-**Structure Decision**: Keep the feature in the existing single-repository architecture. The controller becomes the role/inventory coordinator, the scanner remains the one-device job executor, and the web UI presents role-aware orchestration without taking ownership of hardware or DSP.
+The EMA measurement should be floored to this value before blending, and the final blended result should be floored again after blending. Diagnostics should distinguish:
 
-## Complexity Tracking
+- `input_width_hz`
+- `measurement_width_hz`
+- `min_width_hz`
+- `min_persist_bandwidth_hz`
+- `persist_width_floor_applied_hz`
+- `output_width_hz`
 
-No constitution violations or complexity exceptions are required.
+### Store/Update Clamp
 
-## Baseline Starting Point
+Before `Store.insert_baseline_detection()` and `Store.update_baseline_detection()`, apply a persist-card span clamp centered on the current stable center:
 
-- `sdrwatch-control.py` already discovers RTL devices, represents `Device` and `Job`, owns controller state, lock files, stale-lock cleanup, process reaping, and single-job start/stop/status.
-- `discover_devices()` currently returns native RTL devices only, despite adjacent code and docs that mention other hardware.
-- Current `Device.key` values are index-first, such as `rtl:0`, while serial metadata may be available but is not used as durable role identity.
-- `sdrwatch/cli.py` and `sdrwatch/sweep/runner.py` already reject non-`rtlsdr_native` scanner backends, making backend gating mostly an explicit reporting and pre-spawn-controller concern.
-- `sdrwatch/sweep/sweeper.py` already executes the sequential tune/read/PSD/detect/baseline/event loop and can model a parked GUARD or REFERENCE role with a narrow configured range.
-- Cross-sweep persistence is per scanner process before database persistence, while persisted baseline rows are baseline-first and lack enough device/role provenance for concurrent receivers.
-- `sdrwatch/util/detection_diagnostics.py`, `scan_logger.py`, and `sdrwatch_web/diagnostics.py` already provide structured diagnostic JSONL and diagnostic bundles, but lack per-window timing/resource and role provenance.
-- `templates/control.html` and web job APIs currently assume one selected device and a single active job in several places.
+```text
+width = clamp(width, min_persist_bandwidth_hz, max_persist_bandwidth_hz)
+low = center - width / 2
+high = center + width / 2
+clip to baseline start/stop
+if edge clipped, record baseline_clipped=true
+```
 
-## Technical Architecture
+`_enforce_persisted_span_invariant()` should continue to ensure `f_low_hz <= f_center_hz <= f_high_hz`, but it should not be the only place policy width is enforced.
 
-### Controller Changes
+### Max Width Caps
 
-- Introduce a controller-side hardware inventory builder that merges detected RTL devices with lock state, active job state, role assignment state, backend support, identity confidence, and warning messages.
-- Keep hardware inventory RTL-runnable-only for execution. Unsupported/planned hardware classes may be represented only as `runnable=false` and `support_state=planned` or `unsupported`.
-- Derive stable receiver identity as:
-  - `rtl:serial:<serial>` when a unique serial is present.
-  - `rtl:index:<index>` as an unstable runtime fallback when serial is missing or duplicated.
-  - Existing `rtl:<index>` remains accepted for compatibility and maps to the runtime index identity.
-- Add role assignment state to controller persisted state:
-  - Stable serial assignments can persist across controller restart.
-  - Index-only assignments are session-scoped and cleared or require reconfirmation after restart.
-  - Assignment records include role, role lane, device identity, runtime index, serial, identity confidence, warnings, timestamps, and assignment scope.
-- Introduce grouped role-run records because GUARD+ROVER and two-GUARD+REFERENCE are one operator action with multiple child jobs. Child jobs remain normal `Job` records and keep individual visibility.
-- Harden lock acquisition by replacing the current check-then-write lock path with an atomic create/claim operation around lock files, while retaining stale-lock cleanup and startup reconciliation.
-- Reject unsupported backend/device starts before process spawn, including controller paths that might otherwise map `hackrf:` or future keys into scanner commands.
-- Add role/job metadata to child job records and scanner args where backward-compatible: receiver role, role lane, role-run ID, source task, stable identity, serial, runtime index, active role count, and active device count.
+Keep existing max width semantics:
 
-### Scanner Runner Changes
+- `max_detection_width_hz` remains the scanner's current broad cap.
+- `max_persist_width_hz` and `max_card_width_hz` remain compatibility aliases.
+- Internal `max_persist_bandwidth_hz` resolves from those fields.
+- Existing width ratio rejection remains useful to prevent one wide observation from absorbing unrelated signals.
 
-- Preserve `rtlsdr_native` as the only accepted scanner backend.
-- Preserve current CLI defaults and existing single-device smoke behavior.
-- Add optional metadata-only flags if needed for diagnostics, such as receiver role, role-run ID, source task, device serial, and runtime index. These flags must not change detection behavior.
-- Keep source selection native RTL only. Serial-based opening may be used only after compatibility planning confirms the current driver can do it safely; otherwise controller identity maps to the runtime index passed to the existing runner.
+### Scan-Edge Clipping
 
-### Scan Behavior Mapping
+Persisted/card width may be narrower than the policy floor only when the policy-centered span is clipped by the active baseline or scan boundary. Diagnostics must say:
 
-- **GUARD**: Use existing scanner loop with a narrow configured start/stop/step centered on the priority window. The runner still tunes and reads per window, but the configured range should produce one stable parked window and avoid rover-like broad sweeps.
-- **ROVER**: Use existing sequential sweep configuration over lower-priority ranges.
-- **REFERENCE**: Use the GUARD-style parked-window shape with a reference/noise/stable-signal task label and diagnostic context; no automatic correction, scoring, or fusion.
-- Keep FM Broadcast profile behavior untouched. Role tasks may choose profile/task parameters, but FM Validation remains its current explicit operator path.
+- `baseline_clipped=true`
+- `requested_persist_bandwidth_hz`
+- `persisted_card_bandwidth_hz`
+- `clip_reason=scan_edge`
 
-### Diagnostic and Telemetry Changes
+### Avoid Over-Merging Close Signals
 
-- Extend `device_telemetry`, `effective_parameters`, and `detection_window` records with role-aware provenance.
-- Add per-window timing measurements around tune, flush, read, transform, detect, baseline/persistence/database update, diagnostic JSONL logging, and total window duration.
-- Include sample accounting: requested samples, samples read, short-read indicator when detectable, and dropped-read field when the driver can expose it. Use `null` plus `unavailable_fields` when not available.
-- Add process/resource telemetry records or summary fields for PID, active device count, active role count, CPU load when available, RSS memory when available, sample rate, and role-run ID.
-- Keep diagnostic JSONL bounded and bundle summaries aggregate-oriented so Pi 5 I/O is not dominated by logging.
+Do not widen the live cluster extent or raw detector segments just because a floor exists. Use the floor only for identity/persist/display spans after candidate formation. Keep:
 
-### API/UI Changes
+- `cluster_merge_hz`
+- `center_match_hz`
+- width ratio rejection
+- max persist width cap
+- existing close-signal regression tests
 
-- Add web/controller surfaces for:
-  - Hardware inventory with capability tier.
-  - Role assignment list, set, and clear.
-  - Role-run start, status/list, detail, and stop.
-- Preserve existing `/api/jobs` payload compatibility: `{device_key, label, baseline_id, params}` remains valid for current workflows.
-- Add only additive fields to job status objects, such as `receiver_role`, `role_lane`, `role_run_id`, `source_task`, `device_identity`, and `identity_warning`.
-- Update the control page with a compact inventory/tier strip, role assignment controls, and role-run status. Keep existing scan controls and presets intact.
-- Replace single-active-job assumptions only where multi-role status and stop/export controls require it. Existing active-job endpoints may continue to return a primary or most recent job for compatibility, but role-run views must not depend on them.
+Add tests where two close but distinct signals remain separate even with a broad profile floor.
 
-### Persistence Changes
+## F. Test Plan
 
-- Controller role assignments and role-run records live in controller JSON state first.
-- Diagnostic JSONL stores full role/device/job/task/timing/resource provenance in the first implementation.
-- Add nullable SQLite columns only where low-risk and directly useful:
-  - Prefer `scan_updates`: `receiver_role`, `device_key`, `device_serial`, `device_index`, `job_id`, `role_run_id`, `source_profile`, `source_task`.
-  - Consider `baseline_detections` only for last-seen provenance fields, not as a full observation table.
-- Do not add signal_tracks, observations, fusion tables, or destructive migrations in this feature.
-- If baseline detections remain baseline-scoped for first implementation, document that multi-receiver provenance is diagnostic-first and that future fusion needs a separate model.
+Add or update no-hardware tests before implementation.
 
-### Documentation Changes
+### New focused tests
 
-- Correct README claims that imply current Soapy scanner execution or non-RTL runtime support.
-- Document `rtlsdr_native` as the only runnable scanner backend for this feature.
-- Mark Airspy, HackRF, and Soapy as planned/future unless implemented later.
-- Add operator docs for capability tiers, manual roles, GUARD/ROVER/REFERENCE semantics, identity warnings, Pi 5 resource expectations, and no continuous raw IQ capture.
+Create `tests/test_signal_span_policy.py` if that keeps policy coverage clearer:
 
-## Phase 0 Research
+- `test_policy_defaults_identity_and_persist_floor_from_min_match_bandwidth`
+- `test_tiny_raw_segment_does_not_shrink_identity_below_policy_floor`
+- `test_persisted_card_width_cannot_shrink_below_min_persist_bandwidth`
+- `test_display_span_still_uses_min_display_bandwidth_independently`
+- `test_raw_fragment_bandwidth_remains_available_and_tiny`
+- `test_narrowband_profile_can_use_small_identity_and_display_floors`
+- `test_unknown_discovery_profile_does_not_inherit_broad_display_floor`
 
-Research decisions are captured in [research.md](./research.md). Key outcomes:
+### Existing persistence and characterization tests
 
-- Treat grouped role runs as an additive orchestration layer over existing child jobs.
-- Use controller state for role assignment durability and role-run coordination.
-- Make receiver identity serial-first with index fallback warnings.
-- Harden device locking atomically before relying on concurrent multi-RTL starts.
-- Keep backend support explicit and RTL-only.
-- Store full provenance in diagnostics first, with minimal additive database columns for scan updates.
+Update or extend `tests/test_fm_characterization_persistence.py`:
 
-## Phase 1 Design
+- `test_tiny_fft_fragment_does_not_become_fake_measured_fm_bandwidth` should continue proving raw/measured can be tiny while identity/display are policy-shaped.
+- Add `test_tiny_revisit_is_confirmation_only_when_below_identity_floor`.
+- Add `test_large_delta_revisit_is_confirmation_only_when_center_gate_fails`.
+- Add `test_revisit_authority_diagnostics_explain_confirmation_only`.
 
-Design artifacts:
+Update `tests/test_extent_hysteresis.py`:
 
-- [data-model.md](./data-model.md)
-- [contracts/hardware-inventory-contract.md](./contracts/hardware-inventory-contract.md)
-- [contracts/role-assignment-contract.md](./contracts/role-assignment-contract.md)
-- [contracts/role-run-contract.md](./contracts/role-run-contract.md)
-- [contracts/job-status-additions-contract.md](./contracts/job-status-additions-contract.md)
-- [contracts/diagnostic-telemetry-contract.md](./contracts/diagnostic-telemetry-contract.md)
-- [quickstart.md](./quickstart.md)
+- Rename or add `test_width_ema_applies_min_persist_bandwidth_floor`.
+- Add live-path assertions that stored rows remain above persist floor after `_upsert_detection()` and `apply_revisit_confirmation()`.
+- Keep existing invariant tests for center within low/high.
 
-## Migration Strategy
+Update `tests/test_fm_persistence_stability.py`:
 
-- Use additive-only migrations.
-- Keep controller state backward-compatible by accepting older `state.json` files without role assignment or role-run keys.
-- Add controller state keys:
-  - `role_assignments`: map of role lane to assignment record.
-  - `role_runs`: map of role-run ID to grouped run record.
-  - `role_assignment_session_epoch` or equivalent session marker for clearing index-only assignments after restart.
-- Add nullable scan provenance columns only if implementation tasks confirm scanner writes can populate them without disturbing existing readers:
-  - `receiver_role TEXT`
-  - `device_key TEXT`
-  - `device_serial TEXT`
-  - `device_index INTEGER`
-  - `job_id TEXT`
-  - `role_run_id TEXT`
-  - `source_profile TEXT`
-  - `source_task TEXT`
-- Durable provenance in first implementation:
-  - Controller role assignments and role runs in controller state.
-  - Child job metadata in controller state.
-  - Diagnostic JSONL and bundle manifests.
-  - Scan update provenance if additive columns are implemented.
-- Diagnostic-only provenance in first implementation:
-  - Per-window timing breakdown.
-  - Per-window samples/short-read/dropped-read details.
-  - Resource telemetry fields.
-  - Detection-level receiver provenance if adding it to `baseline_detections` is deferred.
-- Deferred:
-  - Full `signal_tracks` table.
-  - Full per-observation table.
-  - Cross-receiver fusion, confidence scoring, and automatic correction.
+- Keep close-signal separation tests.
+- Add `test_policy_floor_does_not_merge_nearby_close_signals`.
 
-## Test Strategy
+Update `tests/test_non_fm_width_scope.py`:
 
-- **Inventory and capability**: zero/one/two/three RTL fixtures, missing serial, duplicate serial, index-only warning, unique serial identity, Tier 0/Tier 1/Tier 2/Tier 2+.
-- **Backend gating**: `rtlsdr_native` accepted; Airspy/HackRF/Soapy keys rejected before spawn; existing scanner CLI rejection remains covered.
-- **Role assignment**: assign GUARD, ROVER, REFERENCE; clear assignment; stable serial persistence; index-only session scoping; duplicate active assignment rejection.
-- **Lock/lifecycle**: same-device concurrent starts do not both succeed; distinct-device starts can proceed; stale lock cleanup; startup reconciliation; process reaping releases locks; failed spawn releases lock or reports state clearly; stop status does not drift misleadingly after reaper completion.
-- **Role runs**: one GUARD job; GUARD+ROVER jobs; two GUARD plus REFERENCE/ROVER with three devices; grouped stop; child failure reflected as degraded/failed group status.
-- **Scanner behavior**: GUARD and REFERENCE narrow-window tasks use existing scanner loop; ROVER uses existing sweep; no FM Broadcast regression; no cross-sweep persistence regression.
-- **Telemetry**: diagnostic JSONL includes role/device/job/task provenance, sample counts, unavailable fields, timing fields, process identity, active device/role counts, CPU/RSS when available.
-- **Persistence**: additive migration against existing SQLite files; scan update provenance writes when enabled; baseline detection behavior remains compatible.
-- **Web/API**: inventory, role assignment, role-run routes, auth behavior when `SDRWATCH_CONTROL_TOKEN` is enabled, existing `/api/jobs` payload compatibility, multi-job status UI, diagnostic export for active/recent/finished jobs.
-- **Docs**: README no longer claims runnable Soapy/non-RTL scanner support; operator docs describe tiers, roles, warnings, and Pi 5 constraints.
+- Keep `test_narrow_non_fm_signal_remains_narrow_without_fm_profile`.
+- Add a narrowband profile/policy fixture proving small floors stay small.
+- Add an unknown/discovery fixture proving no FM-like display/persist floor is applied.
 
-## Implementation Sequence
+### Profile, CLI, controller, and diagnostics tests
 
-1. **Slice 1: Inventory, Capability Tier, Backend Gating**
-   - Add controller inventory builder and capability tier.
-   - Expose web/controller inventory surface.
-   - Make runnable backend reporting explicit.
-   - Reject unsupported starts before spawn.
-   - Tests: inventory tiers, backend gating, current job compatibility.
+Update `tests/test_fm_validation_profile.py`:
 
-2. **Slice 2: Stable Identity, Warnings, Role Assignment State**
-   - Add serial-first identity model and warning generation.
-   - Add role assignment set/list/clear state.
-   - Persist only stable serial assignments; session-scope index fallbacks.
-   - Tests: missing/duplicate serials, index fallback, assignment persistence.
+- Add serialization checks for new policy fields.
+- Add CLI profile application checks for derived policy fields.
+- Add override preservation checks.
 
-3. **Slice 3: Lock/Lifecycle Hardening and Concurrency Tests**
-   - Make lock acquisition atomic.
-   - Preserve stale-lock cleanup and startup reconciliation.
-   - Add fake-process tests for reaper/stop/failure paths.
-   - Tests: concurrent same-device start, distinct-device starts, stale locks.
+Update `tests/test_effective_parameter_manifest.py`:
 
-4. **Slice 4: One-Device GUARD Role Path**
-   - Start a single GUARD child job from a role assignment.
-   - Pass role/task metadata to job and diagnostics.
-   - Use narrow-window scanner params with existing scanner behavior.
-   - Tests: one GUARD job, stop/release, FM regression.
+- Add `test_effective_parameter_manifest_records_signal_span_policy`.
+- Ensure `max_persist_width_hz`/`max_card_width_hz` aliases remain present.
 
-5. **Slice 5: Two-Device GUARD + ROVER Grouped Run**
-   - Add role-run state and start/stop/status endpoints.
-   - Start one GUARD and one ROVER child job.
-   - Reflect degraded state when a child exits or fails.
-   - Tests: grouped start/stop, child failure, status and locks.
+Update `tests/test_control_fm_validation.py`:
 
-6. **Slice 6: Telemetry and Provenance Expansion**
-   - Add per-window timing, sample accounting, resource telemetry, and role/device/job provenance to diagnostic JSONL.
-   - Add minimal scan update provenance columns if implementation confirms low risk.
-   - Tests: diagnostic JSONL fields, unavailable fields, bundle summaries.
+- Add controller command pass-through for new numeric/boolean/string policy params.
+- Ensure `/api/jobs` payload remains `{device_key, label, baseline_id, params}`.
 
-7. **Slice 7: Three-Device Two-GUARD plus REFERENCE/ROVER Support**
-   - Add role lanes for friendly GUARD, watchlist GUARD, and REFERENCE/ROVER.
-   - Ensure three distinct physical receiver assignment.
-   - Tests: three-device role run, duplicate prevention, reference telemetry.
+Update `tests/test_fm_characterization_diagnostics.py` and `tests/test_web_diagnostics_bundle.py`:
 
-8. **Slice 8: Minimal UI/Docs Polish and Regression Hardening**
-   - Add compact control-page inventory/tier/role-run UI.
-   - Fix README/operator docs drift.
-   - Run no-hardware regression suite and document Pi 5 hardware acceptance path.
+- Add summary coverage for `raw_fragment_bandwidth_hz`, `identity_match_bandwidth_hz`, `persisted_card_bandwidth_hz`, `bandwidth_interpretation`, and `revisit_authority`.
+- Preserve old summary fields.
 
-## Risks and Mitigations
+### Existing regression suites to keep green
 
-- **Unstable RTL index identity**: Prefer unique serial identities; mark index-only identity unstable; session-scope index assignments.
-- **Duplicate or missing serials**: Surface warnings, avoid durable assignment, and require operator reconfirmation after restart.
-- **Non-atomic lock acquisition**: Harden lock files with atomic create/claim semantics before multi-job orchestration.
-- **Stale process/job state**: Keep startup reconciliation, lazy job refresh, stale-lock cleanup, and reaper release tests.
-- **SQLite/write contention**: Keep DB changes minimal, prefer diagnostic JSONL for high-frequency telemetry, and avoid writing every detail to baseline tables.
-- **Pi 5 USB/CPU pressure**: Keep conservative defaults, no all-radios-max-rate mode, and add timing/resource telemetry before optimizing.
-- **Diagnostic JSONL overhead**: Aggregate where possible, record logger timing, keep bundle tails bounded, and avoid raw IQ logging.
-- **UI single-active-job assumptions**: Preserve compatibility endpoints, but add explicit role-run status and lists for multi-job operation.
-- **Unsupported hardware confusion**: Make runnable/planned/unsupported status explicit in inventory and docs; pre-spawn reject unsupported starts.
-- **Accidental FM/cross-sweep regression**: Keep detector behavior unchanged for role metadata; run FM Broadcast, cross-sweep, diagnostic, and `/api/jobs` regression tests after each slice.
+- `tests/test_cross_sweep_persistence.py`
+- `tests/test_effective_parameter_manifest.py`
+- `tests/test_device_telemetry.py`
+- `tests/test_multi_rtl_inventory.py`
+- `tests/test_multi_rtl_backend_gating.py`
+- `tests/test_multi_rtl_guard.py`
+- `tests/test_multi_rtl_telemetry.py`
+- `tests/test_legacy_job_compatibility.py`
+- Existing FM Validation and control-page tests
+
+### Optional hardware acceptance
+
+After implementation, run the same Pi 5 live canary through the web GUI/controller diagnostic flow:
+
+- Use a normal single-device RTL scan with `rtlsdr_native`, `device_key=rtl:0`, and `profile=fm_broadcast`.
+- Confirm requested/applied profile and effective parameters still agree.
+- Expect fewer misleading narrow persisted cards, but do not require an exact FM station count.
+- Confirm no ordinary persisted card falls below active persist floor except documented scan-edge clipping.
+- Confirm raw/revisit fragment widths can remain small and are labeled as raw fragments.
+- Confirm effective parameters still agree with scanner log and decision summary.
+
+## G. Implementation Slices
+
+### Slice A: Policy and Effective-Parameter Plumbing
+
+- Extend `ScanProfile` with optional signal span policy fields.
+- Add scanner CLI args for policy fields.
+- Add controller pass-through mapping inside existing `params`.
+- Build internal `SignalSpanPolicy` from args.
+- Export derived policy through effective parameters.
+- Tests: profile serialization, CLI application, controller pass-through, manifest contract.
+
+### Slice B: Identity/Persist Width Floor Enforcement
+
+- Add `min_identity_bandwidth_hz` use to match/identity span diagnostics.
+- Add `min_persist_bandwidth_hz` to persistence EMA and final store/update clamp.
+- Preserve max width caps and scan-edge clipping diagnostics.
+- Tests: tiny raw segment identity floor, persisted card floor, display floor independence, close-signal non-merge.
+
+### Slice C: Revisit Authority Gating
+
+- Split revisit confirmation from identity update.
+- Gate center movement and width update by policy.
+- Replace `profile == fm_broadcast` center smoothing with policy.
+- Emit revisit authority diagnostics.
+- Tests: tiny revisit confirmation-only, large center delta confirmation-only/rejected for identity update, diagnostics decision fields.
+
+### Slice D: Diagnostics Clarity
+
+- Add clearer aliases while preserving old fields.
+- Add `bandwidth_interpretation`, `width_floor_applied_hz`, `persist_width_floor_applied_hz`, `identity_update_allowed`, and revisit policy result fields.
+- Update bundle summaries to surface bounded samples.
+- Tests: diagnostics JSONL and bundle compatibility.
+
+### Slice E: Regression and Pi 5 Canary Validation
+
+- Run targeted no-hardware tests first.
+- Run broader FM, cross-sweep, effective-parameter, and multi-RTL backend gating suites.
+- Run GUI/controller Pi 5 canary when hardware is available.
+- Leave hardware-only acceptance visibly open if not run in the current environment.
+
+## H. Risk and Rollback
+
+### Risks
+
+- **Over-merging close signals**: A width floor used too early could make separate nearby signals overlap. Mitigation: keep raw cluster extents tight, apply floors only to identity/persist/display spans, preserve `center_match_hz`, `cluster_merge_hz`, width ratio rejection, and max width caps.
+- **Hiding useful narrowband signals**: Bad defaults could force narrowband profiles into broad widths. Mitigation: defaults derive from profile fields; unprofiled discovery keeps current narrow behavior; narrowband fixtures prove small floors remain possible.
+- **Breaking existing FM/cross-sweep behavior**: Persistence and revisit changes touch shared paths. Mitigation: implement in small slices with existing FM characterization, persistence, cross-sweep, and diagnostics tests green after each slice.
+- **Changing operator contract accidentally**: New policy fields could leak into a new API shape. Mitigation: keep `/api/jobs` unchanged and pass new values through existing `params`.
+- **Misleading diagnostics during transition**: New names might imply old fields disappeared. Mitigation: additive aliases only, old fields retained.
+
+### Rollback Strategy
+
+- All new profile-policy fields are optional.
+- If a slice regresses behavior, set new fields to unset/0/compat defaults and the system falls back to current match/display/min-detection behavior.
+- Revisit authority gates can be disabled by leaving bandwidth and center delta gates unset for a profile.
+- Keep old diagnostic field names so bundle readers can ignore new fields.
+- Avoid database migrations so rollback is code/config only.
 
 ## Post-Design Constitution Check
 
-- **Raspberry Pi reliability remains central**: PASS. Resource telemetry, bounded logging, conservative defaults, and hardware acceptance are planned.
-- **Minimal local stack remains intact**: PASS. No new service, cloud dependency, or frontend framework is introduced.
-- **Layering remains clean**: PASS. Controller owns roles/locks/processes; scanner owns DSP; web owns operator presentation and proxies.
-- **Hardware claims remain honest**: PASS. Only native RTL execution is runnable; Airspy/HackRF/Soapy are explicitly non-runnable future classes.
-- **Migration remains safe**: PASS. Controller state and diagnostic-first provenance are primary; SQLite changes are nullable and additive only.
-- **Operator validation remains GUI/controller focused**: PASS. Quickstart and tests prioritize web/controller lifecycle, with CLI only for backend smoke/regression.
+- **Raspberry Pi reliability**: PASS. The implementation slices are small, bounded, and hardware acceptance is explicit.
+- **Minimal local stack**: PASS. No new services, frameworks, or storage systems.
+- **Layering**: PASS. Profiles/CLI/controller only carry policy; detection and persistence enforce it; web remains the operator surface.
+- **Honest RF claims**: PASS. Raw fragments, measured values, identity policy, persisted card spans, and display spans remain separate.
+- **Migration safety**: PASS. No schema changes are required for this plan.
+- **Operator validation**: PASS. Pi 5 canary validation remains GUI/controller diagnostic-bundle based.

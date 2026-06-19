@@ -1,247 +1,159 @@
-# Data Model: Hardware-Aware Multi-RTL Guard/Rover Mode
+# Data Model: Profile-Governed Signal Identity Span and Revisit Authority
 
-## Hardware Inventory Entry
+## Entity: SignalSpanPolicy
 
-Represents one detected receiver or planned hardware class in the operator inventory.
+Derived runtime policy object built from scanner args after profile application.
 
-**Fields**
+### Fields
 
-- `device_identity`: stable identity key when available, such as `rtl:serial:<serial>`.
-- `legacy_device_key`: current compatibility key, such as `rtl:0`.
-- `device_kind`: `rtlsdr`, `airspy`, `hackrf`, `soapy`, or planned class name.
-- `label`: operator-facing label.
-- `runtime_index`: current detected index when applicable.
-- `serial`: serial string when available.
-- `identity_confidence`: `stable`, `ambiguous`, `index_only`, or `unknown`.
-- `identity_scope`: `persistent`, `session`, or `none`.
-- `warnings`: list of warning codes and messages.
-- `detected`: boolean.
-- `runnable`: boolean.
-- `support_state`: `runnable`, `unsupported`, or `planned`.
-- `runnable_backend`: `rtlsdr_native` when runnable, otherwise `null`.
-- `backend_status`: machine-readable backend status.
-- `busy`: boolean.
-- `locked`: boolean.
-- `lock_owner`: job or role-run identity when known.
-- `active_job_id`: active child job ID when any.
-- `assigned_role`: role name when assigned.
-- `role_lane`: role lane when assigned.
-- `assignment_id`: assignment identity when assigned.
-- `last_seen_ts`: last controller discovery time.
+- `profile_name`: active requested/applied profile context when available.
+- `min_identity_bandwidth_hz`: minimum width for identity/match semantics.
+- `min_persist_bandwidth_hz`: minimum width for persisted/card span semantics.
+- `max_persist_bandwidth_hz`: maximum persisted/card width, derived from existing max width aliases.
+- `min_match_bandwidth_hz`: existing match floor retained for compatibility.
+- `min_display_bandwidth_hz`: existing display floor retained for operator presentation.
+- `allow_revisit_to_shrink_identity`: whether revisit can reduce identity width.
+- `allow_revisit_to_move_center`: whether revisit can move stable center within policy gates.
+- `min_revisit_bandwidth_for_identity_update_hz`: revisit bandwidth floor for identity updates.
+- `max_revisit_center_delta_for_identity_update_hz`: center delta gate for revisit identity updates.
+- `fragmented_revisit_policy`: policy for ambiguous revisit fragments.
+- `raw_fragment_interpretation`: label for raw detector evidence.
+- `center_smoothing_enabled` or `center_stability_mode`: profile-governed center smoothing behavior.
 
-**Validation Rules**
+### Validation Rules
 
-- `runnable=true` is allowed only for native RTL receiver inventory entries in this feature.
-- Unique serial values produce `identity_confidence=stable` and `identity_scope=persistent`.
-- Missing serials produce `identity_confidence=index_only` and session scope.
-- Duplicate serials produce `identity_confidence=ambiguous` and must include a warning.
-- Unsupported/planned hardware classes must not include a runnable backend.
+- Negative bandwidth or delta values are invalid and should resolve to unset/disabled.
+- `min_persist_bandwidth_hz` defaults to `min_match_bandwidth_hz` when unset.
+- `min_identity_bandwidth_hz` defaults to `min_match_bandwidth_hz` when unset.
+- `max_persist_bandwidth_hz` must not be below the effective persist floor; if it is, diagnostics should report invalid policy and use the safer max of the two or skip the max cap.
+- Discovery/no-profile behavior must preserve current narrow widths when no policy floor is set.
 
-## Capability Tier
+## Entity: RawFragmentEvidence
 
-Represents the station capability inferred from runnable RTL receiver count.
+Raw detector or revisit segment evidence.
 
-**Fields**
+### Fields
 
-- `tier`: `0`, `1`, `2`, or `2_plus`.
-- `label`: operator-facing tier label.
-- `runnable_rtl_count`: count of runnable RTL receivers.
-- `max_role_count`: number of role jobs recommended by the tier.
-- `supported_roles`: roles available at this tier.
-- `warnings`: tier-level warnings.
-- `generated_ts`: inventory generation time.
+- `raw_fragment_center_hz`
+- `raw_fragment_low_hz`
+- `raw_fragment_high_hz`
+- `raw_fragment_bandwidth_hz`
+- `peak_db`
+- `noise_db`
+- `snr_db`
+- `source_pass`: `coarse` or `revisit`
 
-**Rules**
+### Validation Rules
 
-- Tier 0: zero runnable RTLs.
-- Tier 1: one runnable RTL, single-device scan and one GUARD.
-- Tier 2: two runnable RTLs, GUARD plus ROVER.
-- Tier 2+: three or more runnable RTLs, two GUARD roles plus REFERENCE or ROVER.
+- Raw fragment bandwidth may be tiny.
+- Raw fragment evidence must not be overwritten by policy-shaped identity, persisted, or display widths.
 
-## Receiver Role Assignment
+## Entity: IdentityMatchSpan
 
-Represents manual binding of one receiver identity to one role lane.
+Signal identity span used for matching and characterization identity.
 
-**Fields**
+### Fields
 
-- `assignment_id`: stable controller identity for the assignment record.
-- `role`: `GUARD`, `ROVER`, or `REFERENCE`.
-- `role_lane`: `guard_primary`, `guard_secondary`, `rover`, or `reference`.
-- `display_name`: operator label such as "Friendly Guard" or "Watchlist Guard".
-- `device_identity`: best available identity.
-- `legacy_device_key`: runtime index key for compatibility.
-- `serial`: serial when available.
-- `runtime_index`: index at assignment time.
-- `identity_confidence`: copied from inventory.
-- `assignment_scope`: `persistent` or `session`.
-- `task`: associated scan task summary when configured.
-- `assigned_ts`: timestamp.
-- `updated_ts`: timestamp.
-- `assigned_by`: operator/session marker when available.
-- `warnings`: warnings accepted by the operator.
+- `identity_match_center_hz`
+- `identity_match_low_hz`
+- `identity_match_high_hz`
+- `identity_match_bandwidth_hz`
+- `width_floor_applied_hz`
+- `max_width_clamped_hz`
+- `baseline_clipped`
 
-**Validation Rules**
+### Validation Rules
 
-- A role lane can have at most one assignment.
-- A physical receiver identity can be assigned to at most one active role lane when running.
-- Persistent assignment requires `identity_confidence=stable`.
-- Session assignment is allowed for index-only identity only with a warning and must not silently survive restart as durable truth.
+- Width should not fall below `min_identity_bandwidth_hz` except baseline/scan-edge clipping.
+- Identity span must remain separate from raw fragment and display span.
+- Identity span must not be used to widen live cluster extents before close-signal matching decisions.
 
-## Role-Aware Run
+## Entity: PersistedCardSpan
 
-Represents a grouped operator run that owns one or more child scan jobs.
+Stored card span in `baseline_detections.f_low_hz/f_high_hz/f_center_hz`.
 
-**Fields**
+### Fields
 
-- `role_run_id`: group identity.
-- `status`: `pending`, `starting`, `running`, `degraded`, `stopping`, `finished`, `failed`, or `cancelled`.
-- `capability_tier_at_start`: tier snapshot.
-- `started_ts`: timestamp.
-- `updated_ts`: timestamp.
-- `finished_ts`: timestamp when terminal.
-- `child_jobs`: list of child scan job references.
-- `requested_roles`: roles requested for the group.
-- `active_device_count`: number of distinct receivers assigned.
-- `active_role_count`: number of active roles.
-- `error`: group error message when any.
-- `warnings`: group-level warnings.
+- `persisted_card_center_hz`
+- `persisted_card_low_hz`
+- `persisted_card_high_hz`
+- `persisted_card_bandwidth_hz`
+- `persist_width_floor_applied_hz`
+- `max_persist_width_clamped_hz`
+- `baseline_clipped`
 
-**State Transitions**
+### Validation Rules
 
-- `pending` -> `starting` when child job starts begin.
-- `starting` -> `running` when all required children are running.
-- `starting` -> `degraded` when at least one child starts and another fails.
-- `running` -> `degraded` when one child stops or fails unexpectedly.
-- `running` or `degraded` -> `stopping` when the operator stops the group.
-- `stopping` -> `finished` when all children are terminal cleanly.
-- Any non-terminal state -> `failed` when no useful child job remains or startup cannot proceed.
+- `f_low_hz <= f_center_hz <= f_high_hz`.
+- Width should not fall below `min_persist_bandwidth_hz` except baseline/scan-edge clipping.
+- Width should not exceed `max_persist_bandwidth_hz` when configured.
+- Store schema remains unchanged for this slice.
 
-## Child Scan Job
+## Entity: DisplaySpan
 
-Extends the existing controller job with role-aware metadata.
+Operator-facing span used in emitted records and UI summaries.
 
-**Fields**
+### Fields
 
-- Existing job fields: `id`, `created_ts`, `label`, `device_key`, `baseline_id`, `status`, `pid`, `cmd`, `log_path`, `params`, `exit_code`, `finished_ts`.
-- `role_run_id`: parent role-run ID when any.
-- `receiver_role`: `GUARD`, `ROVER`, or `REFERENCE`.
-- `role_lane`: role lane.
-- `source_task`: task label such as `guard_window`, `rover_sweep`, or `reference_window`.
-- `device_identity`: best available identity.
-- `device_serial`: serial when available.
-- `device_index`: runtime index.
-- `identity_confidence`: identity confidence at start.
-- `active_device_count`: role-run active device count at start.
-- `active_role_count`: role-run active role count at start.
-- `last_update_ts`: most recent controller status update.
-- `error_message`: error string when any.
+- `display_center_hz`
+- `display_low_hz`
+- `display_high_hz`
+- `display_bandwidth_hz`
+- `display_width_floor_applied_hz`
 
-**Rules**
+### Validation Rules
 
-- Role-aware metadata must be additive and optional for existing jobs.
-- Existing single-job workflows remain valid without role metadata.
+- Display width is governed by `min_display_bandwidth_hz`.
+- Display width must not be treated as measured occupied bandwidth.
+- Narrowband and discovery profiles must be able to keep display widths narrow.
 
-## Scan Task
+## Entity: RevisitAuthorityDecision
 
-Represents the configured work for a receiver role.
+Decision record describing what a revisit confirmation is allowed to update.
 
-**Fields**
+### Fields
 
-- `task_id`: identity within a role run.
-- `source_task`: `guard_window`, `rover_sweep`, or `reference_window`.
-- `profile`: scanner profile name when used.
-- `start_hz`: start frequency.
-- `stop_hz`: stop frequency.
-- `center_hz`: center frequency when parked.
-- `step_hz`: step size.
-- `sample_rate`: requested sample rate.
-- `fft`: FFT size.
-- `avg`: averaging count.
-- `persistence`: persistence settings summary.
-- `diagnostics_enabled`: boolean.
+- `revisit_authority`: `identity_update`, `confirmation_only`, `rejected_for_center_delta`, `rejected_for_bandwidth_floor`, or `fragmented_or_ambiguous`.
+- `identity_update_allowed`
+- `confirmation_recorded`
+- `revisit_center_delta_hz`
+- `revisit_bandwidth_hz`
+- `max_revisit_center_delta_for_identity_update_hz`
+- `min_revisit_bandwidth_for_identity_update_hz`
+- `revisit_center_policy_result`
+- `revisit_bandwidth_policy_result`
+- `reason`
 
-**Rules**
+### Validation Rules
 
-- GUARD and REFERENCE tasks should be narrow enough to behave as parked windows.
-- ROVER tasks may span broader configured ranges.
-- Task parameters must not silently change FM Validation defaults.
+- Confirmation can be recorded even when identity update is not allowed.
+- Revisit cannot move identity center when the center delta gate fails.
+- Revisit cannot shrink or update identity/persisted width when the bandwidth floor gate fails.
 
-## Telemetry Record
+## Entity: BandwidthInterpretation
 
-Represents diagnostic evidence emitted by scanner or controller.
+Diagnostic explanation for how bandwidth fields should be read.
 
-**Fields**
+### Fields
 
-- `event`: diagnostic event name.
-- `timestamp`: event timestamp.
-- `role_run_id`: role-run ID when any.
-- `job_id`: child job ID when any.
-- `receiver_role`: role name.
-- `role_lane`: role lane.
-- `device_identity`: best available identity.
-- `device_key`: compatibility key.
-- `device_serial`: serial when available.
-- `device_index`: runtime index.
-- `device_kind`: hardware kind.
-- `backend`: runnable backend.
-- `source_profile`: profile when any.
-- `source_task`: task label.
-- `center_hz`: center frequency or window center.
-- `sample_rate`: sample rate.
-- `fft`: FFT size.
-- `avg`: averaging count.
-- `num_segments`: detected segment count.
-- `samples_requested`: requested samples.
-- `samples_read`: actual samples read.
-- `short_read`: boolean or null.
-- `dropped_reads`: count or null.
-- `tune_ms`, `flush_ms`, `read_ms`, `fft_ms`, `detect_ms`, `db_update_ms`, `jsonl_ms`, `total_window_ms`: timing values or null.
-- `pid`: process ID.
-- `active_device_count`: active receiver count.
-- `active_role_count`: active role count.
-- `cpu_load`: CPU load when available.
-- `rss_memory_bytes`: resident memory when available.
-- `unavailable_fields`: list of fields unavailable on the platform.
+- `raw_fragment_interpretation`
+- `measured_bandwidth_interpretation`
+- `identity_bandwidth_interpretation`
+- `persisted_bandwidth_interpretation`
+- `display_bandwidth_interpretation`
 
-## Detection Provenance
+### Validation Rules
 
-Represents device/role/job context attached to detection or scan-update evidence.
+- Raw and measured values may be narrow and low-confidence.
+- Identity and persisted values may be policy-shaped.
+- Display values are presentation-oriented.
 
-**Fields**
+## State Transitions
 
-- `receiver_role`
-- `role_lane`
-- `device_identity`
-- `device_key`
-- `device_serial`
-- `device_index`
-- `job_id`
-- `role_run_id`
-- `source_profile`
-- `source_task`
-- `observed_ts`
-
-**Durability**
-
-- Required in diagnostic records for the first implementation.
-- Preferred in scan updates through nullable additive fields.
-- Optional/deferred for baseline detections unless implementation shows a low-risk last-seen provenance path.
-
-## Unsupported Hardware Class
-
-Represents hardware that may be detected or documented but is not runnable in this feature.
-
-**Fields**
-
-- `hardware_kind`: `airspy`, `hackrf`, `soapy`, or other planned class.
-- `detected`: boolean.
-- `support_state`: `unsupported` or `planned`.
-- `runnable`: false.
-- `runnable_backend`: null.
-- `message`: operator-facing explanation.
-- `docs_url`: local documentation reference when available.
-
-**Rules**
-
-- Unsupported hardware classes must not appear in runnable start choices.
-- Any start attempt must fail before process spawn.
+1. Raw detector segment becomes `RawFragmentEvidence`.
+2. Clustered evidence becomes `IdentityMatchSpan` through `SignalSpanPolicy`.
+3. Persistence insert/update stores `PersistedCardSpan`.
+4. Display emission creates `DisplaySpan`.
+5. Revisit segment creates `RawFragmentEvidence`.
+6. Revisit policy creates `RevisitAuthorityDecision`.
+7. Revisit either records confirmation-only evidence or updates identity/persisted span through policy gates.

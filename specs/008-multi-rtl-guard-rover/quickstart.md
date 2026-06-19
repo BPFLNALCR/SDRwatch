@@ -1,140 +1,108 @@
-# Quickstart: Hardware-Aware Multi-RTL Guard/Rover Mode
+# Quickstart: Profile-Governed Signal Identity Span and Revisit Authority
 
-This guide describes how to validate the feature after implementation. It is not an implementation script.
+## Purpose
+
+Validate that SDRwatch keeps raw spectral fragments separate from signal identity span, persisted/card span, operator display span, and revisit authority.
+
+Normal operator acceptance remains web GUI -> controller job lifecycle -> scanner backend. Direct scanner CLI checks are backend smoke only.
 
 ## Prerequisites
 
-- Current feature artifacts under `specs/008-multi-rtl-guard-rover/`.
-- Controller and web app configured as in the existing SDRwatch workflow.
-- For no-hardware checks: fake device discovery and fake process fixtures in tests.
-- For hardware acceptance: Raspberry Pi 5, 4 GB RAM, NVMe storage, active cooling, and one to three native RTL-SDR receivers.
-
-## Branch Hygiene
-
-The current planning pass was created while checked out on `007-cross-sweep-persistence-and-telemetry`. Before implementation, use a stacked feature branch such as:
+- Workspace: `C:\Users\User\SDRwatch`
+- Branch: `008-multi-rtl-guard-rover`
+- Use bundled Python in this environment when system Python is unavailable:
 
 ```powershell
-git switch -c 008-multi-rtl-guard-rover
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest -q --basetemp .test-tmp\span-policy
 ```
 
-If the branch already exists, switch to it instead. Keep the feature directory as `specs/008-multi-rtl-guard-rover`.
+Use a fresh workspace-local `--basetemp` for each broad run.
 
 ## No-Hardware Validation
 
-Run the focused automated tests after implementation. Use the workspace-local Python that has project dependencies installed.
+Run focused tests first:
 
 ```powershell
-python -m pytest -q tests/test_multi_rtl_inventory.py tests/test_multi_rtl_roles.py tests/test_multi_rtl_role_runs.py tests/test_multi_rtl_telemetry.py
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest -q tests/test_signal_span_policy.py tests/test_extent_hysteresis.py tests/test_fm_characterization_persistence.py tests/test_non_fm_width_scope.py --basetemp .test-tmp\span-policy-focused
 ```
 
 Expected outcomes:
 
-- Zero/one/two/three fake RTL inventory fixtures produce Tier 0, Tier 1, Tier 2, and Tier 2+.
-- Missing serials, duplicate serials, and index-only devices produce warnings.
-- Only `rtlsdr_native` is reported runnable.
-- Airspy, HackRF, and Soapy start attempts are rejected before process spawn.
-- Role assignment set/list/clear works.
-- Duplicate active receiver assignment is rejected.
-- Atomic lock tests prevent concurrent same-device starts.
-- Stale locks and dead processes are reconciled.
-- Role-run status degrades when a child job fails.
-- Diagnostic records include role/device/job/task provenance and timing fields.
+- Tiny raw segments remain available as raw fragments.
+- Identity/match span does not shrink below active profile identity floor.
+- Persisted/card span does not shrink below active profile persist floor except scan-edge clipping.
+- Display span remains governed by display policy.
+- Tiny or far-offset revisit evidence is confirmation-only when policy forbids identity update.
+- Narrowband and discovery profiles are not forced into broad FM-like widths.
 
-## Regression Validation
-
-Run existing no-hardware regression tests that protect the current behavior.
+Run profile, controller, and diagnostics contract tests:
 
 ```powershell
-python -m pytest -q tests/test_cross_sweep_persistence.py tests/test_device_telemetry.py tests/test_effective_parameter_manifest.py tests/test_control_fm_validation.py tests/test_control_page_scan_settings.py tests/test_web_diagnostics_bundle.py
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest -q tests/test_fm_validation_profile.py tests/test_effective_parameter_manifest.py tests/test_control_fm_validation.py tests/test_fm_characterization_diagnostics.py tests/test_web_diagnostics_bundle.py --basetemp .test-tmp\span-policy-contracts
 ```
 
 Expected outcomes:
 
-- Existing FM Broadcast profile behavior remains stable.
-- Existing cross-sweep persistence promotion remains stable.
-- Diagnostic JSONL and bundle behavior remain useful.
-- Existing `/api/jobs` payload compatibility is preserved.
+- New policy fields serialize from profiles and apply through CLI args.
+- Controller passes policy params through existing `/api/jobs` `params`.
+- Effective parameters expose the derived signal span policy.
+- Diagnostics preserve old fields and add raw/identity/persist/display/revisit authority fields.
 
-## Controller/Web Smoke Validation
+Run existing regression suites:
 
-Start the controller and web app using the existing project workflow, then validate through the browser.
+```powershell
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest -q tests/test_cross_sweep_persistence.py tests/test_device_telemetry.py tests/test_multi_rtl_inventory.py tests/test_multi_rtl_backend_gating.py tests/test_multi_rtl_guard.py tests/test_multi_rtl_telemetry.py tests/test_legacy_job_compatibility.py --basetemp .test-tmp\span-policy-regression
+```
 
-1. Open the SDRwatch control page.
-2. Confirm the hardware inventory panel shows capability tier and receiver warnings.
-3. Confirm existing single-device scan controls still show the device selector and can build the same `/api/jobs` payload as before.
-4. Assign one receiver to GUARD.
-5. Start one GUARD role run.
-6. Confirm the role-run status shows the role, receiver identity, child job ID, and running state.
-7. Stop the run and confirm the receiver becomes available.
+Expected outcomes:
 
-## Two-RTL Acceptance
+- Cross-sweep persistence still passes.
+- Effective-parameter/profile export remains coherent.
+- Slice 1 hardware inventory/backend gating tests still pass.
+- Legacy single-device job compatibility remains intact.
 
-With two RTL receivers attached:
+## Backend Smoke
 
-1. Refresh hardware inventory.
-2. Confirm Tier 2.
-3. Assign one receiver to GUARD and the other to ROVER.
-4. Start a grouped role run.
-5. Confirm two child jobs run with different receiver identities.
-6. Attempt to assign or start the same receiver twice and confirm the action is rejected.
-7. Stop the grouped run and confirm both locks are released.
+Use CLI only as scanner backend smoke:
 
-Expected diagnostic evidence:
+```powershell
+& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m sdrwatch.cli --list-profiles
+```
 
-- Each child job has role, role lane, device identity, serial/index, job ID, and role-run ID.
-- Per-window records include sample rate, FFT size, averaging, segment count, samples read, timing fields, and unavailable fields where needed.
+Expected outcomes:
 
-## Three-RTL Acceptance
+- Profiles list successfully.
+- Broad profile policy fields appear for the FM Broadcast canary.
+- Narrow/default profiles do not inherit FM-like display floors unless configured.
 
-With three RTL receivers attached:
+## Optional Pi 5 Hardware Acceptance
 
-1. Refresh hardware inventory.
-2. Confirm Tier 2+.
-3. Assign friendly GUARD, watchlist GUARD, and either REFERENCE or ROVER.
-4. Start the grouped run.
-5. Confirm three child jobs run and no physical receiver is assigned twice.
-6. Stop one child job directly and confirm grouped status becomes degraded or terminal as appropriate.
-7. Stop the group and confirm all remaining child jobs stop cleanly.
+Run the normal single-device RTL scan from the web UI/controller path using FM Broadcast as the live canary:
 
-## Pi 5 Benchmark Capture
+- driver/backend: `rtlsdr_native`
+- device: `rtl:0` or the controller-discovered RTL key
+- requested profile: `fm_broadcast`
+- diagnostics enabled
 
-Run one, two, and three receiver scenarios with diagnostics enabled.
+Export the diagnostic bundle from the web UI.
 
-Collect:
+Expected outcomes:
 
-- Diagnostic bundle for each run.
-- Controller job logs.
-- Hardware inventory response.
-- Role-run status response.
-- Timing summaries for tune, flush, read, transform, detect, database update, JSONL logging, and total window duration.
-- Resource telemetry for CPU load and RSS memory when available.
+- `requested_profile`, `applied_profile`, and `profile_applied` agree in effective parameters.
+- `receiver_role`, `role_lane`, and `role_run_id` remain `null` for a legacy single-device job.
+- Raw/revisit fragment widths can remain tiny and are labeled as raw fragments.
+- Ordinary persisted/card spans do not fall below the active persist floor except documented scan-edge clipping.
+- Revisit authority diagnostics explain confirmation-only cases.
+- The card count need not match an exact FM station count; the acceptance goal is fewer misleading narrow persisted cards and clearer semantics.
 
-Expected outcome:
+## Out of Scope for Validation
 
-- Bottlenecks can be identified from metadata and diagnostics without continuous raw IQ capture.
-- Missing platform metrics are marked as unavailable rather than causing scan failure.
-
-## Provenance Boundary
-
-The first implementation keeps full per-window timing, sample accounting, resource
-telemetry, and receiver role/device/job provenance diagnostic-first in JSONL and
-diagnostic bundles. Controller role assignments, role runs, and child job
-metadata are durable in controller state. SQLite `scan_updates` has nullable
-role/device/job/source provenance columns for low-risk summary storage, while
-full detection-level observation/fusion provenance remains deferred.
-
-## Documentation Check
-
-Review README and operator docs after implementation:
-
-- Native RTL-SDR scanner execution is the only current runnable backend.
-- Airspy, HackRF, and Soapy are clearly marked planned/future or unsupported.
-- Capability tiers, role semantics, identity warnings, and Pi 5 resource expectations are documented.
-- No continuous raw IQ capture is described as the default.
-
-## Implementation Environment Notes
-
-- No-hardware automated validation and fake-controller HTTP `/control` smoke were run in the development environment.
-- In-app browser validation was attempted but could not complete because browser automation failed with a Windows sandbox permission error.
-- Raspberry Pi 5 one/two/three-RTL hardware acceptance was not run in this environment.
-- CPU load, RSS memory, and dropped-read telemetry should be treated as platform-dependent fields and verified during Pi 5 bundle capture.
+- No FM-specific hard-coding.
+- No 88-108 MHz special-case logic in generic detection/persistence code.
+- No Airspy/HackRF/Soapy runtime support.
+- No new multi-RTL role assignment or grouped role-run work.
+- No UI redesign.
+- No signal fusion schema.
+- No Rust DSP rewrite.
+- No continuous IQ capture.
+- No broad detector threshold retuning based only on the FM canary.
