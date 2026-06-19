@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+from sdrwatch.detection.span_policy import resolve_signal_span_policy
 from sdrwatch.detection.types import CharacterizationEvidence, CharacterizationSpan, DeviceTelemetrySnapshot, Segment
 from sdrwatch.util.time import utc_now_str
 
@@ -266,6 +267,7 @@ def build_effective_parameter_manifest(
     max_width = _clean_float(_get_attr(args, "max_detection_width_hz"))
     max_persist_width = _clean_float(_get_attr(args, "max_persist_width_hz")) or max_width
     max_card_width = _clean_float(_get_attr(args, "max_card_width_hz")) or max_width
+    signal_span_policy = resolve_signal_span_policy(args).to_effective_parameters()
     manifest = {
         **_provenance_fields(args),
         "job_id": job_id or _get_attr(args, "job_id"),
@@ -318,13 +320,29 @@ def build_effective_parameter_manifest(
             "segment_centroid_floor_margin_db": _clean_float(_get_attr(args, "segment_centroid_floor_margin_db")),
             "match_bandwidth_pad_hz": _clean_float(_get_attr(args, "match_bandwidth_pad_hz")),
             "min_match_bandwidth_hz": _clean_float(_get_attr(args, "min_match_bandwidth_hz")),
+            "min_identity_bandwidth_hz": signal_span_policy["min_identity_bandwidth_hz"],
+            "min_persist_bandwidth_hz": signal_span_policy["min_persist_bandwidth_hz"],
+            "max_persist_bandwidth_hz": signal_span_policy["max_persist_bandwidth_hz"],
             "display_bandwidth_pad_hz": _clean_float(_get_attr(args, "display_bandwidth_pad_hz")),
             "min_display_bandwidth_hz": _clean_float(_get_attr(args, "min_display_bandwidth_hz")),
+            "min_revisit_bandwidth_for_identity_update_hz": signal_span_policy[
+                "min_revisit_bandwidth_for_identity_update_hz"
+            ],
+            "max_revisit_center_delta_for_identity_update_hz": signal_span_policy[
+                "max_revisit_center_delta_for_identity_update_hz"
+            ],
+            "allow_revisit_to_shrink_identity": signal_span_policy["allow_revisit_to_shrink_identity"],
+            "allow_revisit_to_move_center": signal_span_policy["allow_revisit_to_move_center"],
+            "fragmented_revisit_policy": signal_span_policy["fragmented_revisit_policy"],
+            "raw_fragment_interpretation": signal_span_policy["raw_fragment_interpretation"],
+            "center_smoothing_enabled": signal_span_policy["center_smoothing_enabled"],
+            "invalid_policy_fields": signal_span_policy["invalid_fields"],
             "center_match_hz": _clean_float(_get_attr(args, "center_match_hz")),
             "max_persist_width_hz": max_persist_width,
             "max_card_width_hz": max_card_width,
             "max_detection_width_hz": max_width,
         },
+        "signal_span_policy": signal_span_policy,
         "gain": {
             "requested_gain": requested_gain,
             "gain_mode": device.get("gain_mode") or ("auto" if str(requested_gain or "").lower() == "auto" else "manual"),
@@ -421,6 +439,16 @@ def summarize_characterization_record(record: Dict[str, Any]) -> Dict[str, Any]:
         bandplan_notes=record.get("bandplan_notes"),
         profile_context=record.get("profile_context"),
         context_only=bool(record.get("context_only", False)),
+        bandwidth_interpretation=str(record.get("bandwidth_interpretation") or "threshold_fragment"),
+        width_floor_applied_hz=float(record.get("width_floor_applied_hz", 0.0) or 0.0),
+        persist_width_floor_applied_hz=float(record.get("persist_width_floor_applied_hz", 0.0) or 0.0),
+        persisted_card_bandwidth_hz=(
+            float(record.get("persisted_card_bandwidth_hz"))
+            if record.get("persisted_card_bandwidth_hz") not in (None, "")
+            else None
+        ),
+        baseline_clipped=bool(record.get("baseline_clipped", False)),
+        clip_reason=record.get("clip_reason"),
     )
     return evidence.to_summary()
 

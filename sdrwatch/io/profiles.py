@@ -41,8 +41,18 @@ class ScanProfile:
     # - display_* controls what gets emitted/logged for humans/UI
     match_bandwidth_pad_hz: Optional[float] = None
     min_match_bandwidth_hz: Optional[float] = None
+    min_identity_bandwidth_hz: Optional[float] = None
+    min_persist_bandwidth_hz: Optional[float] = None
+    max_persist_bandwidth_hz: Optional[float] = None
     display_bandwidth_pad_hz: Optional[float] = None
     min_display_bandwidth_hz: Optional[float] = None
+    allow_revisit_to_shrink_identity: Optional[bool] = None
+    allow_revisit_to_move_center: Optional[bool] = None
+    min_revisit_bandwidth_for_identity_update_hz: Optional[float] = None
+    max_revisit_center_delta_for_identity_update_hz: Optional[float] = None
+    fragmented_revisit_policy: Optional[str] = None
+    raw_fragment_interpretation: Optional[str] = None
+    center_smoothing_enabled: Optional[bool] = None
     center_match_hz: Optional[float] = None
     confidence_hit_normalizer: Optional[float] = None
     confidence_duration_norm: Optional[float] = None
@@ -114,8 +124,18 @@ def default_scan_profiles() -> Dict[str, ScanProfile]:
             # get overlap-matched into one persistent detection.
             match_bandwidth_pad_hz=10_000.0,
             min_match_bandwidth_hz=80_000.0,
+            min_identity_bandwidth_hz=80_000.0,
+            min_persist_bandwidth_hz=80_000.0,
+            max_persist_bandwidth_hz=270_000.0,
             # Allow reasonable centroid drift without requiring huge spans.
             center_match_hz=60_000.0,
+            allow_revisit_to_shrink_identity=False,
+            allow_revisit_to_move_center=True,
+            min_revisit_bandwidth_for_identity_update_hz=80_000.0,
+            max_revisit_center_delta_for_identity_update_hz=60_000.0,
+            fragmented_revisit_policy="confirmation_only",
+            raw_fragment_interpretation="threshold_fragment",
+            center_smoothing_enabled=True,
             confidence_hit_normalizer=2.0,
             confidence_duration_norm=2.0,
             confidence_bias=0.05,
@@ -185,8 +205,18 @@ def serialize_profiles() -> Dict[str, Any]:
                 "min_emit_bandwidth_hz": prof.min_emit_bandwidth_hz,
                 "match_bandwidth_pad_hz": prof.match_bandwidth_pad_hz,
                 "min_match_bandwidth_hz": prof.min_match_bandwidth_hz,
+                "min_identity_bandwidth_hz": prof.min_identity_bandwidth_hz,
+                "min_persist_bandwidth_hz": prof.min_persist_bandwidth_hz,
+                "max_persist_bandwidth_hz": prof.max_persist_bandwidth_hz,
                 "display_bandwidth_pad_hz": prof.display_bandwidth_pad_hz,
                 "min_display_bandwidth_hz": prof.min_display_bandwidth_hz,
+                "allow_revisit_to_shrink_identity": prof.allow_revisit_to_shrink_identity,
+                "allow_revisit_to_move_center": prof.allow_revisit_to_move_center,
+                "min_revisit_bandwidth_for_identity_update_hz": prof.min_revisit_bandwidth_for_identity_update_hz,
+                "max_revisit_center_delta_for_identity_update_hz": prof.max_revisit_center_delta_for_identity_update_hz,
+                "fragmented_revisit_policy": prof.fragmented_revisit_policy,
+                "raw_fragment_interpretation": prof.raw_fragment_interpretation,
+                "center_smoothing_enabled": prof.center_smoothing_enabled,
                 "center_match_hz": prof.center_match_hz,
                 "confidence_hit_normalizer": prof.confidence_hit_normalizer,
                 "confidence_duration_norm": prof.confidence_duration_norm,

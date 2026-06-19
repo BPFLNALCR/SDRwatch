@@ -22,10 +22,10 @@
 
 **Purpose**: Confirm the current Spec Kit artifacts and prepare focused no-hardware fixtures before runtime edits.
 
-- [ ] T001 Review the aligned span-policy artifacts in `specs/008-multi-rtl-guard-rover/spec.md`, `specs/008-multi-rtl-guard-rover/plan.md`, `specs/008-multi-rtl-guard-rover/data-model.md`, `specs/008-multi-rtl-guard-rover/contracts/signal-span-policy-contract.md`, and `specs/008-multi-rtl-guard-rover/quickstart.md` before editing runtime code
-- [ ] T002 Verify `.specify/feature.json` points to `specs/008-multi-rtl-guard-rover` and do not restore stale multi-RTL task content in `specs/008-multi-rtl-guard-rover/tasks.md`
-- [ ] T003 [P] Create focused shared fixtures for broad continuous, narrowband, discovery, and guard/event policy scenarios in `tests/test_signal_span_policy.py`
-- [ ] T004 [P] Inventory existing span and revisit touchpoints in `sdrwatch/detection/engine.py`, `sdrwatch/baseline/persistence.py`, `sdrwatch/detection/types.py`, `sdrwatch/sweep/sweeper.py`, and `sdrwatch/util/detection_diagnostics.py`
+- [X] T001 Review the aligned span-policy artifacts in `specs/008-multi-rtl-guard-rover/spec.md`, `specs/008-multi-rtl-guard-rover/plan.md`, `specs/008-multi-rtl-guard-rover/data-model.md`, `specs/008-multi-rtl-guard-rover/contracts/signal-span-policy-contract.md`, and `specs/008-multi-rtl-guard-rover/quickstart.md` before editing runtime code
+- [X] T002 Verify `.specify/feature.json` points to `specs/008-multi-rtl-guard-rover` and do not restore stale multi-RTL task content in `specs/008-multi-rtl-guard-rover/tasks.md`
+- [X] T003 [P] Create focused shared fixtures for broad continuous, narrowband, discovery, and guard/event policy scenarios in `tests/test_signal_span_policy.py`
+- [X] T004 [P] Inventory existing span and revisit touchpoints in `sdrwatch/detection/engine.py`, `sdrwatch/baseline/persistence.py`, `sdrwatch/detection/types.py`, `sdrwatch/sweep/sweeper.py`, and `sdrwatch/util/detection_diagnostics.py`
 
 **Checkpoint**: Current artifacts and test fixture locations are confirmed before implementation.
 
@@ -37,12 +37,12 @@
 
 **Critical**: No story implementation should rely on profile-name branches such as `profile == "fm_broadcast"` in generic detection or persistence code.
 
-- [ ] T005 Add a `SignalSpanPolicy` dataclass and `resolve_signal_span_policy(args)` helper in `sdrwatch/detection/span_policy.py`
-- [ ] T006 Extend `ScanProfile` with optional span-policy fields and profile dictionary serialization in `sdrwatch/io/profiles.py`
-- [ ] T007 Add scanner CLI arguments, default normalization, and profile application for span-policy fields in `sdrwatch/cli.py`
-- [ ] T008 Add controller pass-through mappings for new span-policy params without changing the `/api/jobs` payload shape in `sdrwatch-control.py`
-- [ ] T009 Wire the resolved `SignalSpanPolicy` into detection and persistence construction in `sdrwatch/detection/engine.py` and `sdrwatch/baseline/persistence.py`
-- [ ] T010 Expose the derived policy under `signal_span_policy` or additive `span_controls` fields in `sdrwatch/util/detection_diagnostics.py` and `sdrwatch/sweep/sweeper.py`
+- [X] T005 Add a `SignalSpanPolicy` dataclass and `resolve_signal_span_policy(args)` helper in `sdrwatch/detection/span_policy.py`
+- [X] T006 Extend `ScanProfile` with optional span-policy fields and profile dictionary serialization in `sdrwatch/io/profiles.py`
+- [X] T007 Add scanner CLI arguments, default normalization, and profile application for span-policy fields in `sdrwatch/cli.py`
+- [X] T008 Add controller pass-through mappings for new span-policy params without changing the `/api/jobs` payload shape in `sdrwatch-control.py`
+- [X] T009 Wire the resolved `SignalSpanPolicy` into detection and persistence construction in `sdrwatch/detection/engine.py` and `sdrwatch/baseline/persistence.py`
+- [X] T010 Expose the derived policy under `signal_span_policy` or additive `span_controls` fields in `sdrwatch/util/detection_diagnostics.py` and `sdrwatch/sweep/sweeper.py`
 
 **Checkpoint**: Policy fields can flow from profile/operator params to scanner internals and effective parameters without changing database schema or API shape.
 
@@ -56,25 +56,25 @@
 
 ### Tests First
 
-- [ ] T011 [P] [US1] Add failing policy-default tests for `min_identity_bandwidth_hz` and `min_persist_bandwidth_hz` deriving from `min_match_bandwidth_hz` in `tests/test_signal_span_policy.py`
-- [ ] T012 [P] [US1] Add a tiny raw detector fragment test proving `raw_fragment_bandwidth_hz` remains tiny while `identity_match_bandwidth_hz` is floored in `tests/test_fm_characterization_persistence.py`
-- [ ] T013 [P] [US1] Add a persistence EMA test proving `persisted_card_bandwidth_hz` cannot shrink below `min_persist_bandwidth_hz` in `tests/test_extent_hysteresis.py`
-- [ ] T014 [P] [US1] Add a display-span independence test proving `display_bandwidth_hz` follows `min_display_bandwidth_hz` and is not reported as measured occupied bandwidth in `tests/test_fm_characterization_diagnostics.py`
-- [ ] T015 [P] [US1] Add a scan-edge clipping test with `baseline_clipped` and `clip_reason` diagnostics in `tests/test_signal_span_policy.py`
+- [X] T011 [P] [US1] Add failing policy-default tests for `min_identity_bandwidth_hz` and `min_persist_bandwidth_hz` deriving from `min_match_bandwidth_hz` in `tests/test_signal_span_policy.py`
+- [X] T012 [P] [US1] Add a tiny raw detector fragment test proving `raw_fragment_bandwidth_hz` remains tiny while `identity_match_bandwidth_hz` is floored in `tests/test_fm_characterization_persistence.py`
+- [X] T013 [P] [US1] Add a persistence EMA test proving `persisted_card_bandwidth_hz` cannot shrink below `min_persist_bandwidth_hz` in `tests/test_extent_hysteresis.py`
+- [X] T014 [P] [US1] Add a display-span independence test proving `display_bandwidth_hz` follows `min_display_bandwidth_hz` and is not reported as measured occupied bandwidth in `tests/test_fm_characterization_diagnostics.py`
+- [X] T015 [P] [US1] Add a scan-edge clipping test with `baseline_clipped` and `clip_reason` diagnostics in `tests/test_signal_span_policy.py`
 
 ### Implementation
 
-- [ ] T016 [US1] Add additive raw-fragment aliases and bandwidth interpretation fields to `CharacterizationEvidence` serialization in `sdrwatch/detection/types.py`
-- [ ] T017 [US1] Apply `min_identity_bandwidth_hz` and `min_match_bandwidth_hz` when deriving identity/match spans in `sdrwatch/detection/engine.py`
-- [ ] T018 [US1] Emit `identity_match_bandwidth_hz`, `width_floor_applied_hz`, and `bandwidth_interpretation` in characterization records from `sdrwatch/detection/engine.py`
-- [ ] T019 [US1] Apply `min_persist_bandwidth_hz` before and after persistence width EMA blending in `sdrwatch/baseline/persistence.py`
-- [ ] T020 [US1] Clamp final persisted/card spans with `min_persist_bandwidth_hz` and `max_persist_bandwidth_hz` before store insert/update in `sdrwatch/baseline/persistence.py`
-- [ ] T021 [US1] Emit `persisted_card_bandwidth_hz`, `persist_width_floor_applied_hz`, `baseline_clipped`, and `clip_reason` diagnostics from `sdrwatch/baseline/persistence.py`
-- [ ] T022 [US1] Preserve display span shaping as operator-facing presentation and prevent display width from replacing measured occupied bandwidth in `sdrwatch/detection/engine.py`
+- [X] T016 [US1] Add additive raw-fragment aliases and bandwidth interpretation fields to `CharacterizationEvidence` serialization in `sdrwatch/detection/types.py`
+- [X] T017 [US1] Apply `min_identity_bandwidth_hz` and `min_match_bandwidth_hz` when deriving identity/match spans in `sdrwatch/detection/engine.py`
+- [X] T018 [US1] Emit `identity_match_bandwidth_hz`, `width_floor_applied_hz`, and `bandwidth_interpretation` in characterization records from `sdrwatch/detection/engine.py`
+- [X] T019 [US1] Apply `min_persist_bandwidth_hz` before and after persistence width EMA blending in `sdrwatch/baseline/persistence.py`
+- [X] T020 [US1] Clamp final persisted/card spans with `min_persist_bandwidth_hz` and `max_persist_bandwidth_hz` before store insert/update in `sdrwatch/baseline/persistence.py`
+- [X] T021 [US1] Emit `persisted_card_bandwidth_hz`, `persist_width_floor_applied_hz`, `baseline_clipped`, and `clip_reason` diagnostics from `sdrwatch/baseline/persistence.py`
+- [X] T022 [US1] Preserve display span shaping as operator-facing presentation and prevent display width from replacing measured occupied bandwidth in `sdrwatch/detection/engine.py`
 
 ### Validation
 
-- [ ] T023 [US1] Run `python -m pytest -q tests/test_signal_span_policy.py tests/test_extent_hysteresis.py tests/test_fm_characterization_persistence.py tests/test_fm_characterization_diagnostics.py --basetemp .test-tmp\\span-policy-us1` from repository root `C:\Users\User\SDRwatch`
+- [X] T023 [US1] Run `python -m pytest -q tests/test_signal_span_policy.py tests/test_extent_hysteresis.py tests/test_fm_characterization_persistence.py tests/test_fm_characterization_diagnostics.py --basetemp .test-tmp\\span-policy-us1` from repository root `C:\Users\User\SDRwatch`
 
 **Checkpoint**: US1 is independently testable and demonstrates the core MVP behavior.
 

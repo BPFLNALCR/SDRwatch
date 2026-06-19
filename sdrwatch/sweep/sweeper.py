@@ -17,6 +17,7 @@ from sdrwatch.baseline.stats import BaselineStatsUpdater
 from sdrwatch.baseline.store import BaselineContext, Store
 from sdrwatch.baseline.summary import BandSummaryConfig
 from sdrwatch.detection.engine import DetectionEngine
+from sdrwatch.detection.span_policy import resolve_signal_span_policy
 from sdrwatch.detection.types import RevisitTag, Segment
 from sdrwatch.dsp.detection import detect_segments
 from sdrwatch.dsp.fft import compute_psd_db
@@ -238,6 +239,7 @@ class Sweeper:
 
     def _sweep_params(self) -> Dict[str, Any]:
         args = self.args
+        signal_span_policy = resolve_signal_span_policy(args).to_effective_parameters()
         return {
             "start_hz": args.start,
             "stop_hz": args.stop,
@@ -288,8 +290,12 @@ class Sweeper:
             "center_match_hz": getattr(args, "center_match_hz", None),
             "match_bandwidth_pad_hz": getattr(args, "match_bandwidth_pad_hz", None),
             "min_match_bandwidth_hz": getattr(args, "min_match_bandwidth_hz", None),
+            "min_identity_bandwidth_hz": signal_span_policy["min_identity_bandwidth_hz"],
+            "min_persist_bandwidth_hz": signal_span_policy["min_persist_bandwidth_hz"],
+            "max_persist_bandwidth_hz": signal_span_policy["max_persist_bandwidth_hz"],
             "display_bandwidth_pad_hz": getattr(args, "display_bandwidth_pad_hz", None),
             "min_display_bandwidth_hz": getattr(args, "min_display_bandwidth_hz", None),
+            "signal_span_policy": signal_span_policy,
             "revisit_fft": getattr(args, "revisit_fft", None),
             "revisit_avg": getattr(args, "revisit_avg", None),
             "revisit_margin_hz": getattr(args, "revisit_margin_hz", None),

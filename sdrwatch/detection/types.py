@@ -90,8 +90,19 @@ class CharacterizationEvidence:
     bandplan_notes: Optional[str] = None
     profile_context: Optional[str] = None
     context_only: bool = False
+    bandwidth_interpretation: str = "threshold_fragment"
+    width_floor_applied_hz: float = 0.0
+    persist_width_floor_applied_hz: float = 0.0
+    persisted_card_bandwidth_hz: Optional[float] = None
+    baseline_clipped: bool = False
+    clip_reason: Optional[str] = None
 
     def to_record(self) -> Dict[str, Any]:
+        persisted_card_bandwidth = (
+            float(self.persisted_card_bandwidth_hz)
+            if self.persisted_card_bandwidth_hz is not None
+            else float(self.match_span.bandwidth_hz)
+        )
         record: Dict[str, Any] = {
             "event": "characterization_record",
             "detection_id": self.detection_id,
@@ -101,6 +112,16 @@ class CharacterizationEvidence:
             **self.measured_span.prefixed_fields("measured"),
             **self.match_span.prefixed_fields("match"),
             **self.display_span.prefixed_fields("display"),
+            "raw_fragment_bandwidth_hz": self.raw_segment.bandwidth_hz,
+            "raw_fragment_center_hz": self.raw_segment.center_hz,
+            "measured_occupied_bandwidth_hz": self.measured_span.bandwidth_hz,
+            "identity_match_bandwidth_hz": self.match_span.bandwidth_hz,
+            "persisted_card_bandwidth_hz": persisted_card_bandwidth,
+            "bandwidth_interpretation": self.bandwidth_interpretation,
+            "width_floor_applied_hz": float(self.width_floor_applied_hz),
+            "persist_width_floor_applied_hz": float(self.persist_width_floor_applied_hz),
+            "baseline_clipped": bool(self.baseline_clipped),
+            "clip_reason": self.clip_reason,
             "stable_center_hz": self.stable_center_hz,
             "center_delta_hz": self.center_delta_hz,
             "peak_db": self.peak_db,
@@ -129,16 +150,27 @@ class CharacterizationEvidence:
         return record
 
     def to_summary(self) -> Dict[str, Any]:
+        persisted_card_bandwidth = (
+            float(self.persisted_card_bandwidth_hz)
+            if self.persisted_card_bandwidth_hz is not None
+            else float(self.match_span.bandwidth_hz)
+        )
         return {
             "signal_id": self.detection_id,
             "baseline_id": self.baseline_id,
             "source_pass": self.source_pass,
-            "raw_segment": self.raw_segment.summary_dict(),
+            "raw_segment": {
+                **self.raw_segment.summary_dict(),
+                "raw_fragment_bandwidth_hz": self.raw_segment.bandwidth_hz,
+                "raw_fragment_center_hz": self.raw_segment.center_hz,
+                "bandwidth_interpretation": self.bandwidth_interpretation,
+            },
             "measured_characterization": {
                 "center_hz": self.measured_span.center_hz,
                 "stable_center_hz": self.stable_center_hz,
                 "center_delta_hz": self.center_delta_hz,
                 "occupied_bandwidth_hz": self.measured_span.bandwidth_hz,
+                "measured_occupied_bandwidth_hz": self.measured_span.bandwidth_hz,
                 "bandwidth_confidence": self.measured_bandwidth_confidence,
                 "characterization_confidence": self.characterization_confidence,
                 "characterization_method": self.characterization_method,
@@ -150,8 +182,20 @@ class CharacterizationEvidence:
                 "noise_db": self.noise_db,
                 "snr_db": self.snr_db,
             },
-            "match_span": self.match_span.summary_dict(),
+            "match_span": {
+                **self.match_span.summary_dict(),
+                "identity_match_bandwidth_hz": self.match_span.bandwidth_hz,
+                "width_floor_applied_hz": float(self.width_floor_applied_hz),
+            },
+            "persisted_card_span": {
+                "bandwidth_hz": persisted_card_bandwidth,
+                "persisted_card_bandwidth_hz": persisted_card_bandwidth,
+                "persist_width_floor_applied_hz": float(self.persist_width_floor_applied_hz),
+                "baseline_clipped": bool(self.baseline_clipped),
+                "clip_reason": self.clip_reason,
+            },
             "display_span": self.display_span.summary_dict(),
+            "bandwidth_interpretation": self.bandwidth_interpretation,
             "context": {
                 "bandplan_service": self.bandplan_service,
                 "bandplan_region": self.bandplan_region,

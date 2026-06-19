@@ -109,8 +109,18 @@ def test_controller_command_passes_supported_characterization_revisit_and_persis
         "segment_centroid_floor_margin_db": 2,
         "match_bandwidth_pad_hz": 10_000,
         "min_match_bandwidth_hz": 80_000,
+        "min_identity_bandwidth_hz": 80_000,
+        "min_persist_bandwidth_hz": 80_000,
+        "max_persist_bandwidth_hz": 270_000,
         "display_bandwidth_pad_hz": 30_000,
         "min_display_bandwidth_hz": 200_000,
+        "min_revisit_bandwidth_for_identity_update_hz": 80_000,
+        "max_revisit_center_delta_for_identity_update_hz": 60_000,
+        "fragmented_revisit_policy": "confirmation_only",
+        "raw_fragment_interpretation": "threshold_fragment",
+        "allow_revisit_to_shrink_identity": False,
+        "allow_revisit_to_move_center": True,
+        "center_smoothing_enabled": True,
         "max_persist_width_hz": 270_000,
         "max_card_width_hz": 270_000,
         "center_match_hz": 60_000,
@@ -138,8 +148,13 @@ def test_controller_command_passes_supported_characterization_revisit_and_persis
         "--segment-centroid-floor-margin-db": "2",
         "--match-bandwidth-pad-hz": "10000",
         "--min-match-bandwidth-hz": "80000",
+        "--min-identity-bandwidth-hz": "80000",
+        "--min-persist-bandwidth-hz": "80000",
+        "--max-persist-bandwidth-hz": "270000",
         "--display-bandwidth-pad-hz": "30000",
         "--min-display-bandwidth-hz": "200000",
+        "--min-revisit-bandwidth-for-identity-update-hz": "80000",
+        "--max-revisit-center-delta-for-identity-update-hz": "60000",
         "--max-detection-width-hz": "270000",
         "--center-match-hz": "60000",
         "--persistence-min-sweep-loops": "3",
@@ -147,6 +162,11 @@ def test_controller_command_passes_supported_characterization_revisit_and_persis
     }
     for flag, value in expected_flags.items():
         assert cmd[cmd.index(flag) + 1] == value
+    assert cmd[cmd.index("--fragmented-revisit-policy") + 1] == "confirmation_only"
+    assert cmd[cmd.index("--raw-fragment-interpretation") + 1] == "threshold_fragment"
+    assert "--no-allow-revisit-to-shrink-identity" in cmd
+    assert "--allow-revisit-to-move-center" in cmd
+    assert "--center-smoothing-enabled" in cmd
     assert "--two-pass" in cmd
 
 

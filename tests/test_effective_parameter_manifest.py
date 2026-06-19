@@ -75,6 +75,11 @@ def test_effective_parameter_manifest_records_in_band_fm_profile_application() -
     assert manifest["span_controls"]["segment_center_mode"] == "centroid"
     assert manifest["span_controls"]["max_persist_width_hz"] == 270_000
     assert manifest["span_controls"]["max_card_width_hz"] == 270_000
+    assert manifest["signal_span_policy"]["min_identity_bandwidth_hz"] == 80_000
+    assert manifest["signal_span_policy"]["min_persist_bandwidth_hz"] == 80_000
+    assert manifest["signal_span_policy"]["max_persist_bandwidth_hz"] == 270_000
+    assert manifest["span_controls"]["min_identity_bandwidth_hz"] == 80_000
+    assert manifest["span_controls"]["min_persist_bandwidth_hz"] == 80_000
     assert manifest["gain"]["requested_gain"] == "30"
 
 

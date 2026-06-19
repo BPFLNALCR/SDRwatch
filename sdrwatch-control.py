@@ -1516,8 +1516,13 @@ class JobManager:
             "segment_centroid_floor_margin_db": "--segment-centroid-floor-margin-db",
             "match_bandwidth_pad_hz": "--match-bandwidth-pad-hz",
             "min_match_bandwidth_hz": "--min-match-bandwidth-hz",
+            "min_identity_bandwidth_hz": "--min-identity-bandwidth-hz",
+            "min_persist_bandwidth_hz": "--min-persist-bandwidth-hz",
+            "max_persist_bandwidth_hz": "--max-persist-bandwidth-hz",
             "display_bandwidth_pad_hz": "--display-bandwidth-pad-hz",
             "min_display_bandwidth_hz": "--min-display-bandwidth-hz",
+            "min_revisit_bandwidth_for_identity_update_hz": "--min-revisit-bandwidth-for-identity-update-hz",
+            "max_revisit_center_delta_for_identity_update_hz": "--max-revisit-center-delta-for-identity-update-hz",
             "cfar_train": "--cfar-train",
             "cfar_guard": "--cfar-guard",
             "cfar_quantile": "--cfar-quantile",
@@ -1552,6 +1557,10 @@ class JobManager:
             cmd += ["--profile", str(args["profile"])]
         if args.get("segment_center_mode"):
             cmd += ["--segment-center-mode", str(args["segment_center_mode"])]
+        if args.get("fragmented_revisit_policy"):
+            cmd += ["--fragmented-revisit-policy", str(args["fragmented_revisit_policy"])]
+        if args.get("raw_fragment_interpretation"):
+            cmd += ["--raw-fragment-interpretation", str(args["raw_fragment_interpretation"])]
         if args.get("duration"):
             cmd += ["--duration", str(args["duration"])]
         if args.get("jsonl"):
@@ -1603,6 +1612,16 @@ class JobManager:
 
         # Booleans
         # (keep list in sync with scanner CLI flags)
+        boolean_optional_flags = {
+            "allow_revisit_to_shrink_identity": "--allow-revisit-to-shrink-identity",
+            "allow_revisit_to_move_center": "--allow-revisit-to-move-center",
+            "center_smoothing_enabled": "--center-smoothing-enabled",
+        }
+        for k, flag in boolean_optional_flags.items():
+            v = args.get(k)
+            if v is None:
+                continue
+            cmd.append(flag if _truthy(v) else f"--no-{flag[2:]}")
 
         # Passthrough for any additional raw args
         extra: List[str] = args.get("extra_args", [])

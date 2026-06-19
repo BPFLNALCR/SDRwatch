@@ -67,10 +67,13 @@ def test_right_edge_shrink_waits_for_threshold() -> None:
 
 def _make_persistence_stub(alpha: float = 0.5, outlier_ratio: float = 4.0):
     stub = object.__new__(BaselinePersistence)
+    stub.bin_hz = 1.0
     stub.min_detection_width_hz = 1.0
+    stub.min_persist_bandwidth_hz = 0.0
     stub.width_ema_alpha = alpha
     stub.width_outlier_ratio = outlier_ratio
     stub.max_detection_width_hz = 0.0
+    stub.max_persist_bandwidth_hz = 0.0
     return stub
 
 
@@ -91,6 +94,15 @@ def test_width_ema_applies_min_detection_width_floor() -> None:
     stub.min_detection_width_hz = 80_000.0
 
     result = stub._blend_width_ema(10_000.0, 2_000.0)
+
+    assert result == 80_000.0
+
+
+def test_width_ema_applies_min_persist_bandwidth_floor() -> None:
+    stub = _make_persistence_stub(alpha=0.5)
+    stub.min_persist_bandwidth_hz = 80_000.0
+
+    result = stub._blend_width_ema(80_000.0, 2_000.0)
 
     assert result == 80_000.0
 
@@ -147,6 +159,7 @@ def test_upsert_update_keeps_persisted_center_inside_hysteresis_held_edges(tmp_p
 
     [det] = [row for row in store.load_baseline_detections(ctx.id) if row.id == detection_id]
     assert det.f_low_hz <= det.f_center_hz <= det.f_high_hz
+    assert det.f_high_hz - det.f_low_hz >= 80_000
 
 
 def test_revisit_confirmation_keeps_persisted_center_inside_hysteresis_held_edges(tmp_path) -> None:

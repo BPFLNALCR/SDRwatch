@@ -26,7 +26,17 @@ def test_fm_broadcast_profile_serializes_stability_fields() -> None:
     assert profile["cluster_merge_hz"] == 12_000.0
     assert profile["center_match_hz"] == 60_000.0
     assert profile["min_match_bandwidth_hz"] == 80_000.0
+    assert profile["min_identity_bandwidth_hz"] == 80_000.0
+    assert profile["min_persist_bandwidth_hz"] == 80_000.0
+    assert profile["max_persist_bandwidth_hz"] == 270_000.0
     assert profile["min_display_bandwidth_hz"] == 200_000.0
+    assert profile["min_revisit_bandwidth_for_identity_update_hz"] == 80_000.0
+    assert profile["max_revisit_center_delta_for_identity_update_hz"] == 60_000.0
+    assert profile["allow_revisit_to_shrink_identity"] is False
+    assert profile["allow_revisit_to_move_center"] is True
+    assert profile["fragmented_revisit_policy"] == "confirmation_only"
+    assert profile["raw_fragment_interpretation"] == "threshold_fragment"
+    assert profile["center_smoothing_enabled"] is True
     assert profile["max_detection_width_hz"] == 270_000.0
     assert profile["segment_center_mode"] == "centroid"
 
@@ -57,8 +67,16 @@ def test_cli_applies_fm_profile_hidden_stability_fields(monkeypatch) -> None:
     assert args.center_match_hz == 60_000.0
     assert args.match_bandwidth_pad_hz == 10_000.0
     assert args.min_match_bandwidth_hz == 80_000.0
+    assert args.min_identity_bandwidth_hz == 80_000.0
+    assert args.min_persist_bandwidth_hz == 80_000.0
+    assert args.max_persist_bandwidth_hz == 270_000.0
     assert args.display_bandwidth_pad_hz == 30_000.0
     assert args.min_display_bandwidth_hz == 200_000.0
+    assert args.min_revisit_bandwidth_for_identity_update_hz == 80_000.0
+    assert args.max_revisit_center_delta_for_identity_update_hz == 60_000.0
+    assert args.allow_revisit_to_shrink_identity is False
+    assert args.allow_revisit_to_move_center is True
+    assert args.center_smoothing_enabled is True
     assert args.segment_center_mode == "centroid"
     assert args.segment_centroid_span_hz == 240_000.0
 

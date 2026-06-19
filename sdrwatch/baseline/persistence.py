@@ -9,6 +9,7 @@ from statistics import median
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from sdrwatch.baseline.store import BaselineContext, Store
+from sdrwatch.detection.span_policy import SignalSpanPolicy, resolve_signal_span_policy
 from sdrwatch.detection.types import DetectionCluster, PersistentDetection, RevisitTag, Segment
 from sdrwatch.util.time import utc_now_str
 
@@ -75,6 +76,7 @@ class BaselinePersistence:
         logger=None,
         revisit_margin_hz: float,
         revisit_span_limit_hz: float,
+        signal_span_policy: Optional[SignalSpanPolicy] = None,
     ) -> None:
         self.store = store
         self.baseline_ctx = baseline_ctx
@@ -84,6 +86,11 @@ class BaselinePersistence:
         self.center_match_hz = float(center_match_hz)
         self.max_detection_width_ratio = float(max_detection_width_ratio)
         self.max_detection_width_hz = float(max_detection_width_hz)
+        self.signal_span_policy = signal_span_policy or resolve_signal_span_policy(args)
+        self.min_persist_bandwidth_hz = float(self.signal_span_policy.min_persist_bandwidth_hz or 0.0)
+        self.max_persist_bandwidth_hz = float(
+            self.signal_span_policy.max_persist_bandwidth_hz or self.max_detection_width_hz or 0.0
+        )
         self.min_detection_width_hz = float(
             getattr(args, "min_detection_width_hz", max(self.bin_hz, 1.0)) or max(self.bin_hz, 1.0)
         )
@@ -270,7 +277,7 @@ class BaselinePersistence:
         det.f_low_hz = new_low
         det.f_high_hz = new_high
         det.f_center_hz = int(stable_center_hz)
-        self._enforce_persisted_span_invariant(det)
+        self._apply_persisted_span_policy(det, stage="revisit_confirmation")
         det.last_seen_utc = utc_now_str()
         det.missing_since_utc = None
         self.store.begin()
@@ -290,6 +297,11 @@ class BaselinePersistence:
             stable_center_hz=stable_center_hz,
             center_delta_hz=characterization.center_delta_hz,
             width_hz=max(det.f_high_hz - det.f_low_hz, 0),
+            persisted_card_bandwidth_hz=max(det.f_high_hz - det.f_low_hz, 0),
+            persist_width_floor_applied_hz=self._persist_width_floor_applied_value(
+                measured_width,
+                det.f_high_hz - det.f_low_hz,
+            ),
         )
         return RevisitConfirmationResult(detection=det, characterization=characterization)
 
@@ -391,7 +403,7 @@ class BaselinePersistence:
                 match.f_low_hz = new_low
                 match.f_high_hz = new_high
                 match.f_center_hz = blended_center
-                self._enforce_persisted_span_invariant(match)
+                self._apply_persisted_span_policy(match, stage="coarse_update")
                 match.last_seen_utc = timestamp
                 match.total_hits += cluster.hits
                 match.total_windows += len(cluster.windows)
@@ -418,6 +430,11 @@ class BaselinePersistence:
                     stable_center_hz=characterization.stable_center_hz,
                     center_delta_hz=characterization.center_delta_hz,
                     width_hz=max(match.f_high_hz - match.f_low_hz, 0),
+                    persisted_card_bandwidth_hz=max(match.f_high_hz - match.f_low_hz, 0),
+                    persist_width_floor_applied_hz=self._persist_width_floor_applied_value(
+                        cluster_width,
+                        match.f_high_hz - match.f_low_hz,
+                    ),
                     hits=match.total_hits,
                     windows=match.total_windows,
                     confidence=confidence,
@@ -425,10 +442,16 @@ class BaselinePersistence:
                 is_new = False
                 persisted_detection = match
             else:
+                insert_low, insert_high, insert_clipped, insert_clip_reason = self._policy_span_for(
+                    center_hz=cluster_center_hz,
+                    width_hz=max(float(cluster.f_high_hz - cluster.f_low_hz), self.bin_hz),
+                    stage="coarse_insert",
+                    detection_id=None,
+                )
                 detection_id = self.store.insert_baseline_detection(
                     self.baseline_ctx.id,
-                    cluster.f_low_hz,
-                    cluster.f_high_hz,
+                    insert_low,
+                    insert_high,
                     cluster_center_hz,
                     cluster.first_seen_ts,
                     cluster.last_seen_ts,
@@ -445,8 +468,8 @@ class BaselinePersistence:
                 new_det = PersistentDetection(
                     id=detection_id,
                     baseline_id=self.baseline_ctx.id,
-                    f_low_hz=cluster.f_low_hz,
-                    f_high_hz=cluster.f_high_hz,
+                    f_low_hz=insert_low,
+                    f_high_hz=insert_high,
                     f_center_hz=cluster_center_hz,
                     first_seen_utc=cluster.first_seen_ts,
                     last_seen_utc=cluster.last_seen_ts,
@@ -479,6 +502,13 @@ class BaselinePersistence:
                     stable_center_hz=characterization.stable_center_hz,
                     center_delta_hz=characterization.center_delta_hz,
                     width_hz=max(cluster.f_high_hz - cluster.f_low_hz, 0),
+                    persisted_card_bandwidth_hz=max(insert_high - insert_low, 0),
+                    persist_width_floor_applied_hz=self._persist_width_floor_applied_value(
+                        measured_bandwidth_hz,
+                        insert_high - insert_low,
+                    ),
+                    baseline_clipped=insert_clipped,
+                    clip_reason=insert_clip_reason,
                     hits=cluster.hits,
                     windows=len(cluster.windows),
                     confidence=confidence,
@@ -604,7 +634,7 @@ class BaselinePersistence:
         return self.store.baseline_duty_cycle(self.baseline_ctx.id, bin_index)
 
     def _center_smoothing_enabled(self) -> bool:
-        return str(self.profile_name or "").lower() == "fm_broadcast"
+        return bool(self.signal_span_policy.center_smoothing_enabled)
 
     def _tracker_for(self, det: PersistentDetection) -> CharacterizationTracker:
         return self._characterization_state.setdefault(
@@ -857,7 +887,20 @@ class BaselinePersistence:
         if center > high:
             high = center
 
-        max_width = int(round(self.max_detection_width_hz)) if self.max_detection_width_hz > 0.0 else 0
+        min_width = int(round(self.min_persist_bandwidth_hz)) if self.min_persist_bandwidth_hz > 0.0 else 0
+        if min_width > 0 and high - low < min_width:
+            half = min_width / 2.0
+            low = int(round(center - half))
+            high = int(round(center + half))
+            low = max(low, baseline_low)
+            high = min(high, baseline_high)
+            if center < low:
+                low = center
+            if center > high:
+                high = center
+
+        effective_max_width = self.max_persist_bandwidth_hz or self.max_detection_width_hz
+        max_width = int(round(effective_max_width)) if effective_max_width > 0.0 else 0
         if max_width > 0 and high - low > max_width:
             half = max_width // 2
             low = max(center - half, baseline_low)
@@ -876,12 +919,91 @@ class BaselinePersistence:
         det.f_high_hz = int(high)
         det.f_center_hz = int(center)
 
+    def _persist_min_width_hz(self) -> float:
+        return max(
+            float(getattr(self, "bin_hz", 1.0) or 1.0),
+            float(getattr(self, "min_detection_width_hz", 1.0) or 1.0),
+            float(getattr(self, "min_persist_bandwidth_hz", 0.0) or 0.0),
+        )
+
+    def _policy_span_for(
+        self,
+        *,
+        center_hz: int,
+        width_hz: float,
+        stage: str,
+        detection_id: Optional[int],
+    ) -> Tuple[int, int, bool, Optional[str]]:
+        baseline_low = int(self.baseline_ctx.freq_start_hz)
+        baseline_high = int(self.baseline_ctx.freq_stop_hz)
+        center = min(max(int(center_hz), baseline_low), baseline_high)
+        requested_width = max(float(width_hz), self._persist_min_width_hz())
+        if self.max_persist_bandwidth_hz > 0.0:
+            requested_width = min(requested_width, self.max_persist_bandwidth_hz)
+        half = requested_width / 2.0
+        raw_low = int(round(center - half))
+        raw_high = int(round(center + half))
+        low = max(raw_low, baseline_low)
+        high = min(raw_high, baseline_high)
+        if high <= low:
+            min_width = int(max(1.0, self.bin_hz))
+            high = min(baseline_high, low + min_width)
+            if high <= low:
+                low = max(baseline_low, high - min_width)
+        clipped = bool(low != raw_low or high != raw_high)
+        output_width = max(float(high - low), 0.0)
+        floor_applied = self._persist_width_floor_applied_value(width_hz, output_width)
+        self._log(
+            "width_decision",
+            stage=f"persisted_card_{stage}",
+            detection_id=detection_id,
+            baseline_id=self.baseline_ctx.id,
+            center_hz=center,
+            input_width_hz=float(width_hz),
+            output_width_hz=output_width,
+            min_width_hz=float(self._persist_min_width_hz()),
+            min_persist_bandwidth_hz=(
+                float(self.min_persist_bandwidth_hz) if self.min_persist_bandwidth_hz > 0.0 else None
+            ),
+            max_width_hz=(float(self.max_persist_bandwidth_hz) if self.max_persist_bandwidth_hz > 0.0 else None),
+            persist_width_floor_applied_hz=floor_applied,
+            baseline_clipped=clipped,
+            clip_reason=("scan_edge" if clipped else None),
+            was_floored=floor_applied > 0.0,
+            was_clamped=bool(self.max_persist_bandwidth_hz > 0.0 and float(width_hz) > self.max_persist_bandwidth_hz),
+        )
+        return low, high, clipped, ("scan_edge" if clipped else None)
+
+    def _apply_persisted_span_policy(self, det: PersistentDetection, *, stage: str) -> Tuple[bool, Optional[str]]:
+        low, high, clipped, clip_reason = self._policy_span_for(
+            center_hz=int(det.f_center_hz),
+            width_hz=max(float(det.f_high_hz - det.f_low_hz), self.bin_hz),
+            stage=stage,
+            detection_id=det.id,
+        )
+        det.f_low_hz = low
+        det.f_high_hz = high
+        self._enforce_persisted_span_invariant(det)
+        return clipped, clip_reason
+
+    def _persist_width_floor_applied_value(self, measured_width_hz: float, output_width_hz: float) -> float:
+        floor = float(self.min_persist_bandwidth_hz or 0.0)
+        if floor <= 0.0:
+            return 0.0
+        measured = max(float(measured_width_hz), self.bin_hz)
+        if measured >= floor:
+            return 0.0
+        if output_width_hz < floor:
+            return 0.0
+        return float(floor - measured)
+
     def _blend_width_ema(self, prev_width: float, measured_width: float) -> float:
         original_prev_width = float(prev_width)
         original_measured_width = float(measured_width)
+        min_width_hz = self._persist_min_width_hz()
         if prev_width <= 0.0:
-            prev_width = max(self.min_detection_width_hz, measured_width)
-        measurement = max(measured_width, self.min_detection_width_hz)
+            prev_width = max(min_width_hz, measured_width)
+        measurement = max(measured_width, min_width_hz)
         was_floored = measurement != measured_width
         outlier_ratio = float(self.width_outlier_ratio)
         outlier_rejected = False
@@ -894,10 +1016,11 @@ class BaselinePersistence:
                 outlier_rejected = True
         alpha = float(min(max(self.width_ema_alpha, 0.01), 1.0))
         blended = prev_width + alpha * (measurement - prev_width)
-        blended = max(blended, self.min_detection_width_hz)
+        blended = max(blended, min_width_hz)
         was_clamped = False
-        if self.max_detection_width_hz > 0.0 and blended > self.max_detection_width_hz:
-            blended = self.max_detection_width_hz
+        max_width_hz = self.max_persist_bandwidth_hz or self.max_detection_width_hz
+        if max_width_hz > 0.0 and blended > max_width_hz:
+            blended = max_width_hz
             was_clamped = True
         self._log(
             "width_decision",
@@ -905,8 +1028,15 @@ class BaselinePersistence:
             previous_width_hz=original_prev_width,
             input_width_hz=original_measured_width,
             output_width_hz=blended,
-            min_width_hz=float(self.min_detection_width_hz),
-            max_width_hz=float(self.max_detection_width_hz),
+            min_width_hz=float(min_width_hz),
+            min_persist_bandwidth_hz=(
+                float(self.min_persist_bandwidth_hz) if self.min_persist_bandwidth_hz > 0.0 else None
+            ),
+            persist_width_floor_applied_hz=self._persist_width_floor_applied_value(
+                original_measured_width,
+                blended,
+            ),
+            max_width_hz=float(max_width_hz),
             alpha=alpha,
             outlier_ratio=outlier_ratio,
             was_floored=was_floored,

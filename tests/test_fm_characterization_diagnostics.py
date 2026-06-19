@@ -36,11 +36,15 @@ def test_characterization_summary_keeps_context_and_measured_fields_separate() -
     assert len(summary["records"]) == 1
     [sample] = summary["records"]
     assert sample["raw_segment"]["bandwidth_hz"] == 2_000.0
+    assert sample["raw_segment"]["raw_fragment_bandwidth_hz"] == 2_000.0
     assert sample["measured_characterization"]["occupied_bandwidth_hz"] == 80_000.0
+    assert sample["measured_characterization"]["measured_occupied_bandwidth_hz"] == 80_000.0
     assert sample["measured_characterization"]["stable_center_hz"] == 100_100_000
     assert sample["measured_characterization"]["center_delta_hz"] == 0
     assert sample["display_span"]["bandwidth_hz"] == 200_000.0
     assert sample["match_span"]["bandwidth_hz"] == 80_000.0
+    assert sample["match_span"]["identity_match_bandwidth_hz"] == 80_000.0
+    assert sample["persisted_card_span"]["persisted_card_bandwidth_hz"] == 80_000.0
     assert sample["match_span"]["bandwidth_hz"] < sample["display_span"]["bandwidth_hz"]
     assert sample["raw_segment"]["bandwidth_hz"] < sample["measured_characterization"]["occupied_bandwidth_hz"]
     assert sample["context"]["bandplan_service"] == "FM Broadcast"
@@ -71,6 +75,8 @@ def test_scan_logger_mirror_carries_characterization_records_to_diagnostic_jsonl
     summary = summarize_characterization_records(characterization_records, sample_limit=5)
     assert summary["record_count"] == 1
     assert summary["records"][0]["measured_characterization"]["occupied_bandwidth_hz"] == 2_000.0
+    assert summary["records"][0]["display_span"]["bandwidth_hz"] == 200_000.0
+    assert summary["records"][0]["match_span"]["identity_match_bandwidth_hz"] == 80_000.0
     assert summary["records"][0]["measured_characterization"]["stable_center_hz"] == 100_100_000
 
 

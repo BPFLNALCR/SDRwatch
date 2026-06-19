@@ -160,8 +160,46 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--segment-centroid-floor-margin-db", dest="segment_centroid_floor_margin_db", type=float, help="Centroid mask floor margin above noise [dB]")
     p.add_argument("--match-bandwidth-pad-hz", dest="match_bandwidth_pad_hz", type=float, help="Hz padding for persistence match span")
     p.add_argument("--min-match-bandwidth-hz", dest="min_match_bandwidth_hz", type=float, help="Minimum persistence match span width [Hz]")
+    p.add_argument("--min-identity-bandwidth-hz", dest="min_identity_bandwidth_hz", type=float, help="Minimum signal identity/match span width [Hz]")
+    p.add_argument("--min-persist-bandwidth-hz", dest="min_persist_bandwidth_hz", type=float, help="Minimum persisted/card span width [Hz]")
+    p.add_argument("--max-persist-bandwidth-hz", dest="max_persist_bandwidth_hz", type=float, help="Maximum persisted/card span width [Hz]")
     p.add_argument("--display-bandwidth-pad-hz", dest="display_bandwidth_pad_hz", type=float, help="Hz padding for operator display span")
     p.add_argument("--min-display-bandwidth-hz", dest="min_display_bandwidth_hz", type=float, help="Minimum operator display span width [Hz]")
+    p.add_argument(
+        "--allow-revisit-to-shrink-identity",
+        dest="allow_revisit_to_shrink_identity",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help="Allow revisit evidence to reduce signal identity span",
+    )
+    p.add_argument(
+        "--allow-revisit-to-move-center",
+        dest="allow_revisit_to_move_center",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help="Allow revisit evidence to move stable signal center within policy gates",
+    )
+    p.add_argument(
+        "--min-revisit-bandwidth-for-identity-update-hz",
+        dest="min_revisit_bandwidth_for_identity_update_hz",
+        type=float,
+        help="Minimum revisit bandwidth required before identity update authority [Hz]",
+    )
+    p.add_argument(
+        "--max-revisit-center-delta-for-identity-update-hz",
+        dest="max_revisit_center_delta_for_identity_update_hz",
+        type=float,
+        help="Maximum revisit center delta allowed before identity update authority [Hz]",
+    )
+    p.add_argument("--fragmented-revisit-policy", dest="fragmented_revisit_policy", type=str, help="Policy for ambiguous or fragmented revisit evidence")
+    p.add_argument("--raw-fragment-interpretation", dest="raw_fragment_interpretation", type=str, help="Diagnostic interpretation label for raw detector fragments")
+    p.add_argument(
+        "--center-smoothing-enabled",
+        dest="center_smoothing_enabled",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help="Enable profile-governed center smoothing",
+    )
     p.add_argument("--cfar", choices=["off", "os", "ca"], help="CFAR mode (default: os)")
     p.add_argument("--cfar-train", dest="cfar_train", type=int, help="Training cells per side for CFAR (default 24)")
     p.add_argument("--cfar-guard", dest="cfar_guard", type=int, help="Guard cells per side (excluded around CUT) for CFAR (default 4)")
@@ -263,8 +301,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     _set_default(args, args._cli_overrides, "segment_centroid_floor_margin_db", None)
     _set_default(args, args._cli_overrides, "match_bandwidth_pad_hz", None)
     _set_default(args, args._cli_overrides, "min_match_bandwidth_hz", None)
+    _set_default(args, args._cli_overrides, "min_identity_bandwidth_hz", None)
+    _set_default(args, args._cli_overrides, "min_persist_bandwidth_hz", None)
+    _set_default(args, args._cli_overrides, "max_persist_bandwidth_hz", None)
     _set_default(args, args._cli_overrides, "display_bandwidth_pad_hz", None)
     _set_default(args, args._cli_overrides, "min_display_bandwidth_hz", None)
+    _set_default(args, args._cli_overrides, "allow_revisit_to_shrink_identity", None)
+    _set_default(args, args._cli_overrides, "allow_revisit_to_move_center", None)
+    _set_default(args, args._cli_overrides, "min_revisit_bandwidth_for_identity_update_hz", None)
+    _set_default(args, args._cli_overrides, "max_revisit_center_delta_for_identity_update_hz", None)
+    _set_default(args, args._cli_overrides, "fragmented_revisit_policy", None)
+    _set_default(args, args._cli_overrides, "raw_fragment_interpretation", None)
+    _set_default(args, args._cli_overrides, "center_smoothing_enabled", None)
     _set_default(args, args._cli_overrides, "cfar", "os")
     _set_default(args, args._cli_overrides, "cfar_train", 24)
     _set_default(args, args._cli_overrides, "cfar_guard", 4)
@@ -481,8 +529,24 @@ def _apply_scan_profile(args: argparse.Namespace, parser: argparse.ArgumentParse
 
     maybe_set("match_bandwidth_pad_hz", getattr(profile, "match_bandwidth_pad_hz", None))
     maybe_set("min_match_bandwidth_hz", getattr(profile, "min_match_bandwidth_hz", None))
+    maybe_set("min_identity_bandwidth_hz", getattr(profile, "min_identity_bandwidth_hz", None))
+    maybe_set("min_persist_bandwidth_hz", getattr(profile, "min_persist_bandwidth_hz", None))
+    maybe_set("max_persist_bandwidth_hz", getattr(profile, "max_persist_bandwidth_hz", None))
     maybe_set("display_bandwidth_pad_hz", getattr(profile, "display_bandwidth_pad_hz", None))
     maybe_set("min_display_bandwidth_hz", getattr(profile, "min_display_bandwidth_hz", None))
+    maybe_set("allow_revisit_to_shrink_identity", getattr(profile, "allow_revisit_to_shrink_identity", None))
+    maybe_set("allow_revisit_to_move_center", getattr(profile, "allow_revisit_to_move_center", None))
+    maybe_set(
+        "min_revisit_bandwidth_for_identity_update_hz",
+        getattr(profile, "min_revisit_bandwidth_for_identity_update_hz", None),
+    )
+    maybe_set(
+        "max_revisit_center_delta_for_identity_update_hz",
+        getattr(profile, "max_revisit_center_delta_for_identity_update_hz", None),
+    )
+    maybe_set("fragmented_revisit_policy", getattr(profile, "fragmented_revisit_policy", None))
+    maybe_set("raw_fragment_interpretation", getattr(profile, "raw_fragment_interpretation", None))
+    maybe_set("center_smoothing_enabled", getattr(profile, "center_smoothing_enabled", None))
 
     if profile.bandwidth_pad_hz is not None:
         setattr(args, "bandwidth_pad_hz", profile.bandwidth_pad_hz)

@@ -15,9 +15,26 @@ def test_tiny_fft_fragment_does_not_become_fake_measured_fm_bandwidth(tmp_path) 
 
     [record] = logger.events("characterization_record")
     assert record["raw_bandwidth_hz"] == 2_000.0
+    assert record["raw_fragment_bandwidth_hz"] == 2_000.0
+    assert record["raw_fragment_center_hz"] == 100_100_000
     assert record["measured_bandwidth_hz"] == 2_000.0
+    assert record["measured_occupied_bandwidth_hz"] == 2_000.0
     assert record["match_bandwidth_hz"] == 80_000.0
+    assert record["identity_match_bandwidth_hz"] == 80_000.0
+    assert record["persisted_card_bandwidth_hz"] == 80_000.0
     assert record["display_bandwidth_hz"] == 200_000.0
+    assert record["bandwidth_interpretation"] == "threshold_fragment"
+    assert record["width_floor_applied_hz"] == 78_000.0
+    assert record["persist_width_floor_applied_hz"] == 78_000.0
+
+
+def test_tiny_raw_fragment_stores_policy_shaped_card_span(tmp_path) -> None:
+    engine, store, ctx, _logger = make_engine(tmp_path)
+
+    engine.ingest(0, [make_segment(100_100_000, width_hz=2_000)])
+
+    [detection] = store.load_baseline_detections(ctx.id)
+    assert detection.f_high_hz - detection.f_low_hz >= 80_000
 
 
 def test_revisit_characterization_records_show_revisit_contribution_and_stable_center(tmp_path) -> None:
@@ -90,5 +107,6 @@ def test_single_wide_revisit_observation_does_not_permanently_ratchet_card_width
 
     [after_normal] = store.load_baseline_detections(ctx.id)
     assert after_normal.f_high_hz - after_normal.f_low_hz <= 270_000
+    assert after_normal.f_high_hz - after_normal.f_low_hz >= 80_000
     assert after_normal.f_high_hz - after_normal.f_low_hz <= max(270_000, original_width_hz)
     assert any(record.get("outlier_rejected") for record in logger.events("width_decision"))

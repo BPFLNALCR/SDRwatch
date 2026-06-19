@@ -10,6 +10,7 @@ import numpy as np
 from sdrwatch.baseline.persistence import BaselinePersistence, CharacterizationSnapshot
 from sdrwatch.baseline.spur import SpurEvaluator
 from sdrwatch.baseline.store import BaselineContext, Store
+from sdrwatch.detection.span_policy import SignalSpanPolicy, resolve_signal_span_policy
 from sdrwatch.detection.types import (
     CharacterizationEvidence,
     CharacterizationSpan,
@@ -123,6 +124,7 @@ class DetectionEngine:
         self.revisit_span_limit_hz = max(0.0, span_limit)
         self.logger = logger
         self.profile_name = getattr(args, "profile", None)
+        self.signal_span_policy: SignalSpanPolicy = resolve_signal_span_policy(args)
         # Span shaping is split into:
         # - match span: what is persisted/matched in baseline_detections
         # - display span: what is emitted/logged for humans
@@ -134,7 +136,7 @@ class DetectionEngine:
         )
         self.min_match_bandwidth_hz = max(
             0.0,
-            float(getattr(args, "min_match_bandwidth_hz", None) or legacy_min or 0.0),
+            float(self.signal_span_policy.min_identity_bandwidth_hz or legacy_min or 0.0),
         )
         self.display_bandwidth_pad_hz = max(
             0.0,
@@ -142,7 +144,7 @@ class DetectionEngine:
         )
         self.min_display_bandwidth_hz = max(
             0.0,
-            float(getattr(args, "min_display_bandwidth_hz", None) or legacy_min or 0.0),
+            float(self.signal_span_policy.min_display_bandwidth_hz or legacy_min or 0.0),
         )
         raw_hit_norm = getattr(args, "confidence_hit_normalizer", None)
         raw_duration_norm = getattr(args, "confidence_duration_norm", None)
@@ -171,6 +173,7 @@ class DetectionEngine:
             logger=logger,
             revisit_margin_hz=self.revisit_margin_hz,
             revisit_span_limit_hz=self.revisit_span_limit_hz,
+            signal_span_policy=self.signal_span_policy,
         )
 
     def _log(self, event: str, **fields: Any) -> None:
@@ -323,6 +326,12 @@ class DetectionEngine:
             output_width_hz=output_width,
             pad_hz=float(pad_hz),
             min_width_hz=float(min_bw_hz),
+            min_identity_bandwidth_hz=(
+                float(self.signal_span_policy.min_identity_bandwidth_hz)
+                if stage == "shape_match" and self.signal_span_policy.min_identity_bandwidth_hz is not None
+                else None
+            ),
+            width_floor_applied_hz=(float(min_bw_hz) if was_floored else 0.0),
             max_width_hz=float(self.max_detection_width_hz),
             was_floored=was_floored,
             was_clamped=was_clamped,
@@ -909,10 +918,61 @@ class DetectionEngine:
                 bandplan_notes=notes or None,
                 profile_context=self.profile_name,
                 context_only=False,
+                bandwidth_interpretation=self.signal_span_policy.raw_fragment_interpretation,
+                width_floor_applied_hz=self._identity_floor_applied_hz(measured_bandwidth_hz, match_span),
+                persist_width_floor_applied_hz=self._persist_floor_applied_hz(
+                    measured_bandwidth_hz,
+                    persisted_detection,
+                ),
+                persisted_card_bandwidth_hz=(
+                    float(persisted_detection.f_high_hz - persisted_detection.f_low_hz)
+                    if persisted_detection
+                    else match_span.bandwidth_hz
+                ),
+                baseline_clipped=self._persisted_span_is_clipped(persisted_detection),
+                clip_reason=(
+                    "scan_edge" if self._persisted_span_is_clipped(persisted_detection) else None
+                ),
             )
         )
         char_event = str(characterization_record.pop("event", "characterization_record"))
         self._log(char_event, **characterization_record)
+
+    def _identity_floor_applied_hz(self, measured_bandwidth_hz: float, match_span: CharacterizationSpan) -> float:
+        floor = float(self.signal_span_policy.min_identity_bandwidth_hz or 0.0)
+        if floor <= 0.0:
+            return 0.0
+        measured = max(float(measured_bandwidth_hz), self.bin_hz)
+        if measured >= floor:
+            return 0.0
+        if match_span.bandwidth_hz < floor:
+            return 0.0
+        return float(floor - measured)
+
+    def _persist_floor_applied_hz(self, measured_bandwidth_hz: float, persisted_detection) -> float:
+        floor = float(self.signal_span_policy.min_persist_bandwidth_hz or 0.0)
+        if floor <= 0.0:
+            return 0.0
+        measured = max(float(measured_bandwidth_hz), self.bin_hz)
+        if measured >= floor:
+            return 0.0
+        if persisted_detection and (persisted_detection.f_high_hz - persisted_detection.f_low_hz) < floor:
+            return 0.0
+        return float(floor - measured)
+
+    def _persisted_span_is_clipped(self, persisted_detection) -> bool:
+        if not persisted_detection:
+            return False
+        floor = float(self.signal_span_policy.min_persist_bandwidth_hz or 0.0)
+        if floor <= 0.0:
+            return False
+        width = float(persisted_detection.f_high_hz - persisted_detection.f_low_hz)
+        if width >= floor:
+            return False
+        return (
+            int(persisted_detection.f_low_hz) <= int(self.baseline_ctx.freq_start_hz)
+            or int(persisted_detection.f_high_hz) >= int(self.baseline_ctx.freq_stop_hz)
+        )
 
 
     def finalize_coarse_pass(self) -> List[RevisitTag]:

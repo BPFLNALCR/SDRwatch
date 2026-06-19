@@ -8,7 +8,7 @@
 
 **Input**: User description: "Revise the feature specification so the current Spec Kit artifacts align around Profile-Governed Signal Identity Span and Revisit Authority. Keep the pass planning/specification-only, generic and profile-driven, preserve raw fragment evidence, prevent raw fragment width from becoming identity/persist/display width by accident, and keep stale multi-RTL tasks out of implementation."
 
-**Artifact Alignment Note**: This specification is now the source of truth for the focused span-policy update in `specs/008-multi-rtl-guard-rover`. The existing `tasks.md` still describes the earlier hardware-aware multi-RTL slice and MUST be regenerated with `/speckit-tasks` before any implementation work starts. Do not continue implementation from the stale multi-RTL task list.
+**Artifact Alignment Note**: This specification and the regenerated `tasks.md` are now aligned around the focused span-policy update in `specs/008-multi-rtl-guard-rover`. Do not continue implementation from the earlier hardware-aware multi-RTL task list.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -157,7 +157,7 @@ As an operator or maintainer validating a scan, I need effective parameters and 
 - No database migration is required.
 - Existing diagnostic fields remain available; new fields are additive.
 - The current web UI and controller job lifecycle remain the operator acceptance path. Scanner CLI checks are internal backend smoke only.
-- `tasks.md` is stale for this focused update and must be regenerated before implementation.
+- `tasks.md` has been regenerated for this focused span-policy update; implementation must follow the current task list rather than the earlier multi-RTL role-run task list.
 
 ### Key Entities *(include if feature involves data)*
 

@@ -4,7 +4,7 @@
 
 **Input**: Focused technical planning request for a small, generic update that makes signal identity span, persisted card span, operator display span, and revisit authority obey profile-defined policy.
 
-**Spec Alignment Note**: `spec.md` and `tasks.md` in this directory still describe the earlier hardware-aware multi-RTL slice. This plan, `research.md`, `data-model.md`, `quickstart.md`, and `contracts/signal-span-policy-contract.md` capture the current focused span-policy planning request. Before running a future task-generation pass from this directory, reconcile or regenerate the spec/tasks so implementation work is not mixed with stale multi-RTL tasking.
+**Spec Alignment Note**: `spec.md` and `tasks.md` in this directory have been reconciled around the current focused span-policy request. Do not resume the earlier hardware-aware multi-RTL role-run tasking from this feature directory.
 
 ## A. Executive Summary
 
