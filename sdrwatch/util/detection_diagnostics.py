@@ -229,10 +229,35 @@ def build_effective_parameter_manifest(
     *,
     job_id: Optional[str] = None,
     device_telemetry: Optional[Dict[str, Any]] = None,
+    profile_application_source: str = "scanner_effective_parameters",
+    profile_audit_complete: Optional[bool] = None,
+    profile_applied_unknown_if_unreported: bool = False,
 ) -> Dict[str, Any]:
     requested_profile = _get_attr(args, "_requested_profile", _get_attr(args, "profile"))
-    profile_applied = bool(_get_attr(args, "_profile_applied", bool(_get_attr(args, "_applied_profile", None))))
-    applied_profile = _get_attr(args, "_applied_profile", requested_profile if profile_applied else None)
+    explicit_profile_applied = _get_attr(args, "_profile_applied", None)
+    explicit_applied_profile = _get_attr(args, "_applied_profile", None)
+    profile_skip_reason = _get_attr(args, "_profile_skip_reason")
+    has_scanner_profile_audit = (
+        explicit_profile_applied is not None
+        or explicit_applied_profile not in (None, "")
+        or profile_skip_reason not in (None, "")
+    )
+    if profile_applied_unknown_if_unreported and not has_scanner_profile_audit:
+        profile_applied = None
+        applied_profile = None
+    else:
+        if explicit_profile_applied is None:
+            profile_applied = bool(explicit_applied_profile)
+        else:
+            profile_applied = bool(explicit_profile_applied)
+        applied_profile = explicit_applied_profile
+        if applied_profile in (None, "") and profile_applied:
+            applied_profile = requested_profile
+    if profile_audit_complete is None:
+        profile_audit_complete = bool(
+            profile_application_source == "scanner_effective_parameters"
+            and (requested_profile in (None, "") or has_scanner_profile_audit)
+        )
     device = dict(device_telemetry or _dict_attr(args, "_device_telemetry"))
     requested_gain = device.get("requested_gain")
     if requested_gain is None:
@@ -249,7 +274,9 @@ def build_effective_parameter_manifest(
         "requested_profile": requested_profile,
         "applied_profile": applied_profile,
         "profile_applied": profile_applied,
-        "profile_skip_reason": _get_attr(args, "_profile_skip_reason"),
+        "profile_skip_reason": profile_skip_reason,
+        "profile_application_source": profile_application_source,
+        "profile_audit_complete": bool(profile_audit_complete),
         "operator_overrides": _dict_attr(args, "_operator_overrides"),
         "profile_defaults": _dict_attr(args, "_profile_defaults"),
         "fallback_defaults": _dict_attr(args, "_fallback_defaults"),

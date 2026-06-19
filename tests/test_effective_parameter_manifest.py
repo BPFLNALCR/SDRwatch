@@ -58,6 +58,8 @@ def test_effective_parameter_manifest_records_in_band_fm_profile_application() -
     manifest = build_effective_parameter_manifest(_args(), job_id="abc123")
 
     assert manifest["job_id"] == "abc123"
+    assert manifest["profile_application_source"] == "scanner_effective_parameters"
+    assert manifest["profile_audit_complete"] is True
     assert manifest["requested_profile"] == "fm_broadcast"
     assert manifest["applied_profile"] == "fm_broadcast"
     assert manifest["profile_applied"] is True
@@ -95,7 +97,30 @@ def test_effective_parameter_manifest_records_out_of_band_profile_skip_and_fallb
     assert manifest["requested_profile"] == "fm_broadcast"
     assert manifest["applied_profile"] is None
     assert manifest["profile_applied"] is False
+    assert manifest["profile_application_source"] == "scanner_effective_parameters"
+    assert manifest["profile_audit_complete"] is True
     assert "outside fm_broadcast" in manifest["profile_skip_reason"]
     assert manifest["fallback_defaults"]["step_hz"] == 2_400_000
     assert manifest["final_effective_params"]["start_hz"] == 120_000_000
     assert manifest["final_effective_params"]["stop_hz"] == 130_000_000
+
+
+def test_controller_fallback_manifest_marks_profile_application_unknown() -> None:
+    manifest = build_effective_parameter_manifest(
+        _args(
+            _applied_profile=None,
+            _profile_applied=None,
+            _profile_defaults={},
+            _operator_overrides={},
+        ),
+        job_id="fallback",
+        profile_application_source="controller_fallback",
+        profile_audit_complete=False,
+        profile_applied_unknown_if_unreported=True,
+    )
+
+    assert manifest["requested_profile"] == "fm_broadcast"
+    assert manifest["applied_profile"] is None
+    assert manifest["profile_applied"] is None
+    assert manifest["profile_application_source"] == "controller_fallback"
+    assert manifest["profile_audit_complete"] is False

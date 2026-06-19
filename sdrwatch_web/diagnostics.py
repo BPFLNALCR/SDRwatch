@@ -390,6 +390,184 @@ def _clean_job_record(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _dynamic_args(params: Dict[str, Any]) -> Any:
+    return type("DiagnosticArgs", (), dict(params))()
+
+
+def _clean_number(value: Any, *, as_int: bool = False) -> Any:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return value
+    if as_int:
+        return int(parsed)
+    return parsed
+
+
+def _profile_audit_complete_from_settings(settings: Dict[str, Any]) -> bool:
+    return (
+        "profile_applied" in settings
+        or settings.get("applied_profile") not in (None, "")
+        or settings.get("profile_skip_reason") not in (None, "")
+    )
+
+
+def _with_effective_parameter_source(
+    manifest: Dict[str, Any],
+    source: str,
+    *,
+    audit_complete: Optional[bool] = None,
+    fallback_provenance: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    result = dict(manifest)
+    result.setdefault("profile_application_source", source)
+    result.setdefault(
+        "profile_audit_complete",
+        bool(audit_complete if audit_complete is not None else source == "scanner_effective_parameters"),
+    )
+    if fallback_provenance is not None:
+        result["fallback_provenance"] = dict(fallback_provenance)
+    return result
+
+
+def _controller_fallback_effective_parameters(
+    *,
+    job: Dict[str, Any],
+    params: Dict[str, Any],
+    device_telemetry: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    manifest = build_effective_parameter_manifest(
+        _dynamic_args(params),
+        job_id=str(job.get("id") or "unknown"),
+        device_telemetry=device_telemetry,
+        profile_application_source="controller_fallback",
+        profile_audit_complete=False,
+        profile_applied_unknown_if_unreported=True,
+    )
+    return _with_effective_parameter_source(
+        manifest,
+        "controller_fallback",
+        audit_complete=False,
+        fallback_provenance={
+            "scanner_effective_parameters_event": False,
+            "decision_summary_available": False,
+            "controller_params_used": True,
+        },
+    )
+
+
+def _decision_summary_effective_parameters(
+    *,
+    job: Dict[str, Any],
+    params: Dict[str, Any],
+    device_telemetry: Optional[Dict[str, Any]],
+    settings: Dict[str, Any],
+) -> Dict[str, Any]:
+    manifest = build_effective_parameter_manifest(
+        _dynamic_args(params),
+        job_id=str(job.get("id") or "unknown"),
+        device_telemetry=device_telemetry,
+        profile_application_source="decision_summary_effective_settings",
+        profile_audit_complete=False,
+        profile_applied_unknown_if_unreported=True,
+    )
+    source_profile = settings.get("source_profile") or settings.get("profile") or manifest.get("source_profile")
+    requested_profile = (
+        settings.get("requested_profile")
+        or settings.get("profile")
+        or manifest.get("requested_profile")
+        or manifest.get("source_profile")
+    )
+    applied_profile = settings.get("applied_profile")
+    if "profile_applied" in settings:
+        profile_applied = bool(settings.get("profile_applied"))
+    elif applied_profile not in (None, ""):
+        profile_applied = True
+    else:
+        profile_applied = None
+
+    manifest.update(
+        {
+            "source_profile": source_profile,
+            "requested_profile": requested_profile,
+            "applied_profile": applied_profile,
+            "profile_applied": profile_applied,
+            "profile_skip_reason": settings.get("profile_skip_reason"),
+            "profile_application_source": "decision_summary_effective_settings",
+            "profile_audit_complete": _profile_audit_complete_from_settings(settings),
+            "decision_summary_effective_settings": dict(settings),
+            "fallback_provenance": {
+                "scanner_effective_parameters_event": False,
+                "decision_summary_available": True,
+                "controller_params_used": True,
+            },
+        }
+    )
+
+    final_params = dict(manifest.get("final_effective_params") or {})
+    final_map = {
+        "start_hz": ("start_hz", True),
+        "stop_hz": ("stop_hz", True),
+        "step_hz": ("step_hz", False),
+        "samp_rate_hz": ("sample_rate_hz", False),
+        "sample_rate": ("sample_rate_hz", False),
+        "fft": ("fft", True),
+        "avg": ("avg", True),
+        "driver": ("driver", False),
+    }
+    for source_key, (target_key, as_int) in final_map.items():
+        if settings.get(source_key) not in (None, ""):
+            final_params[target_key] = _clean_number(settings.get(source_key), as_int=as_int)
+    sample_rate = final_params.get("sample_rate_hz")
+    fft = final_params.get("fft")
+    if sample_rate not in (None, "") and fft not in (None, "", 0):
+        try:
+            final_params["bin_width_hz"] = float(sample_rate) / float(fft)
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    manifest["final_effective_params"] = final_params
+    if final_params.get("start_hz") is not None or final_params.get("stop_hz") is not None:
+        manifest["frequency_range_hz"] = {
+            "start_hz": final_params.get("start_hz"),
+            "stop_hz": final_params.get("stop_hz"),
+        }
+
+    persistence = dict(manifest.get("persistence") or {})
+    for source_key, target_key in (
+        ("persistence_mode", "mode"),
+        ("persistence_hit_ratio", "hit_ratio"),
+        ("persistence_min_seconds", "min_seconds"),
+        ("persistence_min_hits", "min_hits"),
+        ("persistence_min_windows", "min_windows"),
+        ("persistence_min_sweep_loops", "min_sweep_loops"),
+    ):
+        if settings.get(source_key) not in (None, ""):
+            persistence[target_key] = settings[source_key]
+    manifest["persistence"] = persistence
+
+    span_controls = dict(manifest.get("span_controls") or {})
+    for key in (
+        "segment_center_mode",
+        "segment_centroid_span_hz",
+        "segment_centroid_drop_db",
+        "segment_centroid_floor_margin_db",
+        "match_bandwidth_pad_hz",
+        "min_match_bandwidth_hz",
+        "display_bandwidth_pad_hz",
+        "min_display_bandwidth_hz",
+        "center_match_hz",
+        "max_persist_width_hz",
+        "max_card_width_hz",
+        "max_detection_width_hz",
+    ):
+        if settings.get(key) not in (None, ""):
+            span_controls[key] = settings[key]
+    manifest["span_controls"] = span_controls
+    return manifest
+
+
 def _extract_job_level_diagnostics(text: str) -> Dict[str, Any]:
     extracted: Dict[str, Any] = {"effective_parameters": None, "device_telemetry": None, "parse_errors": 0}
     for line in text.splitlines():
@@ -477,6 +655,8 @@ def _add_diagnostic_jsonl(
     manifest.data["role_telemetry_summary"] = role_summary
     _add_json(zf, manifest, "diagnostics/role-telemetry-summary.json", role_summary)
     job_level = _extract_job_level_diagnostics(text)
+    if summary.get("effective_settings"):
+        job_level["decision_effective_settings"] = dict(summary["effective_settings"])
     characterization_summary = _summarize_characterization_tail(text, bounds.row_limit)
     if characterization_summary.get("truncated"):
         manifest.truncated(
@@ -624,17 +804,38 @@ def build_diagnostic_bundle(
         device_telemetry = job_level.get("device_telemetry")
         if device_telemetry is None:
             device_telemetry = build_device_telemetry_snapshot(
-                type("DiagnosticArgs", (), params)(),
+                _dynamic_args(params),
                 None,
                 device_key=str(job.get("device_key") or params.get("device_key") or ""),
             )
         effective_parameters = job_level.get("effective_parameters")
-        if effective_parameters is None:
-            effective_parameters = build_effective_parameter_manifest(
-                type("DiagnosticArgs", (), params)(),
-                job_id=str(job.get("id") or "unknown"),
+        if effective_parameters is not None:
+            effective_parameters = _with_effective_parameter_source(
+                effective_parameters,
+                "scanner_effective_parameters",
+                audit_complete=True,
+                fallback_provenance={
+                    "scanner_effective_parameters_event": True,
+                    "decision_summary_available": bool(job_level.get("decision_effective_settings")),
+                    "controller_params_used": False,
+                },
+            )
+        elif isinstance(job_level.get("decision_effective_settings"), dict):
+            effective_parameters = _decision_summary_effective_parameters(
+                job=job,
+                params=params,
+                device_telemetry=device_telemetry,
+                settings=job_level["decision_effective_settings"],
+            )
+        else:
+            effective_parameters = _controller_fallback_effective_parameters(
+                job=job,
+                params=params,
                 device_telemetry=device_telemetry,
             )
+        source = str(effective_parameters.get("profile_application_source") or "unknown")
+        manifest.data["effective_parameters_source"] = source
+        manifest.data["profile_audit_complete"] = bool(effective_parameters.get("profile_audit_complete"))
         manifest.data["effective_parameters"] = effective_parameters
         _add_json(zf, manifest, "job/effective-parameters.json", effective_parameters)
         if device_telemetry is not None:

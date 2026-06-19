@@ -352,6 +352,193 @@ def test_diagnostic_bundle_contains_available_evidence(tmp_path: Path) -> None:
         buffer.close()
 
 
+def test_bundle_uses_scanner_effective_parameters_event_as_source_of_truth(tmp_path: Path) -> None:
+    db_path = tmp_path / "sdrwatch.db"
+    log_path = tmp_path / "scanner.log"
+    diag_path = tmp_path / "diagnostic.jsonl"
+    _create_temp_db(db_path)
+    _write_text(log_path, ["log"])
+    _write_text(
+        diag_path,
+        [
+            json.dumps(
+                {
+                    "event": "effective_parameters",
+                    "job_id": "abc123def456",
+                    "requested_profile": "fm_broadcast",
+                    "source_profile": "fm_broadcast",
+                    "applied_profile": "fm_broadcast",
+                    "profile_applied": True,
+                    "profile_skip_reason": None,
+                    "profile_defaults": {"fft": 8192},
+                    "final_effective_params": {"start_hz": 88_000_000, "stop_hz": 108_000_000},
+                    "profile_application_source": "scanner_effective_parameters",
+                    "profile_audit_complete": True,
+                }
+            ),
+            '{"event": "detection_window", "tuning_params": {"profile_applied": true}}',
+        ],
+    )
+
+    bundle = build_diagnostic_bundle(
+        job=_job(tmp_path, diag_path, log_path),
+        db_path=str(db_path),
+        bounds=DiagnosticBundleBounds(log_tail_lines=20, diagnostic_tail_lines=20, row_limit=20),
+    )
+
+    zf, buffer = _zip_entries(bundle.content)
+    try:
+        effective = json.loads(zf.read("job/effective-parameters.json"))
+        assert effective["requested_profile"] == "fm_broadcast"
+        assert effective["applied_profile"] == "fm_broadcast"
+        assert effective["profile_applied"] is True
+        assert effective["profile_application_source"] == "scanner_effective_parameters"
+        assert effective["profile_audit_complete"] is True
+        manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["effective_parameters_source"] == "scanner_effective_parameters"
+    finally:
+        zf.close()
+        buffer.close()
+
+
+def test_bundle_uses_decision_summary_when_effective_parameters_event_is_outside_tail(tmp_path: Path) -> None:
+    db_path = tmp_path / "sdrwatch.db"
+    log_path = tmp_path / "scanner.log"
+    diag_path = tmp_path / "diagnostic.jsonl"
+    _create_temp_db(db_path)
+    _write_text(log_path, ["log"])
+    _write_text(
+        diag_path,
+        [
+            json.dumps(
+                {
+                    "event": "effective_parameters",
+                    "requested_profile": "fm_broadcast",
+                    "source_profile": "fm_broadcast",
+                    "applied_profile": "fm_broadcast",
+                    "profile_applied": True,
+                }
+            ),
+            json.dumps(
+                {
+                    "event": "detection_window",
+                    "tuning_params": {
+                        "start_hz": 88_000_000,
+                        "stop_hz": 108_000_000,
+                        "step_hz": 1_200_000,
+                        "samp_rate_hz": 2_400_000,
+                        "fft": 8192,
+                        "avg": 10,
+                        "driver": "rtlsdr_native",
+                        "device_key": "rtl:0",
+                        "profile": "fm_broadcast",
+                        "source_profile": "fm_broadcast",
+                        "requested_profile": "fm_broadcast",
+                        "applied_profile": "fm_broadcast",
+                        "profile_applied": True,
+                    },
+                }
+            ),
+        ],
+    )
+
+    bundle = build_diagnostic_bundle(
+        job=_job(tmp_path, diag_path, log_path),
+        db_path=str(db_path),
+        bounds=DiagnosticBundleBounds(log_tail_lines=20, diagnostic_tail_lines=1, row_limit=20),
+    )
+
+    zf, buffer = _zip_entries(bundle.content)
+    try:
+        effective = json.loads(zf.read("job/effective-parameters.json"))
+        assert effective["requested_profile"] == "fm_broadcast"
+        assert effective["source_profile"] == "fm_broadcast"
+        assert effective["applied_profile"] == "fm_broadcast"
+        assert effective["profile_applied"] is True
+        assert effective["profile_application_source"] == "decision_summary_effective_settings"
+        assert effective["profile_audit_complete"] is True
+        assert effective["fallback_provenance"]["decision_summary_available"] is True
+        assert effective["final_effective_params"]["start_hz"] == 88_000_000
+        manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["effective_parameters_source"] == "decision_summary_effective_settings"
+    finally:
+        zf.close()
+        buffer.close()
+
+
+def test_bundle_controller_fallback_marks_profile_application_partial(tmp_path: Path) -> None:
+    db_path = tmp_path / "sdrwatch.db"
+    log_path = tmp_path / "scanner.log"
+    diag_path = tmp_path / "diagnostic.jsonl"
+    _create_temp_db(db_path)
+    _write_text(log_path, ["log"])
+    _write_text(diag_path, ['{"event": "status", "message": "no scanner audit"}'])
+    job = _job(tmp_path, diag_path, log_path)
+    job["params"]["profile"] = "fm_broadcast"
+
+    bundle = build_diagnostic_bundle(
+        job=job,
+        db_path=str(db_path),
+        bounds=DiagnosticBundleBounds(log_tail_lines=20, diagnostic_tail_lines=20, row_limit=20),
+    )
+
+    zf, buffer = _zip_entries(bundle.content)
+    try:
+        effective = json.loads(zf.read("job/effective-parameters.json"))
+        assert effective["requested_profile"] == "fm_broadcast"
+        assert effective["source_profile"] == "fm_broadcast"
+        assert effective["applied_profile"] is None
+        assert effective["profile_applied"] is None
+        assert effective["profile_application_source"] == "controller_fallback"
+        assert effective["profile_audit_complete"] is False
+        assert effective["fallback_provenance"]["controller_params_used"] is True
+        manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["effective_parameters_source"] == "controller_fallback"
+    finally:
+        zf.close()
+        buffer.close()
+
+
+def test_bundle_preserves_explicit_profile_skip_from_scanner(tmp_path: Path) -> None:
+    db_path = tmp_path / "sdrwatch.db"
+    log_path = tmp_path / "scanner.log"
+    diag_path = tmp_path / "diagnostic.jsonl"
+    _create_temp_db(db_path)
+    _write_text(log_path, ["log"])
+    _write_text(
+        diag_path,
+        [
+            json.dumps(
+                {
+                    "event": "effective_parameters",
+                    "requested_profile": "fm_broadcast",
+                    "source_profile": "fm_broadcast",
+                    "applied_profile": None,
+                    "profile_applied": False,
+                    "profile_skip_reason": "requested span outside profile range",
+                }
+            )
+        ],
+    )
+
+    bundle = build_diagnostic_bundle(
+        job=_job(tmp_path, diag_path, log_path),
+        db_path=str(db_path),
+        bounds=DiagnosticBundleBounds(log_tail_lines=20, diagnostic_tail_lines=20, row_limit=20),
+    )
+
+    zf, buffer = _zip_entries(bundle.content)
+    try:
+        effective = json.loads(zf.read("job/effective-parameters.json"))
+        assert effective["profile_applied"] is False
+        assert effective["applied_profile"] is None
+        assert effective["profile_application_source"] == "scanner_effective_parameters"
+        assert "outside profile range" in effective["profile_skip_reason"]
+    finally:
+        zf.close()
+        buffer.close()
+
+
 def test_diagnostic_bundle_decision_summary_includes_structured_aggregate_counts(tmp_path: Path) -> None:
     db_path = tmp_path / "sdrwatch.db"
     log_path = tmp_path / "scanner.log"

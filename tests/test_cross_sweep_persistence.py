@@ -11,6 +11,52 @@ def _ingest_sweep(engine, sweep_loop_id: int, centers_hz: list[int]) -> None:
     engine.flush()
 
 
+def test_min_sweep_loops_one_preserves_immediate_legacy_promotion_across_cached_engine(tmp_path) -> None:
+    logger = ListLogger()
+    args = fm_args(
+        persistence_min_hits=1,
+        persistence_min_windows=1,
+        persistence_min_sweep_loops=1,
+    )
+    engine, store, ctx, logger = make_engine(tmp_path, args=args, logger=logger)
+
+    _ingest_sweep(engine, 1, [100_100_000])
+    first_pass = store.load_baseline_detections(ctx.id)
+    assert len(first_pass) == 1
+
+    _ingest_sweep(engine, 2, [100_500_000])
+    second_pass = store.load_baseline_detections(ctx.id)
+    assert len(second_pass) == 2
+    assert logger.events("cross_sweep_observation") == []
+    assert [
+        record
+        for record in logger.events("persistence_decision")
+        if str(record.get("action", "")).startswith("cross_sweep")
+    ] == []
+
+
+def test_cross_sweep_candidate_behavior_is_gated_above_one_sweep_loop(tmp_path) -> None:
+    logger = ListLogger()
+    args = fm_args(
+        persistence_min_hits=1,
+        persistence_min_windows=1,
+        persistence_min_sweep_loops=2,
+    )
+    engine, store, ctx, logger = make_engine(tmp_path, args=args, logger=logger)
+
+    _ingest_sweep(engine, 1, [100_100_000])
+    assert store.load_baseline_detections(ctx.id) == []
+    assert logger.events("cross_sweep_observation")
+
+    _ingest_sweep(engine, 2, [100_101_000])
+    detections = store.load_baseline_detections(ctx.id)
+    assert len(detections) == 1
+    promotions = [
+        record for record in logger.events("persistence_decision") if record.get("action") == "cross_sweep_promote"
+    ]
+    assert len(promotions) == 1
+
+
 def test_stable_once_per_loop_signal_promotes_after_required_sweep_observations(tmp_path) -> None:
     logger = ListLogger()
     args = fm_args(
